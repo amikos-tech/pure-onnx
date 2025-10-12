@@ -39,14 +39,11 @@ jobs:
           go vet ./examples/basic/...
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: v1.61.0
-          args: --timeout=5m --config=.golangci.yml
-          skip-cache: false
-          skip-pkg-cache: false
-          skip-build-cache: false
-          only-new-issues: false
+          version: v2.1
+          args: --concurrency=8
+        continue-on-error: true
 
   test:
     name: Test

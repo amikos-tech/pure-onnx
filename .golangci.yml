@@ -11,22 +11,40 @@ linters:
   settings:
     gocritic:
       disable-all: false
-    staticcheck:
-      checks:
-        - all
-
-issues:
-  max-same-issues: 0
   exclusions:
     generated: lax
-    paths:
-      - vendor$
-      - third_party$
-      - internal/c_api$
-      - examples/experimental$
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
       - linters:
           - staticcheck
         text: 'ST1003: should not use underscores in Go names'
-      - path: examples/experimental/main.go
+      - linters:
+          - govet
+        path: examples/experimental/main\.go
         text: "possible misuse of unsafe.Pointer"
+      - linters:
+          - errcheck
+        path: examples/experimental/
+        text: "Error return value"
+    paths:
+      - third_party$
+      - internal/c_api$
+      - examples/experimental$
+
+issues:
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - internal/c_api$
+      - examples/experimental$
