@@ -1,0 +1,55 @@
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.iws
+atlassian-ide-plugin.xml
+
+# Build directories
+cmake-build-*/
+out/
+dist/
+bin/
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Dependency directories
+vendor/
+
+# Environment files
+.env
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# ONNX Runtime libraries (users should download their own)
+*.onnx
+libonnxruntime*
+
+# Local test models
+models/
+*.pb
+
+# Crashlytics
+com_crashlytics_export_strings.xml
+crashlytics.properties
+crashlytics-build.properties
+fabric.properties
