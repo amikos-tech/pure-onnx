@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
 
 env:
-  GO_VERSION_STABLE: '1.23.x'
-  GO_VERSION_OLDSTABLE: '1.22.x'
+  GO_VERSION_STABLE: '1.24.x'
+  GO_VERSION_OLDSTABLE: '1.23.x'
 
 jobs:
   lint:
@@ -49,7 +49,7 @@ jobs:
     name: Test
     strategy:
       matrix:
-        go-version: ['1.22.x', '1.23.x']
+        go-version: ['1.23.x', '1.24.x']
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -81,7 +81,7 @@ jobs:
     name: Build
     strategy:
       matrix:
-        go-version: ['1.22.x', '1.23.x']
+        go-version: ['1.23.x', '1.24.x']
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
