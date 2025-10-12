@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/amikos-tech/onnx-purego/ort"
+	"github.com/amikos-tech/pure-onnx/ort"
 )
 
 func main() {
