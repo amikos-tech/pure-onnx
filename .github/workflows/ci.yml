@@ -41,11 +41,11 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
-          args: --timeout=5m
-          skip-cache: true
-          skip-pkg-cache: true
-          skip-build-cache: true
+          version: v1.61.0
+          args: --timeout=5m --config=.golangci.yml
+          skip-cache: false
+          skip-pkg-cache: false
+          skip-build-cache: false
           only-new-issues: false
 
   test:
@@ -136,7 +136,7 @@ jobs:
       - name: Run Gosec Security Scanner
         uses: securego/gosec@master
         with:
-          args: '-no-fail -fmt sarif -out results.sarif ./...'
+          args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=examples/experimental ./...'
 
       - name: Upload SARIF file
         uses: github/codeql-action/upload-sarif@v3
