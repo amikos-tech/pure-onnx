@@ -42,7 +42,7 @@ jobs:
         uses: golangci/golangci-lint-action@v8
         with:
           version: v2.1
-          args: --concurrency=8
+          args: --concurrency=8 --fix
         continue-on-error: true
 
   test:
