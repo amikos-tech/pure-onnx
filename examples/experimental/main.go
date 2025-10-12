@@ -39,15 +39,33 @@ func main() {
 	// Example of direct ONNX Runtime library usage
 	// This will be refactored into the ort package
 
-	// Load the ONNX Runtime shared library
-	ort, err := purego.Dlopen("/Users/tazarov/Downloads/onnxruntime-osx-arm64-1.21.0/lib/libonnxruntime.1.21.0.dylib", purego.RTLD_NOW|purego.RTLD_GLOBAL)
-	if err != nil {
-		panic(err)
+	// Try to load the ONNX Runtime shared library from various paths
+	var ort uintptr
+	var err error
+
+	for _, path := range getTestLibraryPaths() {
+		if isLibraryValid(path) {
+			fmt.Printf("Attempting to load ONNX Runtime from: %s\n", path)
+			ort, err = loadLibrary(path)
+			if err == nil {
+				fmt.Printf("Successfully loaded ONNX Runtime from: %s\n", path)
+				break
+			}
+			fmt.Printf("Failed to load from %s: %v\n", path, err)
+		}
 	}
-	defer purego.Dlclose(ort)
+
+	if ort == 0 {
+		log.Fatal("Could not load ONNX Runtime library from any of the attempted paths")
+	}
+	defer func() {
+		if err := closeLibrary(ort); err != nil {
+			log.Printf("Failed to close library: %v", err)
+		}
+	}()
 
 	// Get the OrtApiBase
-	sym, err := purego.Dlsym(ort, "OrtGetApiBase")
+	sym, err := getSymbol(ort, "OrtGetApiBase")
 	if err != nil {
 		log.Fatal(err)
 	}
