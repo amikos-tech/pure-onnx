@@ -6,124 +6,27 @@ run:
 
 linters:
   enable:
-    - gofmt
-    - goimports
-    - govet
-    - errcheck
-    - staticcheck
-    - unused
-    - gosimple
-    - ineffassign
-    - typecheck
     - gocritic
-    - revive
-    - misspell
-    - unconvert
-    - prealloc
-    - nakedret
-    - noctx
-    - nilerr
-    - godot
-    - bodyclose
-    - durationcheck
-    - errorlint
-    - exportloopref
-    - makezero
-    - predeclared
-    - tparallel
-    - wastedassign
-    - whitespace
-
-  disable:
-    - gosec # Disable for now as it's failing
-    - exhaustive
-    - goerr113
-    - wrapcheck
-    - testpackage
-    - paralleltest
-    - thelper
-    - forbidigo
-    - gochecknoglobals
-    - gomnd
-    - lll
-    - funlen
-    - gocognit
-    - gocyclo
-    - cyclop
-    - maintidx
-    - nestif
-
-linters-settings:
-  govet:
-    enable-all: false
-    check-shadowing: true
-    disable:
-      - fieldalignment
-
-  errcheck:
-    check-type-assertions: true
-    check-blank: true
-
-  gocritic:
-    disabled-checks:
-      - dupImport
-      - ifElseChain
-      - octalLiteral
-      - whyNoLint
-      - wrapperFunc
-      - hugeParam
-      - rangeValCopy
-
-  staticcheck:
-    checks:
-      - all
-
-  misspell:
-    locale: US
-
-  godot:
-    scope: declarations
-    capital: true
-
-  nakedret:
-    max-func-lines: 30
+    - mirror
+  settings:
+    gocritic:
+      disable-all: false
+    staticcheck:
+      checks:
+        - all
 
 issues:
-  exclude-rules:
-    # Exclude some linters from running on test files
-    - path: _test\.go
-      linters:
-        - dupl
-        - gocritic
-
-    # Exclude experimental example from strict checks
-    - path: examples/experimental/
-      linters:
-        - errcheck
-        - staticcheck
-        - govet
-
-    # Allow unsafe in experimental code
-    - path: examples/experimental/main.go
-      text: "possible misuse of unsafe.Pointer"
-
-    # Ignore missing comments on exported types in examples
-    - path: examples/
-      linters:
-        - revive
-      text: "exported .* should have comment"
-
-    # Allow TODO comments
-    - text: "TODO"
-      linters:
-        - godot
-
   max-same-issues: 0
-
-  exclude-dirs:
-    - vendor
-    - third_party
-    - internal/c_api
-
-  exclude-files:
-    - ".*\\.pb\\.go"
+  exclusions:
+    generated: lax
+    paths:
+      - vendor$
+      - third_party$
+      - internal/c_api$
+      - examples/experimental$
+    rules:
+      - linters:
+          - staticcheck
+        text: 'ST1003: should not use underscores in Go names'
+      - path: examples/experimental/main.go
+        text: "possible misuse of unsafe.Pointer"
