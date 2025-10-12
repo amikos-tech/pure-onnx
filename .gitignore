@@ -25,6 +25,8 @@ bin/
 
 # Output of the go coverage tool
 *.out
+coverage.html
+*.prof
 
 # Go workspace files
 go.work
@@ -43,6 +45,7 @@ Thumbs.db
 # ONNX Runtime libraries (users should download their own)
 *.onnx
 libonnxruntime*
+third_party/
 
 # Local test models
 models/

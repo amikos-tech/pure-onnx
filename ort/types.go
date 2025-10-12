@@ -110,13 +110,51 @@ type OrtApi struct {
 }
 
 // Status represents an ONNX Runtime status
-type Status uintptr
+// Thread-safe: Status can be shared across goroutines for read operations
+type Status struct {
+	handle uintptr // Pointer to OrtStatus
+}
+
+// IsOK returns true if the status represents success
+func (s *Status) IsOK() bool {
+	return s.handle == 0
+}
+
+// GetErrorCode returns the error code from the status
+func (s *Status) GetErrorCode() ErrorCode {
+	if s.IsOK() {
+		return ErrorCodeOK
+	}
+	// TODO: Implement actual error code retrieval using OrtApi.GetErrorCode
+	return ErrorCodeFail
+}
+
+// GetErrorMessage returns the error message from the status
+func (s *Status) GetErrorMessage() string {
+	if s.IsOK() {
+		return ""
+	}
+	// TODO: Implement actual error message retrieval using OrtApi.GetErrorMessage
+	return "Error occurred"
+}
 
 // Environment represents an ONNX Runtime environment
-type Environment uintptr
+// Thread-safe: Environment is thread-safe and can be shared across multiple sessions
+type Environment struct {
+	handle       uintptr // Pointer to OrtEnv
+	loggingLevel LoggingLevel
+	logID        string
+}
 
-// Session represents an ONNX Runtime session
-type Session uintptr
+// Session represents an ONNX Runtime session for model inference
+// Thread-safe: Session.Run() is thread-safe, multiple threads can call Run() simultaneously
+type Session struct {
+	handle      uintptr // Pointer to OrtSession
+	inputNames  []string
+	outputNames []string
+	inputCount  int
+	outputCount int
+}
 
 // Value represents an ONNX Runtime value (tensor, sequence, map, etc.)
 type Value interface {
@@ -148,10 +186,53 @@ func NewShape(dims ...int64) Shape {
 
 // SessionOptions represents options for creating a session
 type SessionOptions struct {
-	// TODO: Add session options fields as per issue #4
+	handle                 uintptr // Pointer to OrtSessionOptions
+	graphOptimizationLevel GraphOptimizationLevel
+	executionMode          ExecutionMode
+	interOpNumThreads      int
+	intraOpNumThreads      int
+	logSeverityLevel       LoggingLevel
+	logVerbosityLevel      int
+	logID                  string
+	enableCPUMemArena      bool
+	enableMemPattern       bool
+	enableProfiling        bool
+	optimizedModelFilePath string
 }
 
 // MemoryInfo represents memory allocation information
 type MemoryInfo struct {
-	// TODO: Add memory info fields as per issue #5
+	handle        uintptr // Pointer to OrtMemoryInfo
+	name          string
+	id            int
+	memType       MemType
+	allocatorType AllocatorType
+	deviceID      int
+}
+
+// TypeInfo represents type information for an ONNX value
+type TypeInfo struct {
+	handle uintptr // Pointer to OrtTypeInfo
+}
+
+// TensorTypeAndShapeInfo represents tensor type and shape information
+type TensorTypeAndShapeInfo struct {
+	handle      uintptr // Pointer to OrtTensorTypeAndShapeInfo
+	elementType TensorElementDataType
+	shape       Shape
+}
+
+// RunOptions represents options for running inference
+type RunOptions struct {
+	handle            uintptr // Pointer to OrtRunOptions
+	logVerbosityLevel int
+	logSeverityLevel  LoggingLevel
+	runTag            string
+	terminate         bool
+}
+
+// CustomOpDomain represents a custom operator domain
+type CustomOpDomain struct {
+	handle uintptr // Pointer to OrtCustomOpDomain
+	domain string
 }
