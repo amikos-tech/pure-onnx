@@ -103,7 +103,7 @@ vet:
 lint:
 	@echo "$(YELLOW)Running linter...$(NC)"
 	@if command -v golangci-lint &> /dev/null; then \
-		golangci-lint run ./...; \
+		golangci-lint run --fix ./...; \
 		echo "$(GREEN)✓ Linting complete$(NC)"; \
 	else \
 		echo "$(RED)✗ golangci-lint not installed. Run 'make install-tools' first$(NC)"; \
