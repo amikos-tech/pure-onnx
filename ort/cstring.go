@@ -5,51 +5,44 @@ import "unsafe"
 // CstringToGo converts a C null-terminated string pointer to a Go string.
 // The pointer must point to a valid null-terminated string in memory.
 // Returns empty string if ptr is 0 (null).
+//
+// Safety: This function uses byte-by-byte pointer arithmetic to avoid segfaults
+// from creating slices that might cross memory page boundaries into unmapped memory.
+// This is the safest approach for reading C-allocated strings with unknown length.
 func CstringToGo(ptr uintptr) string {
 	if ptr == 0 {
 		return ""
 	}
 
-	// We scan for the null terminator in chunks to avoid potential segfaults
-	// from creating large slices that might cross memory page boundaries.
-	// ONNX Runtime strings (version, error messages) are typically < 1KB,
-	// so we use a conservative chunk size that fits in one memory page (4KB).
-	const chunkSize = 4096 // One page size, safe for most systems
-	const maxChunks = 256  // Maximum 1MB total (256 * 4KB)
-
-	var totalLen int
-	for chunk := 0; chunk < maxChunks; chunk++ {
-		// Get pointer to current chunk
-		chunkPtr := ptr + uintptr(chunk*chunkSize)
-		bytes := unsafe.Slice((*byte)(unsafe.Pointer(chunkPtr)), chunkSize)
-
-		// Scan this chunk for null terminator
-		for i := 0; i < chunkSize; i++ {
-			if bytes[i] == 0 {
-				// Found null terminator - build final string from all chunks
-				totalLen += i
-				if chunk == 0 {
-					// Fast path: string is in first chunk
-					return string(bytes[:i])
-				}
-				// Slow path: concatenate from multiple chunks
-				result := make([]byte, totalLen)
-				copied := 0
-				for c := 0; c < chunk; c++ {
-					srcPtr := ptr + uintptr(c*chunkSize)
-					srcBytes := unsafe.Slice((*byte)(unsafe.Pointer(srcPtr)), chunkSize)
-					copied += copy(result[copied:], srcBytes)
-				}
-				copy(result[copied:], bytes[:i])
-				return string(result)
-			}
+	// Find the length by reading byte-by-byte using pointer arithmetic.
+	// This is safe because we only dereference one byte at a time,
+	// and we trust that the C API provides valid null-terminated strings.
+	// We don't create slices until we know the exact length.
+	var length int
+	const maxStringLen = 1 << 20 // 1MB safety limit
+	for length < maxStringLen {
+		// Read one byte at a time - safe even near page boundaries
+		b := *(*byte)(unsafe.Pointer(ptr + uintptr(length)))
+		if b == 0 {
+			break // Found null terminator
 		}
-		totalLen += chunkSize
+		length++
 	}
 
-	// If we reach here, string exceeds maxChunks * chunkSize (1MB)
-	// This likely indicates memory corruption or an invalid pointer
-	return ""
+	// Check if we hit the limit (likely invalid pointer or corrupted memory)
+	if length >= maxStringLen {
+		return ""
+	}
+
+	// Special case: empty string
+	if length == 0 {
+		return ""
+	}
+
+	// Now that we know the exact length, create a slice and convert to string
+	// This is safe because we verified all bytes exist and found the null terminator
+	bytes := unsafe.Slice((*byte)(unsafe.Pointer(ptr)), length)
+	return string(bytes)
 }
 
 // GoToCstring converts a Go string to a null-terminated byte slice suitable for passing to C functions.
