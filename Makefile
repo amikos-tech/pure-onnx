@@ -5,11 +5,11 @@ GO := go
 GOFLAGS :=
 GOOS := $(shell go env GOOS)
 GOARCH := $(shell go env GOARCH)
-PROJECT_NAME := onnx-purego
+PROJECT_NAME := pure-onnx
 PKG := github.com/amikos-tech/$(PROJECT_NAME)
 
-# ONNX Runtime version
-ORT_VERSION := 1.21.0
+# ONNX Runtime version (supports API v22)
+ORT_VERSION := 1.23.1
 ORT_BASE_URL := https://github.com/microsoft/onnxruntime/releases/download
 
 # Platform detection for ONNX Runtime downloads

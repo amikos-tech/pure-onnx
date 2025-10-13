@@ -1,4 +1,5 @@
 version: "2"
+
 run:
   modules-download-mode: readonly
   timeout: 5m
@@ -8,43 +9,37 @@ linters:
   enable:
     - gocritic
     - mirror
-  settings:
-    gocritic:
-      disable-all: false
-  exclusions:
-    generated: lax
-    presets:
-      - comments
-      - common-false-positives
-      - legacy
-      - std-error-handling
-    rules:
-      - linters:
-          - staticcheck
-        text: 'ST1003: should not use underscores in Go names'
-      - linters:
-          - govet
-        path: examples/experimental/main\.go
-        text: "possible misuse of unsafe.Pointer"
-      - linters:
-          - errcheck
-        path: examples/experimental/
-        text: "Error return value"
-    paths:
-      - third_party$
-      - internal/c_api$
-      - examples/experimental$
+
+linters-settings:
+  gocritic:
+    disabled-checks: []
 
 issues:
   max-same-issues: 0
+  exclude-rules:
+    - linters:
+        - staticcheck
+      text: 'ST1003: should not use underscores in Go names'
+    - linters:
+        - govet
+      path: examples/experimental/main\.go
+      text: "possible misuse of unsafe.Pointer"
+    - linters:
+        - errcheck
+      path: examples/experimental/
+      text: "Error return value"
+  exclude-dirs:
+    - third_party
+    - internal/c_api
+    - examples/experimental
+  exclude-files:
+    - ".*\\.pb\\.go"
 
 formatters:
   enable:
     - gofmt
     - goimports
-  exclusions:
-    generated: lax
-    paths:
-      - third_party$
-      - internal/c_api$
-      - examples/experimental$
+  exclude-dirs:
+    - third_party
+    - internal/c_api
+    - examples/experimental
