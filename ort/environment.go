@@ -58,6 +58,19 @@ func InitializeEnvironment() error {
 		return fmt.Errorf("library path not set, call SetSharedLibraryPath first")
 	}
 
+	// Setup centralized cleanup for error paths
+	var cleanupNeeded = true
+	defer func() {
+		if cleanupNeeded {
+			if ortLib != 0 {
+				_ = closeLibrary(ortLib)
+				ortLib = 0
+			}
+			ortAPI = nil
+			getVersionStringFunc = nil
+		}
+	}()
+
 	var err error
 	ortLib, err = loadLibrary(libPath)
 	if err != nil {
@@ -66,8 +79,6 @@ func InitializeEnvironment() error {
 
 	sym, err := getSymbol(ortLib, "OrtGetApiBase")
 	if err != nil {
-		_ = closeLibrary(ortLib)
-		ortLib = 0
 		return fmt.Errorf("failed to get OrtGetApiBase symbol: %w", err)
 	}
 
@@ -94,12 +105,11 @@ func InitializeEnvironment() error {
 	if status != 0 {
 		errMsg := getErrorMessage(status)
 		releaseStatus(status)
-		_ = closeLibrary(ortLib)
-		ortLib = 0
-		ortAPI = nil
 		return fmt.Errorf("failed to create ONNX Runtime environment: %s", errMsg)
 	}
 
+	// Success - prevent cleanup
+	cleanupNeeded = false
 	refCount = 1
 	return nil
 }
@@ -130,7 +140,7 @@ func DestroyEnvironment() error {
 		//
 		// For now, the OS will clean up the environment on process exit. This is acceptable
 		// for short-lived processes but should be fixed for long-running applications.
-		// See issue: https://github.com/amikos-tech/pure-onnx/issues/XX
+		// See issue: https://github.com/amikos-tech/pure-onnx/issues/20
 		ortEnv = 0
 	}
 
@@ -180,7 +190,15 @@ func SetLogLevel(level LoggingLevel) {
 	logLevel = level
 }
 
-// GetVersionString returns the ONNX Runtime version string
+// GetVersionString returns the ONNX Runtime version string.
+// Returns "0.0.0-dev" if the environment is not initialized.
+//
+// Thread-safety: This function is safe to call concurrently from multiple goroutines.
+// It uses a mutex to protect access to the version string function pointer, ensuring
+// that the pointer remains valid throughout the call even if another goroutine calls
+// DestroyEnvironment() concurrently. The mutex guarantees that either:
+// 1. GetVersionString() completes before DestroyEnvironment() starts, or
+// 2. DestroyEnvironment() completes before GetVersionString() starts
 func GetVersionString() string {
 	mu.Lock()
 	defer mu.Unlock()
