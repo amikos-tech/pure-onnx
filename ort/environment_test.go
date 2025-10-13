@@ -2,6 +2,7 @@ package ort
 
 import (
 	"os"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -17,6 +18,8 @@ func resetEnvironmentState() {
 	libPath = ""
 	logLevel = LoggingLevelWarning
 	getVersionStringFunc = nil
+	getErrorMessageFunc = nil
+	releaseStatusFunc = nil
 }
 
 func TestIsInitialized(t *testing.T) {
@@ -43,7 +46,10 @@ func TestSetSharedLibraryPath(t *testing.T) {
 	resetEnvironmentState()
 
 	path := "/test/path/libonnxruntime.so"
-	SetSharedLibraryPath(path)
+	err := SetSharedLibraryPath(path)
+	if err != nil {
+		t.Errorf("unexpected error setting library path: %v", err)
+	}
 
 	mu.Lock()
 	if libPath != path {
@@ -51,13 +57,16 @@ func TestSetSharedLibraryPath(t *testing.T) {
 	}
 	mu.Unlock()
 
-	// Test that changing path after init does nothing
+	// Test that changing path after init returns an error
 	mu.Lock()
 	refCount = 1
 	mu.Unlock()
 
 	newPath := "/different/path.so"
-	SetSharedLibraryPath(newPath)
+	err = SetSharedLibraryPath(newPath)
+	if err == nil {
+		t.Error("expected error when setting library path after initialization")
+	}
 
 	mu.Lock()
 	if libPath != path {
@@ -80,7 +89,10 @@ func TestSetLogLevel(t *testing.T) {
 	}
 
 	for _, level := range tests {
-		SetLogLevel(level)
+		err := SetLogLevel(level)
+		if err != nil {
+			t.Errorf("unexpected error setting log level: %v", err)
+		}
 
 		mu.Lock()
 		if logLevel != level {
@@ -89,13 +101,19 @@ func TestSetLogLevel(t *testing.T) {
 		mu.Unlock()
 	}
 
-	// Test that changing level after init does nothing
-	SetLogLevel(LoggingLevelWarning)
+	// Test that changing level after init returns an error
+	err := SetLogLevel(LoggingLevelWarning)
+	if err != nil {
+		t.Errorf("unexpected error setting log level: %v", err)
+	}
 	mu.Lock()
 	refCount = 1
 	mu.Unlock()
 
-	SetLogLevel(LoggingLevelError)
+	err = SetLogLevel(LoggingLevelError)
+	if err == nil {
+		t.Error("expected error when setting log level after initialization")
+	}
 
 	mu.Lock()
 	if logLevel != LoggingLevelWarning {
@@ -217,7 +235,9 @@ func TestConcurrentInitialization(t *testing.T) {
 	resetEnvironmentState()
 
 	// Set a dummy library path
-	SetSharedLibraryPath("/nonexistent/path.so")
+	if err := SetSharedLibraryPath("/nonexistent/path.so"); err != nil {
+		t.Fatalf("unexpected error setting library path: %v", err)
+	}
 
 	var wg sync.WaitGroup
 	concurrency := 10
@@ -287,7 +307,9 @@ func TestInitializeWithActualLibrary(t *testing.T) {
 
 	resetEnvironmentState()
 
-	SetSharedLibraryPath(libPath)
+	if err := SetSharedLibraryPath(libPath); err != nil {
+		t.Fatalf("failed to set library path: %v", err)
+	}
 
 	err := InitializeEnvironment()
 	if err != nil {
@@ -346,4 +368,75 @@ func TestGetErrorMessageWithNullStatus(t *testing.T) {
 func TestReleaseStatusWithNullStatus(t *testing.T) {
 	// Should not panic
 	releaseStatus(0)
+}
+
+// Error path tests with real failure conditions
+
+func TestInitializeWithNonExistentLibrary(t *testing.T) {
+	resetEnvironmentState()
+
+	if err := SetSharedLibraryPath("/nonexistent/path/libonnxruntime.so"); err != nil {
+		t.Fatalf("unexpected error setting library path: %v", err)
+	}
+
+	err := InitializeEnvironment()
+	if err == nil {
+		t.Error("expected error when loading non-existent library")
+	}
+	if err != nil && !strings.Contains(err.Error(), "failed to load ONNX Runtime library") {
+		t.Errorf("expected load error, got: %v", err)
+	}
+
+	resetEnvironmentState()
+}
+
+func TestInitializeWithInvalidLibrary(t *testing.T) {
+	resetEnvironmentState()
+
+	// Use the test binary itself as an invalid library
+	// It exists as a file but doesn't have the ONNX Runtime symbols
+	if err := SetSharedLibraryPath("/bin/sh"); err != nil {
+		t.Fatalf("unexpected error setting library path: %v", err)
+	}
+
+	err := InitializeEnvironment()
+	if err == nil {
+		t.Error("expected error when loading invalid library")
+		_ = DestroyEnvironment() // Clean up if it somehow succeeded
+	}
+
+	resetEnvironmentState()
+}
+
+func TestMultipleInitializeAfterDestroy(t *testing.T) {
+	resetEnvironmentState()
+
+	// Set library path
+	if err := SetSharedLibraryPath("/nonexistent/path.so"); err != nil {
+		t.Fatalf("unexpected error setting library path: %v", err)
+	}
+
+	// Simulate a successful initialization
+	mu.Lock()
+	refCount = 1
+	mu.Unlock()
+
+	// Destroy
+	err := DestroyEnvironment()
+	if err != nil {
+		t.Errorf("unexpected error on destroy: %v", err)
+	}
+
+	// Should be able to set library path again after destroy
+	if err := SetSharedLibraryPath("/different/path.so"); err != nil {
+		t.Errorf("expected to be able to change library path after destroy, got error: %v", err)
+	}
+
+	mu.Lock()
+	if libPath != "/different/path.so" {
+		t.Errorf("expected libPath to be updated after destroy, got %q", libPath)
+	}
+	mu.Unlock()
+
+	resetEnvironmentState()
 }

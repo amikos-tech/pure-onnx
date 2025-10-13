@@ -35,7 +35,9 @@ import "github.com/amikos-tech/pure-onnx/ort"
 
 func main() {
     // Set the path to your ONNX Runtime library
-    ort.SetSharedLibraryPath("/path/to/libonnxruntime.so") // Linux
+    if err := ort.SetSharedLibraryPath("/path/to/libonnxruntime.so"); err != nil { // Linux
+        log.Fatal(err)
+    }
     // ort.SetSharedLibraryPath("/path/to/libonnxruntime.dylib") // macOS
     // ort.SetSharedLibraryPath("/path/to/onnxruntime.dll") // Windows
 

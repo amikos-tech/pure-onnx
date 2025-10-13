@@ -10,26 +10,46 @@ func CstringToGo(ptr uintptr) string {
 		return ""
 	}
 
-	// Find the null terminator using a large but valid slice.
-	// We use a conservative max length (1MB) to avoid checkptr issues when scanning
-	// C-allocated memory. This is safe because:
-	// 1. We only read up to the null terminator, not the entire 1MB
-	// 2. ONNX Runtime strings (version, error messages, etc.) are typically < 1KB
-	// 3. If a string exceeds 1MB, it likely indicates memory corruption
-	const maxStringLen = 1 << 20 // 1MB maximum string length
-	bytes := unsafe.Slice((*byte)(unsafe.Pointer(ptr)), maxStringLen)
+	// We scan for the null terminator in chunks to avoid potential segfaults
+	// from creating large slices that might cross memory page boundaries.
+	// ONNX Runtime strings (version, error messages) are typically < 1KB,
+	// so we use a conservative chunk size that fits in one memory page (4KB).
+	const chunkSize = 4096 // One page size, safe for most systems
+	const maxChunks = 256  // Maximum 1MB total (256 * 4KB)
 
-	// Find null terminator
-	var length int
-	for i := 0; i < maxStringLen; i++ {
-		if bytes[i] == 0 {
-			length = i
-			break
+	var totalLen int
+	for chunk := 0; chunk < maxChunks; chunk++ {
+		// Get pointer to current chunk
+		chunkPtr := ptr + uintptr(chunk*chunkSize)
+		bytes := unsafe.Slice((*byte)(unsafe.Pointer(chunkPtr)), chunkSize)
+
+		// Scan this chunk for null terminator
+		for i := 0; i < chunkSize; i++ {
+			if bytes[i] == 0 {
+				// Found null terminator - build final string from all chunks
+				totalLen += i
+				if chunk == 0 {
+					// Fast path: string is in first chunk
+					return string(bytes[:i])
+				}
+				// Slow path: concatenate from multiple chunks
+				result := make([]byte, totalLen)
+				copied := 0
+				for c := 0; c < chunk; c++ {
+					srcPtr := ptr + uintptr(c*chunkSize)
+					srcBytes := unsafe.Slice((*byte)(unsafe.Pointer(srcPtr)), chunkSize)
+					copied += copy(result[copied:], srcBytes)
+				}
+				copy(result[copied:], bytes[:i])
+				return string(result)
+			}
 		}
+		totalLen += chunkSize
 	}
 
-	// Return string from found length
-	return string(bytes[:length])
+	// If we reach here, string exceeds maxChunks * chunkSize (1MB)
+	// This likely indicates memory corruption or an invalid pointer
+	return ""
 }
 
 // GoToCstring converts a Go string to a null-terminated byte slice suitable for passing to C functions.

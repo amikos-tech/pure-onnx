@@ -18,29 +18,27 @@ var (
 	libPath              string
 	logLevel             LoggingLevel = LoggingLevelWarning // Default to Warning
 	getVersionStringFunc func() uintptr
+	getErrorMessageFunc  func(uintptr) uintptr
+	releaseStatusFunc    func(uintptr)
 )
 
 // getErrorMessage extracts the error message from an ORT status code.
-// Returns empty string if status is 0 (success) or if ortAPI is not initialized.
+// Returns empty string if status is 0 (success) or if the function is not initialized.
 func getErrorMessage(status uintptr) string {
-	if status == 0 || ortAPI == nil {
+	if status == 0 || getErrorMessageFunc == nil {
 		return ""
 	}
 
-	var getErrorMessageFunc func(uintptr) uintptr
-	purego.RegisterFunc(&getErrorMessageFunc, ortAPI.GetErrorMessage)
 	msgPtr := getErrorMessageFunc(status)
 	return CstringToGo(msgPtr)
 }
 
 // releaseStatus releases an ORT status object to prevent memory leaks.
 func releaseStatus(status uintptr) {
-	if status == 0 || ortAPI == nil {
+	if status == 0 || releaseStatusFunc == nil {
 		return
 	}
 
-	var releaseStatusFunc func(uintptr)
-	purego.RegisterFunc(&releaseStatusFunc, ortAPI.ReleaseStatus)
 	releaseStatusFunc(status)
 }
 
@@ -68,6 +66,8 @@ func InitializeEnvironment() error {
 			}
 			ortAPI = nil
 			getVersionStringFunc = nil
+			getErrorMessageFunc = nil
+			releaseStatusFunc = nil
 		}
 	}()
 
@@ -95,6 +95,10 @@ func InitializeEnvironment() error {
 	// The OrtApi struct layout exactly matches the C API struct returned by GetApi.
 	// This pattern is the standard way to use purego for calling C libraries without CGO.
 	ortAPI = (*OrtApi)(unsafe.Pointer(apiPtr))
+
+	// Register frequently-used API functions once to avoid repeated RegisterFunc calls
+	purego.RegisterFunc(&getErrorMessageFunc, ortAPI.GetErrorMessage)
+	purego.RegisterFunc(&releaseStatusFunc, ortAPI.ReleaseStatus)
 
 	var createEnv func(logLevel int32, logID uintptr, out *uintptr) uintptr
 	purego.RegisterFunc(&createEnv, ortAPI.CreateEnv)
@@ -153,6 +157,8 @@ func DestroyEnvironment() error {
 
 	ortAPI = nil
 	getVersionStringFunc = nil
+	getErrorMessageFunc = nil
+	releaseStatusFunc = nil
 
 	return nil
 }
@@ -166,28 +172,30 @@ func IsInitialized() bool {
 
 // SetSharedLibraryPath sets the path to the ONNX Runtime shared library.
 // This must be called before InitializeEnvironment().
-func SetSharedLibraryPath(path string) {
+// Returns an error if the environment is already initialized.
+func SetSharedLibraryPath(path string) error {
 	mu.Lock()
 	defer mu.Unlock()
 	if refCount > 0 {
-		// Warn but don't error - changing path after init won't affect running env
-		return
+		return fmt.Errorf("cannot change library path after environment is initialized (current refCount: %d)", refCount)
 	}
 	libPath = path
+	return nil
 }
 
 // SetLogLevel sets the logging level for the ONNX Runtime environment.
 // This must be called before InitializeEnvironment() to take effect.
 // Valid levels are: LoggingLevelVerbose, LoggingLevelInfo, LoggingLevelWarning, LoggingLevelError, LoggingLevelFatal.
 // Default is LoggingLevelWarning.
-func SetLogLevel(level LoggingLevel) {
+// Returns an error if the environment is already initialized.
+func SetLogLevel(level LoggingLevel) error {
 	mu.Lock()
 	defer mu.Unlock()
 	if refCount > 0 {
-		// Warn but don't error - changing level after init won't affect running env
-		return
+		return fmt.Errorf("cannot change log level after environment is initialized (current refCount: %d)", refCount)
 	}
 	logLevel = level
+	return nil
 }
 
 // GetVersionString returns the ONNX Runtime version string.
