@@ -10,23 +10,22 @@ func CstringToGo(ptr uintptr) string {
 		return ""
 	}
 
-	// Cast to byte array pointer with maximum possible size (1GB = 1 << 30).
-	// This is sufficient for all practical C strings. The actual string length
-	// is determined by finding the null terminator, so we never read beyond
-	// the valid memory region. On 64-bit systems, strings larger than 1GB are
-	// not supported by this implementation, but such strings are extremely
-	// rare in practice and not expected from ONNX Runtime APIs.
-	p := (*[1 << 30]byte)(unsafe.Pointer(ptr))
+	// Find the null terminator using a large but valid slice
+	// We use a conservative max length to avoid checkptr issues
+	const maxStringLen = 1 << 20 // 1MB max string length
+	bytes := unsafe.Slice((*byte)(unsafe.Pointer(ptr)), maxStringLen)
 
-	// Find the null terminator
-	n := 0
-	for p[n] != 0 {
-		n++
+	// Find null terminator
+	var length int
+	for i := 0; i < maxStringLen; i++ {
+		if bytes[i] == 0 {
+			length = i
+			break
+		}
 	}
 
-	// Create Go string from the bytes up to (not including) null terminator
-	// Use three-index slice to set capacity = length, preventing append from modifying underlying C memory
-	return string(p[:n:n])
+	// Return string from found length
+	return string(bytes[:length])
 }
 
 // GoToCstring converts a Go string to a null-terminated byte slice suitable for passing to C functions.
