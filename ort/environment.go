@@ -54,6 +54,9 @@ func InitializeEnvironment() error {
 	var getApi func(uint32) uintptr
 	purego.RegisterFunc(&getApi, apiBase.GetApi)
 	apiPtr := getApi(ORT_API_VERSION)
+	// #nosec G103 -- This unsafe conversion is required for purego FFI.
+	// The OrtApi struct layout exactly matches the C API struct returned by GetApi.
+	// This pattern is the standard way to use purego for calling C libraries without CGO.
 	ortAPI = (*OrtApi)(unsafe.Pointer(apiPtr))
 
 	var createEnv func(logLevel int32, logID uintptr, out *uintptr) uintptr

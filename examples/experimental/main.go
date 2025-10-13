@@ -36,13 +36,13 @@ func main() {
 	// This will be refactored into the ort package
 
 	// Try to load the ONNX Runtime shared library from various paths
-	var ort uintptr
+	var ortLibHandle uintptr
 	var err error
 
 	for _, path := range getTestLibraryPaths() {
 		if isLibraryValid(path) {
 			fmt.Printf("Attempting to load ONNX Runtime from: %s\n", path)
-			ort, err = loadLibrary(path)
+			ortLibHandle, err = loadLibrary(path)
 			if err == nil {
 				fmt.Printf("Successfully loaded ONNX Runtime from: %s\n", path)
 				break
@@ -51,17 +51,17 @@ func main() {
 		}
 	}
 
-	if ort == 0 {
+	if ortLibHandle == 0 {
 		log.Fatal("Could not load ONNX Runtime library from any of the attempted paths")
 	}
 	defer func() {
-		if err := closeLibrary(ort); err != nil {
+		if err := closeLibrary(ortLibHandle); err != nil {
 			log.Printf("Failed to close library: %v", err)
 		}
 	}()
 
 	// Get the OrtApiBase
-	sym, err := getSymbol(ort, "OrtGetApiBase")
+	sym, err := getSymbol(ortLibHandle, "OrtGetApiBase")
 	if err != nil {
 		log.Fatal(err)
 	}
