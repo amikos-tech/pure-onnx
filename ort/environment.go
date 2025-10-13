@@ -1,16 +1,26 @@
 package ort
 
+/*
+#include <stdlib.h>
+*/
+import "C"
+
 import (
 	"fmt"
 	"sync"
+	"unsafe"
+
+	"github.com/ebitengine/purego"
 )
 
 var (
-	mu          sync.Mutex
-	initialized bool
-	ortLib      uintptr
-	ortAPI      *OrtApi
-	libPath     string
+	mu                   sync.Mutex
+	refCount             int
+	ortLib               uintptr
+	ortAPI               *OrtApi
+	ortEnv               uintptr
+	libPath              string
+	getVersionStringFunc func() *C.char
 )
 
 // InitializeEnvironment initializes the ONNX Runtime environment
@@ -18,13 +28,54 @@ func InitializeEnvironment() error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if initialized {
+	if refCount > 0 {
+		refCount++
 		return nil
 	}
 
-	// TODO: Implement environment initialization
-	// This is a placeholder that will be implemented as per issue #2
-	return fmt.Errorf("not yet implemented")
+	if libPath == "" {
+		return fmt.Errorf("library path not set, call SetSharedLibraryPath first")
+	}
+
+	var err error
+	ortLib, err = loadLibrary(libPath)
+	if err != nil {
+		return fmt.Errorf("failed to load ONNX Runtime library: %w", err)
+	}
+
+	sym, err := getSymbol(ortLib, "OrtGetApiBase")
+	if err != nil {
+		_ = closeLibrary(ortLib)
+		ortLib = 0
+		return fmt.Errorf("failed to get OrtGetApiBase symbol: %w", err)
+	}
+
+	var ortGetApiBase func() *OrtApiBase
+	purego.RegisterFunc(&ortGetApiBase, sym)
+	apiBase := ortGetApiBase()
+
+	purego.RegisterFunc(&getVersionStringFunc, apiBase.GetVersionString)
+
+	var getApi func(uint32) uintptr
+	purego.RegisterFunc(&getApi, apiBase.GetApi)
+	ortAPI = (*OrtApi)(unsafe.Pointer(getApi(ORT_API_VERSION))) //nolint:govet
+
+	var createEnv func(logLevel int32, logID *C.char, out *uintptr) uintptr
+	purego.RegisterFunc(&createEnv, ortAPI.CreateEnv)
+
+	logID := C.CString("onnx-purego")
+	defer C.free(unsafe.Pointer(logID))
+
+	status := createEnv(int32(LoggingLevelWarning), logID, &ortEnv)
+	if status != 0 {
+		_ = closeLibrary(ortLib)
+		ortLib = 0
+		ortAPI = nil
+		return fmt.Errorf("failed to create ONNX Runtime environment (status: %d)", status)
+	}
+
+	refCount = 1
+	return nil
 }
 
 // DestroyEnvironment cleans up the ONNX Runtime environment
@@ -32,20 +83,40 @@ func DestroyEnvironment() error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if !initialized {
+	if refCount == 0 {
 		return nil
 	}
 
-	// TODO: Implement environment cleanup
-	// This is a placeholder that will be implemented as per issue #2
-	return fmt.Errorf("not yet implemented")
+	refCount--
+	if refCount > 0 {
+		return nil
+	}
+
+	if ortAPI != nil && ortEnv != 0 {
+		// TODO: Fix OrtApi struct layout to properly call ReleaseEnv
+		// For now, skip calling ReleaseEnv as the struct offsets may not match the C API exactly
+		// This will be addressed when we properly verify the OrtApi struct layout
+		ortEnv = 0
+	}
+
+	if ortLib != 0 {
+		if err := closeLibrary(ortLib); err != nil {
+			return fmt.Errorf("failed to close ONNX Runtime library: %w", err)
+		}
+		ortLib = 0
+	}
+
+	ortAPI = nil
+	getVersionStringFunc = nil
+
+	return nil
 }
 
 // IsInitialized returns true if the environment is initialized
 func IsInitialized() bool {
 	mu.Lock()
 	defer mu.Unlock()
-	return initialized
+	return refCount > 0
 }
 
 // SetSharedLibraryPath sets the path to the ONNX Runtime shared library
@@ -57,7 +128,13 @@ func SetSharedLibraryPath(path string) {
 
 // GetVersionString returns the ONNX Runtime version string
 func GetVersionString() string {
-	// TODO: Implement version retrieval
-	// This is a placeholder that will be implemented as per issue #2
-	return "0.0.0-dev"
+	mu.Lock()
+	defer mu.Unlock()
+
+	if refCount == 0 || getVersionStringFunc == nil {
+		return "0.0.0-dev"
+	}
+
+	version := C.GoString(getVersionStringFunc())
+	return version
 }
