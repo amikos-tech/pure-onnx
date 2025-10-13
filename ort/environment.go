@@ -2,6 +2,7 @@ package ort
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -89,7 +90,7 @@ func InitializeEnvironment() error {
 
 	logIDBytes, logIDPtr := GoToCstring("onnx-purego")
 	status := createEnv(int32(logLevel), logIDPtr, &ortEnv)
-	_ = logIDBytes // Keep bytes alive during C call
+	runtime.KeepAlive(logIDBytes) // Prevent GC from collecting bytes during C call
 	if status != 0 {
 		errMsg := getErrorMessage(status)
 		releaseStatus(status)

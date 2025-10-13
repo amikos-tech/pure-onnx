@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"runtime"
 	"unsafe"
 
 	"github.com/amikos-tech/pure-onnx/ort"
@@ -90,7 +91,7 @@ func main() {
 	var env *OrtEnv
 	logIDBytes, logIDPtr := ort.GoToCstring("onnx_env")
 	status := CreateEnv(2, logIDPtr, &env)
-	_ = logIDBytes // Keep bytes alive during C call
+	runtime.KeepAlive(logIDBytes) // Prevent GC from collecting bytes during C call
 	if status != 0 {
 		fmt.Println("Error creating environment:", status)
 		return

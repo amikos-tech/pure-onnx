@@ -10,9 +10,13 @@ func CstringToGo(ptr uintptr) string {
 		return ""
 	}
 
-	// Find the null terminator using a large but valid slice
-	// We use a conservative max length to avoid checkptr issues
-	const maxStringLen = 1 << 20 // 1MB max string length
+	// Find the null terminator using a large but valid slice.
+	// We use a conservative max length (1MB) to avoid checkptr issues when scanning
+	// C-allocated memory. This is safe because:
+	// 1. We only read up to the null terminator, not the entire 1MB
+	// 2. ONNX Runtime strings (version, error messages, etc.) are typically < 1KB
+	// 3. If a string exceeds 1MB, it likely indicates memory corruption
+	const maxStringLen = 1 << 20 // 1MB maximum string length
 	bytes := unsafe.Slice((*byte)(unsafe.Pointer(ptr)), maxStringLen)
 
 	// Find null terminator
