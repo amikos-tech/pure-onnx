@@ -58,7 +58,8 @@ func InitializeEnvironment() error {
 
 	var getApi func(uint32) uintptr
 	purego.RegisterFunc(&getApi, apiBase.GetApi)
-	ortAPI = (*OrtApi)(unsafe.Pointer(getApi(ORT_API_VERSION))) //nolint:govet
+	apiPtr := getApi(ORT_API_VERSION)
+	ortAPI = (*OrtApi)(unsafe.Pointer(apiPtr))
 
 	var createEnv func(logLevel int32, logID *C.char, out *uintptr) uintptr
 	purego.RegisterFunc(&createEnv, ortAPI.CreateEnv)
