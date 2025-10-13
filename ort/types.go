@@ -121,6 +121,7 @@ func (s *Status) IsOK() bool {
 }
 
 // GetErrorCode returns the error code from the status
+// TODO: This method is not fully implemented yet - currently returns ErrorCodeFail for any error
 func (s *Status) GetErrorCode() ErrorCode {
 	if s.IsOK() {
 		return ErrorCodeOK
@@ -130,6 +131,7 @@ func (s *Status) GetErrorCode() ErrorCode {
 }
 
 // GetErrorMessage returns the error message from the status
+// TODO: This method is not fully implemented yet - currently returns generic message
 func (s *Status) GetErrorMessage() string {
 	if s.IsOK() {
 		return ""

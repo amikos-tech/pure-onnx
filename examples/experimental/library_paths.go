@@ -31,7 +31,6 @@ func getTestLibraryPaths() []string {
 			"/usr/local/lib/libonnxruntime.dylib",
 			"/opt/homebrew/lib/libonnxruntime.dylib",
 			"./third_party/onnxruntime/lib/libonnxruntime.dylib",
-			"/Users/tazarov/Downloads/onnxruntime-osx-arm64-1.21.0/lib/libonnxruntime.1.21.0.dylib", // Dev path
 		}
 	case "linux":
 		return []string{

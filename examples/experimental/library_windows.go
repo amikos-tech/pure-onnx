@@ -22,6 +22,8 @@ func getSymbol(handle uintptr, symbol string) (uintptr, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Safe: Converting proc address to uintptr for immediate use with purego.RegisterFunc
+	// The library handle ensures the proc address remains valid during usage
 	return uintptr(unsafe.Pointer(proc)), nil
 }
 
