@@ -6,12 +6,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a pure-Go implementation of Microsoft ONNX Runtime (ORT) bindings that uses `purego` instead of cgo to dynamically load and call the ONNX Runtime C API. The project aims to provide a Go-native interface to ONNX Runtime without requiring CGO compilation.
 
+## 🚨 CRITICAL: NO CGO POLICY
+
+**ABSOLUTELY NO CGO ALLOWED IN THE `ort/` PACKAGE!**
+
+- ❌ **NEVER** use `import "C"`
+- ❌ **NEVER** use CGO types (`*C.char`, `C.int`, etc.)
+- ❌ **NEVER** use CGO functions (`C.CString`, `C.GoString`, `C.free`, etc.)
+- ✅ **ALWAYS** use pure Go with `unsafe` package for C interop
+- ✅ **ALWAYS** use `uintptr` for all C pointers
+- ✅ **ALWAYS** use custom string conversion functions (see `ort/cstring.go`)
+
+**Why?** The entire purpose of this project is to avoid CGO compilation. Using CGO defeats the core value proposition: no C compiler needed, cross-compilation support, faster builds, cleaner dependencies.
+
 ## Key Architecture
 
 - **Dynamic Library Loading**: Uses `github.com/ebitengine/purego` to load the ONNX Runtime shared library (`.dylib`/`.so`/`.dll`) at runtime
 - **C API Mapping**: Maps ONNX Runtime C API structures (`OrtApiBase`, `OrtApi`) directly to Go structs with uintptr fields for function pointers
 - **Function Registration**: Uses `purego.RegisterFunc()` to bind C function pointers to Go function types
-- **Memory Management**: Uses C.CString for string conversion and manual memory management with C.free
+- **String Conversion**: Uses pure Go functions in `ort/cstring.go` to convert between Go strings and C null-terminated strings without CGO
+- **Memory Management**: Manual byte slice management with careful GC pinning to prevent premature collection
 
 ## Build and Development Commands
 

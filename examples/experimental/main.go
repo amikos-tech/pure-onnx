@@ -2,16 +2,12 @@
 // This code is preserved for reference during development
 package main
 
-/*
-#include <stdlib.h>
-*/
-import "C"
-
 import (
 	"fmt"
 	"log"
 	"unsafe"
 
+	"github.com/amikos-tech/pure-onnx/ort"
 	"github.com/ebitengine/purego"
 )
 
@@ -75,9 +71,10 @@ func main() {
 	apiBase := OrtGetApiBase()
 
 	// Get version string
-	var GetVersionString func() *C.char
+	var GetVersionString func() uintptr
 	purego.RegisterFunc(&GetVersionString, apiBase.GetVersionString)
-	version := C.GoString(GetVersionString())
+	versionPtr := GetVersionString()
+	version := ort.CstringToGo(versionPtr)
 	fmt.Println("ONNX Runtime version:", version)
 
 	// Get the OrtApi
@@ -87,14 +84,13 @@ func main() {
 	api := (*OrtApi)(unsafe.Pointer(GetApi(ORT_API_VERSION)))
 
 	// Create environment
-	var CreateEnv func(logLevel int32, logID *C.char, out **OrtEnv) OrtStatus
+	var CreateEnv func(logLevel int32, logID uintptr, out **OrtEnv) OrtStatus
 	purego.RegisterFunc(&CreateEnv, api.CreateEnv)
 
 	var env *OrtEnv
-	logID := C.CString("onnx_env")
-	defer C.free(unsafe.Pointer(logID))
-
-	status := CreateEnv(2, logID, &env)
+	logIDBytes, logIDPtr := ort.GoToCstring("onnx_env")
+	status := CreateEnv(2, logIDPtr, &env)
+	_ = logIDBytes // Keep bytes alive during C call
 	if status != 0 {
 		fmt.Println("Error creating environment:", status)
 		return

@@ -1,10 +1,5 @@
 package ort
 
-/*
-#include <stdlib.h>
-*/
-import "C"
-
 import (
 	"fmt"
 	"sync"
@@ -20,7 +15,7 @@ var (
 	ortAPI               *OrtApi
 	ortEnv               uintptr
 	libPath              string
-	getVersionStringFunc func() *C.char
+	getVersionStringFunc func() uintptr
 )
 
 // InitializeEnvironment initializes the ONNX Runtime environment
@@ -61,13 +56,12 @@ func InitializeEnvironment() error {
 	apiPtr := getApi(ORT_API_VERSION)
 	ortAPI = (*OrtApi)(unsafe.Pointer(apiPtr))
 
-	var createEnv func(logLevel int32, logID *C.char, out *uintptr) uintptr
+	var createEnv func(logLevel int32, logID uintptr, out *uintptr) uintptr
 	purego.RegisterFunc(&createEnv, ortAPI.CreateEnv)
 
-	logID := C.CString("onnx-purego")
-	defer C.free(unsafe.Pointer(logID))
-
-	status := createEnv(int32(LoggingLevelWarning), logID, &ortEnv)
+	logIDBytes, logIDPtr := GoToCstring("onnx-purego")
+	status := createEnv(int32(LoggingLevelWarning), logIDPtr, &ortEnv)
+	_ = logIDBytes // Keep bytes alive during C call
 	if status != 0 {
 		_ = closeLibrary(ortLib)
 		ortLib = 0
@@ -136,6 +130,6 @@ func GetVersionString() string {
 		return "0.0.0-dev"
 	}
 
-	version := C.GoString(getVersionStringFunc())
-	return version
+	versionPtr := getVersionStringFunc()
+	return CstringToGo(versionPtr)
 }
