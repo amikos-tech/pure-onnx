@@ -3,8 +3,6 @@ package ort
 import (
 	"fmt"
 	"sync"
-
-	"github.com/ebitengine/purego"
 )
 
 var (

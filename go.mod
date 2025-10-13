@@ -1,5 +1,7 @@
-module github.com/amikos-tech/onnx-purego
+module github.com/amikos-tech/pure-onnx
 
-go 1.21
+go 1.24.0
 
 require github.com/ebitengine/purego v0.8.2
+
+require golang.org/x/sys v0.37.0

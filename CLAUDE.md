@@ -44,3 +44,4 @@ go run main2.go
 - Can create and release ORT sessions
 - Loads ONNX models from file paths
 - Basic error handling through OrtStatus returns
+- always use feature branches for all changes and create PRs for those

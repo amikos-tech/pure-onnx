@@ -1,0 +1,45 @@
+version: "2"
+
+run:
+  modules-download-mode: readonly
+  timeout: 5m
+  concurrency: 8
+
+linters:
+  enable:
+    - gocritic
+    - mirror
+
+linters-settings:
+  gocritic:
+    disabled-checks: []
+
+issues:
+  max-same-issues: 0
+  exclude-rules:
+    - linters:
+        - staticcheck
+      text: 'ST1003: should not use underscores in Go names'
+    - linters:
+        - govet
+      path: examples/experimental/main\.go
+      text: "possible misuse of unsafe.Pointer"
+    - linters:
+        - errcheck
+      path: examples/experimental/
+      text: "Error return value"
+  exclude-dirs:
+    - third_party
+    - internal/c_api
+    - examples/experimental
+  exclude-files:
+    - ".*\\.pb\\.go"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclude-dirs:
+    - third_party
+    - internal/c_api
+    - examples/experimental

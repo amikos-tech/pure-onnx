@@ -19,7 +19,7 @@ This library provides Go bindings for [ONNX Runtime](https://onnxruntime.ai/) wi
 ## Installation
 
 ```bash
-go get github.com/amikos-tech/onnx-purego
+go get github.com/amikos-tech/pure-onnx
 ```
 
 ## Prerequisites
@@ -31,7 +31,7 @@ You need to have ONNX Runtime installed on your system. Download the appropriate
 Set the library path before running your application:
 
 ```go
-import "github.com/amikos-tech/onnx-purego/ort"
+import "github.com/amikos-tech/pure-onnx/ort"
 
 func main() {
     // Set the path to your ONNX Runtime library
@@ -58,7 +58,7 @@ package main
 import (
     "fmt"
     "log"
-    "github.com/amikos-tech/onnx-purego/ort"
+    "github.com/amikos-tech/pure-onnx/ort"
 )
 
 func main() {
@@ -77,7 +77,7 @@ func main() {
 
 ## Project Status
 
-This project is under active development. See our [GitHub Issues](https://github.com/amikos-tech/onnx-purego/issues) for the development roadmap.
+This project is under active development. See our [GitHub Issues](https://github.com/amikos-tech/pure-onnx/issues) for the development roadmap.
 
 ### Current Focus
 
