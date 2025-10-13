@@ -4,13 +4,27 @@ import "unsafe"
 
 // CstringToGo converts a C null-terminated string pointer to a Go string.
 // The pointer must point to a valid null-terminated string in memory.
-// Returns empty string if ptr is 0 (null).
+// Returns empty string if ptr is 0 (null) or if the pointer appears invalid.
 //
 // Safety: This function uses byte-by-byte pointer arithmetic to avoid segfaults
 // from creating slices that might cross memory page boundaries into unmapped memory.
 // This is the safest approach for reading C-allocated strings with unknown length.
+//
+// The function includes defensive checks to detect corrupted or malicious pointers:
+// - Rejects null pointers (ptr == 0)
+// - Rejects low addresses (ptr < 4096) which are typically reserved/unmapped
+// - Limits maximum string length to 1MB to prevent infinite loops
 func CstringToGo(ptr uintptr) string {
 	if ptr == 0 {
+		return ""
+	}
+
+	// Sanity check: reject pointers to low addresses that are typically reserved
+	// or unmapped on most operating systems (the first page, 0-4095).
+	// This catches null-ish pointers, corrupted pointers, or potential attacks.
+	// Valid C strings from proper libraries will always be well above this range.
+	const minValidAddress = 4096
+	if ptr < minValidAddress {
 		return ""
 	}
 

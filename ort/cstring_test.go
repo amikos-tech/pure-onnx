@@ -88,6 +88,49 @@ func TestCstringToGoNullPointer(t *testing.T) {
 	}
 }
 
+func TestCstringToGoInvalidLowAddresses(t *testing.T) {
+	// Test that low addresses (< 4096) are rejected as invalid
+	testCases := []struct {
+		name string
+		ptr  uintptr
+	}{
+		{"address 1", 1},
+		{"address 100", 100},
+		{"address 1000", 1000},
+		{"address 4095", 4095},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := CstringToGo(tc.ptr)
+			if result != "" {
+				t.Errorf("expected empty string for invalid low address %d, got %q", tc.ptr, result)
+			}
+		})
+	}
+}
+
+func TestCstringToGoValidHighAddress(t *testing.T) {
+	// Test that valid high addresses are processed (when they point to valid strings)
+	// We can't easily test with arbitrary high addresses without causing segfaults,
+	// but we can verify the threshold logic by using valid Go-allocated memory
+
+	// Create a valid C string in Go memory
+	testStr := "test"
+	bytes, ptr := GoToCstring(testStr)
+	defer func() { _ = bytes }() // Keep alive
+
+	// The pointer should be well above 4096 (Go heap addresses are high)
+	if ptr < 4096 {
+		t.Skip("Go allocated memory at unexpectedly low address")
+	}
+
+	result := CstringToGo(ptr)
+	if result != testStr {
+		t.Errorf("expected %q for valid high address, got %q", testStr, result)
+	}
+}
+
 func TestRoundTripConversion(t *testing.T) {
 	tests := []string{
 		"",
