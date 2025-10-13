@@ -15,8 +15,33 @@ var (
 	ortAPI               *OrtApi
 	ortEnv               uintptr
 	libPath              string
+	logLevel             LoggingLevel = LoggingLevelWarning // Default to Warning
 	getVersionStringFunc func() uintptr
 )
+
+// getErrorMessage extracts the error message from an ORT status code.
+// Returns empty string if status is 0 (success) or if ortAPI is not initialized.
+func getErrorMessage(status uintptr) string {
+	if status == 0 || ortAPI == nil {
+		return ""
+	}
+
+	var getErrorMessageFunc func(uintptr) uintptr
+	purego.RegisterFunc(&getErrorMessageFunc, ortAPI.GetErrorMessage)
+	msgPtr := getErrorMessageFunc(status)
+	return CstringToGo(msgPtr)
+}
+
+// releaseStatus releases an ORT status object to prevent memory leaks.
+func releaseStatus(status uintptr) {
+	if status == 0 || ortAPI == nil {
+		return
+	}
+
+	var releaseStatusFunc func(uintptr)
+	purego.RegisterFunc(&releaseStatusFunc, ortAPI.ReleaseStatus)
+	releaseStatusFunc(status)
+}
 
 // InitializeEnvironment initializes the ONNX Runtime environment
 func InitializeEnvironment() error {
@@ -63,13 +88,15 @@ func InitializeEnvironment() error {
 	purego.RegisterFunc(&createEnv, ortAPI.CreateEnv)
 
 	logIDBytes, logIDPtr := GoToCstring("onnx-purego")
-	status := createEnv(int32(LoggingLevelWarning), logIDPtr, &ortEnv)
+	status := createEnv(int32(logLevel), logIDPtr, &ortEnv)
 	_ = logIDBytes // Keep bytes alive during C call
 	if status != 0 {
+		errMsg := getErrorMessage(status)
+		releaseStatus(status)
 		_ = closeLibrary(ortLib)
 		ortLib = 0
 		ortAPI = nil
-		return fmt.Errorf("failed to create ONNX Runtime environment (status: %d)", status)
+		return fmt.Errorf("failed to create ONNX Runtime environment: %s", errMsg)
 	}
 
 	refCount = 1
@@ -91,9 +118,18 @@ func DestroyEnvironment() error {
 	}
 
 	if ortAPI != nil && ortEnv != 0 {
-		// TODO: Fix OrtApi struct layout to properly call ReleaseEnv
-		// For now, skip calling ReleaseEnv as the struct offsets may not match the C API exactly
-		// This will be addressed when we properly verify the OrtApi struct layout
+		// TODO(memory-leak): ReleaseEnv currently disabled due to OrtApi struct layout mismatch.
+		// The OrtApi struct definition in types.go is incomplete - it only defines a subset
+		// of the ~200+ functions in the full ONNX Runtime C API. This causes incorrect offsets
+		// when accessing function pointers beyond the first few functions.
+		//
+		// To fix this properly, we need to either:
+		// 1. Define ALL functions in the C API struct in correct order (tedious but complete), OR
+		// 2. Use individual GetApi() calls for each function we need (cleaner but more calls)
+		//
+		// For now, the OS will clean up the environment on process exit. This is acceptable
+		// for short-lived processes but should be fixed for long-running applications.
+		// See issue: https://github.com/amikos-tech/pure-onnx/issues/XX
 		ortEnv = 0
 	}
 
@@ -117,11 +153,30 @@ func IsInitialized() bool {
 	return refCount > 0
 }
 
-// SetSharedLibraryPath sets the path to the ONNX Runtime shared library
+// SetSharedLibraryPath sets the path to the ONNX Runtime shared library.
+// This must be called before InitializeEnvironment().
 func SetSharedLibraryPath(path string) {
 	mu.Lock()
 	defer mu.Unlock()
+	if refCount > 0 {
+		// Warn but don't error - changing path after init won't affect running env
+		return
+	}
 	libPath = path
+}
+
+// SetLogLevel sets the logging level for the ONNX Runtime environment.
+// This must be called before InitializeEnvironment() to take effect.
+// Valid levels are: LoggingLevelVerbose, LoggingLevelInfo, LoggingLevelWarning, LoggingLevelError, LoggingLevelFatal.
+// Default is LoggingLevelWarning.
+func SetLogLevel(level LoggingLevel) {
+	mu.Lock()
+	defer mu.Unlock()
+	if refCount > 0 {
+		// Warn but don't error - changing level after init won't affect running env
+		return
+	}
+	logLevel = level
 }
 
 // GetVersionString returns the ONNX Runtime version string

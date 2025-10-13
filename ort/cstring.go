@@ -10,8 +10,12 @@ func CstringToGo(ptr uintptr) string {
 		return ""
 	}
 
-	// Cast to byte array pointer with maximum possible size
-	// This is safe because we'll stop at the null terminator
+	// Cast to byte array pointer with maximum possible size (1GB = 1 << 30).
+	// This is sufficient for all practical C strings. The actual string length
+	// is determined by finding the null terminator, so we never read beyond
+	// the valid memory region. On 64-bit systems, strings larger than 1GB are
+	// not supported by this implementation, but such strings are extremely
+	// rare in practice and not expected from ONNX Runtime APIs.
 	p := (*[1 << 30]byte)(unsafe.Pointer(ptr))
 
 	// Find the null terminator
