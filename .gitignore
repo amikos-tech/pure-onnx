@@ -20,6 +20,11 @@ bin/
 *.so
 *.dylib
 
+# Go build outputs
+basic
+experimental-example
+basic-example
+
 # Test binary, built with `go test -c`
 *.test
 
