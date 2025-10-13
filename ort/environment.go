@@ -9,6 +9,11 @@ import (
 	"github.com/ebitengine/purego"
 )
 
+const (
+	// defaultLogID is the default log identifier used when creating the ONNX Runtime environment
+	defaultLogID = "onnx-purego"
+)
+
 var (
 	mu                   sync.Mutex
 	refCount             int
@@ -103,7 +108,7 @@ func InitializeEnvironment() error {
 	var createEnv func(logLevel int32, logID uintptr, out *uintptr) uintptr
 	purego.RegisterFunc(&createEnv, ortAPI.CreateEnv)
 
-	logIDBytes, logIDPtr := GoToCstring("onnx-purego")
+	logIDBytes, logIDPtr := GoToCstring(defaultLogID)
 	status := createEnv(int32(logLevel), logIDPtr, &ortEnv)
 	runtime.KeepAlive(logIDBytes) // Prevent GC from collecting bytes during C call
 	if status != 0 {
@@ -177,7 +182,7 @@ func SetSharedLibraryPath(path string) error {
 	mu.Lock()
 	defer mu.Unlock()
 	if refCount > 0 {
-		return fmt.Errorf("cannot change library path after environment is initialized (current refCount: %d)", refCount)
+		return fmt.Errorf("cannot change library path after environment is initialized")
 	}
 	libPath = path
 	return nil
@@ -192,7 +197,7 @@ func SetLogLevel(level LoggingLevel) error {
 	mu.Lock()
 	defer mu.Unlock()
 	if refCount > 0 {
-		return fmt.Errorf("cannot change log level after environment is initialized (current refCount: %d)", refCount)
+		return fmt.Errorf("cannot change log level after environment is initialized")
 	}
 	logLevel = level
 	return nil

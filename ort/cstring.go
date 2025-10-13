@@ -67,10 +67,19 @@ func CstringToGo(ptr uintptr) string {
 //
 //	logIDBytes, logIDPtr := GoToCstring("my-log-id")
 //	status := cFunction(logIDPtr)  // logIDBytes must stay in scope here
+//	runtime.KeepAlive(logIDBytes)  // Ensure bytes aren't collected during C call
+//
+// Safety: Uses unsafe.SliceData (Go 1.20+) to safely extract the pointer to the slice's
+// backing array. This is safer than &b[0] because SliceData is specifically designed for
+// FFI use cases and prevents GC race conditions where the slice could be moved between
+// taking the pointer and using it.
 func GoToCstring(s string) ([]byte, uintptr) {
 	// Create a null-terminated byte slice
 	b := append([]byte(s), 0)
 
-	// Return both the slice (to keep it alive) and pointer to first byte
-	return b, uintptr(unsafe.Pointer(&b[0]))
+	// Return both the slice (to keep it alive) and pointer to first byte.
+	// Use unsafe.SliceData instead of &b[0] for safer FFI pointer extraction.
+	// SliceData returns a pointer to the underlying array, which is safe even
+	// if the slice header itself is copied, as the backing array won't move.
+	return b, uintptr(unsafe.Pointer(unsafe.SliceData(b)))
 }
