@@ -2,7 +2,8 @@ package ort
 
 const (
 	// ORT_API_VERSION is the current ONNX Runtime API version
-	ORT_API_VERSION = 22
+	// This must match the installed ONNX Runtime library version
+	ORT_API_VERSION = 21
 )
 
 // LoggingLevel represents the logging verbosity level

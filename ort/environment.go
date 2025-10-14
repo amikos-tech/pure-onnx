@@ -139,18 +139,11 @@ func DestroyEnvironment() error {
 	}
 
 	if ortAPI != nil && ortEnv != 0 {
-		// TODO(memory-leak): ReleaseEnv currently disabled due to OrtApi struct layout mismatch.
-		// The OrtApi struct definition in types.go is incomplete - it only defines a subset
-		// of the ~200+ functions in the full ONNX Runtime C API. This causes incorrect offsets
-		// when accessing function pointers beyond the first few functions.
-		//
-		// To fix this properly, we need to either:
-		// 1. Define ALL functions in the C API struct in correct order (tedious but complete), OR
-		// 2. Use individual GetApi() calls for each function we need (cleaner but more calls)
-		//
-		// For now, the OS will clean up the environment on process exit. This is acceptable
-		// for short-lived processes but should be fixed for long-running applications.
-		// See issue: https://github.com/amikos-tech/pure-onnx/issues/20
+		// Now that we have the complete OrtApi struct layout (all 305 functions),
+		// we can properly call ReleaseEnv
+		var releaseEnv func(uintptr)
+		purego.RegisterFunc(&releaseEnv, ortAPI.ReleaseEnv)
+		releaseEnv(ortEnv)
 		ortEnv = 0
 	}
 
