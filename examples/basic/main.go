@@ -28,7 +28,9 @@ func main() {
 		libPath = getDefaultLibraryPath()
 	}
 
-	ort.SetSharedLibraryPath(libPath)
+	if err := ort.SetSharedLibraryPath(libPath); err != nil {
+		log.Fatal("Failed to set library path:", err)
+	}
 
 	err := ort.InitializeEnvironment()
 	if err != nil {

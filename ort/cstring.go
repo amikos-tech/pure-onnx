@@ -36,6 +36,7 @@ func CstringToGo(ptr uintptr) string {
 	const maxStringLen = 1 << 20 // 1MB safety limit
 	for length < maxStringLen {
 		// Read one byte at a time - safe even near page boundaries
+		// #nosec G103 -- Necessary for CGO-free C string reading, pointer is validated above
 		b := *(*byte)(unsafe.Pointer(ptr + uintptr(length)))
 		if b == 0 {
 			break // Found null terminator
@@ -55,6 +56,7 @@ func CstringToGo(ptr uintptr) string {
 
 	// Now that we know the exact length, create a slice and convert to string
 	// This is safe because we verified all bytes exist and found the null terminator
+	// #nosec G103 -- Required for CGO-free FFI, length verified and null terminator found
 	bytes := unsafe.Slice((*byte)(unsafe.Pointer(ptr)), length)
 	return string(bytes)
 }
@@ -81,5 +83,6 @@ func GoToCstring(s string) ([]byte, uintptr) {
 	// Use unsafe.SliceData instead of &b[0] for safer FFI pointer extraction.
 	// SliceData returns a pointer to the underlying array, which is safe even
 	// if the slice header itself is copied, as the backing array won't move.
+	// #nosec G103 -- Required for CGO-free FFI to pass Go strings to C functions
 	return b, uintptr(unsafe.Pointer(unsafe.SliceData(b)))
 }

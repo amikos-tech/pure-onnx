@@ -109,6 +109,7 @@ func InitializeEnvironment() error {
 	purego.RegisterFunc(&createEnv, ortAPI.CreateEnv)
 
 	logIDBytes, logIDPtr := GoToCstring(defaultLogID)
+	// #nosec G115 -- LoggingLevel values are constrained to 0-4 by type definition, no overflow possible
 	status := createEnv(int32(logLevel), logIDPtr, &ortEnv)
 	runtime.KeepAlive(logIDBytes) // Prevent GC from collecting bytes during C call
 	if status != 0 {
