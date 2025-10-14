@@ -3,20 +3,48 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
+	"runtime"
 
 	"github.com/amikos-tech/pure-onnx/ort"
 )
 
+func getDefaultLibraryPath() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "/usr/local/lib/libonnxruntime.dylib"
+	case "linux":
+		return "/usr/lib/libonnxruntime.so"
+	case "windows":
+		return "onnxruntime.dll"
+	default:
+		return ""
+	}
+}
+
 func main() {
-	// Initialize ONNX Runtime environment
+	libPath := os.Getenv("ONNXRUNTIME_LIB_PATH")
+	if libPath == "" {
+		libPath = getDefaultLibraryPath()
+	}
+
+	if err := ort.SetSharedLibraryPath(libPath); err != nil {
+		log.Fatal("Failed to set library path:", err)
+	}
+
 	err := ort.InitializeEnvironment()
 	if err != nil {
 		log.Fatal("Failed to initialize ONNX Runtime:", err)
 	}
-	defer ort.DestroyEnvironment()
+	defer func() {
+		if err := ort.DestroyEnvironment(); err != nil {
+			log.Printf("Failed to destroy environment: %v", err)
+		}
+	}()
 
 	fmt.Println("ONNX Runtime initialized successfully")
 	fmt.Printf("Version: %s\n", ort.GetVersionString())
+	fmt.Printf("Is initialized: %v\n", ort.IsInitialized())
 
 	// Example: Create and run a session (to be implemented)
 	// session, err := ort.NewSession("model.onnx", nil)
