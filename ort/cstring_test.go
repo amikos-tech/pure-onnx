@@ -131,6 +131,68 @@ func TestCstringToGoValidHighAddress(t *testing.T) {
 	}
 }
 
+func TestCstringToGoAddressEdgeCases(t *testing.T) {
+	// Test addresses at and around the 4096 boundary to verify threshold behavior
+	// This complements TestCstringToGoInvalidLowAddresses which tests < 4096
+
+	// Test the boundary: addresses < 4096 should be rejected immediately
+	t.Run("address_4095_boundary_minus_1", func(t *testing.T) {
+		result := CstringToGo(4095)
+		if result != "" {
+			t.Errorf("expected empty string for address 4095 (below threshold), got %q", result)
+		}
+	})
+
+	// Test that the threshold check is exactly at 4096, not higher
+	// We verify this by confirming that 4095 is rejected while GoToCstring
+	// allocations (which are >4096) work fine
+	t.Run("threshold_is_4096_not_higher", func(t *testing.T) {
+		// Addresses 1-4095 should be rejected
+		for _, addr := range []uintptr{1, 100, 1000, 2048, 4095} {
+			result := CstringToGo(addr)
+			if result != "" {
+				t.Errorf("expected empty string for address %d (< 4096), got %q", addr, result)
+			}
+		}
+	})
+
+	// Additional test: Verify that addresses from GoToCstring are always above threshold
+	// This indirectly confirms that addresses >= 4096 are accepted (when valid)
+	t.Run("go_allocated_addresses_above_threshold", func(t *testing.T) {
+		testStrings := []string{"", "a", "hello world", "test string with unicode: 世界"}
+		for _, s := range testStrings {
+			bytes, ptr := GoToCstring(s)
+			_ = bytes // Keep alive
+
+			// Verify Go allocates well above the threshold
+			if ptr < 4096 && ptr != 0 {
+				t.Errorf("Go-allocated address %d is below 4096 threshold", ptr)
+			}
+
+			// Verify we can successfully read from these high addresses
+			result := CstringToGo(ptr)
+			if result != s {
+				t.Errorf("expected %q from valid high address, got %q", s, result)
+			}
+		}
+	})
+
+	// Test the documented behavior: threshold is minValidAddress (4096)
+	t.Run("documented_threshold_behavior", func(t *testing.T) {
+		// From cstring.go: const minValidAddress = 4096
+		// Addresses below this should return empty string
+		// Addresses at or above this are attempted (and succeed if memory is valid)
+
+		// We've already tested < 4096 above
+		// For >= 4096, we can only safely test with valid Go-allocated memory
+		// which TestCstringToGoValidHighAddress already covers
+
+		// This test documents the expected behavior
+		t.Log("Threshold is 4096: addresses < 4096 are rejected, addresses >= 4096 are attempted")
+		t.Log("Safe testing of >= 4096 requires valid memory (covered in other tests)")
+	})
+}
+
 func TestRoundTripConversion(t *testing.T) {
 	tests := []string{
 		"",

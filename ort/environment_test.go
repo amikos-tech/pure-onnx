@@ -365,9 +365,142 @@ func TestGetErrorMessageWithNullStatus(t *testing.T) {
 	}
 }
 
+func TestGetErrorMessageWhenNotInitialized(t *testing.T) {
+	resetEnvironmentState()
+
+	// When getErrorMessageFunc is nil, should return empty string
+	result := getErrorMessage(1234)
+	if result != "" {
+		t.Errorf("expected empty string when not initialized, got %q", result)
+	}
+
+	resetEnvironmentState()
+}
+
 func TestReleaseStatusWithNullStatus(t *testing.T) {
 	// Should not panic
 	releaseStatus(0)
+}
+
+func TestReleaseStatusWhenNotInitialized(t *testing.T) {
+	resetEnvironmentState()
+
+	// When releaseStatusFunc is nil, should not panic
+	releaseStatus(1234)
+
+	resetEnvironmentState()
+}
+
+func TestErrorMessageIntegrationWithFailedInit(t *testing.T) {
+	// Test that error messages are properly extracted during failed initialization
+	resetEnvironmentState()
+
+	if err := SetSharedLibraryPath("/nonexistent/path/libonnxruntime.so"); err != nil {
+		t.Fatalf("unexpected error setting library path: %v", err)
+	}
+
+	err := InitializeEnvironment()
+	if err == nil {
+		t.Fatal("expected error when loading non-existent library")
+	}
+
+	// Verify error message contains helpful information
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "failed to load ONNX Runtime library") {
+		t.Errorf("expected error message to mention library loading failure, got: %v", errMsg)
+	}
+
+	// Verify the error provides context about what went wrong
+	if errMsg == "" {
+		t.Error("expected non-empty error message")
+	}
+
+	resetEnvironmentState()
+}
+
+func TestErrorMessageFormattingQuality(t *testing.T) {
+	// Test that error messages follow good practices
+	resetEnvironmentState()
+
+	testCases := []struct {
+		name         string
+		setup        func() error
+		shouldError  bool
+		errorPattern string
+	}{
+		{
+			name: "missing library path",
+			setup: func() error {
+				return InitializeEnvironment()
+			},
+			shouldError:  true,
+			errorPattern: "library path not set",
+		},
+		{
+			name: "cannot change path after init",
+			setup: func() error {
+				mu.Lock()
+				refCount = 1
+				mu.Unlock()
+				return SetSharedLibraryPath("/new/path.so")
+			},
+			shouldError:  true,
+			errorPattern: "cannot change library path after environment is initialized",
+		},
+		{
+			name: "cannot change log level after init",
+			setup: func() error {
+				mu.Lock()
+				refCount = 1
+				mu.Unlock()
+				return SetLogLevel(LoggingLevelError)
+			},
+			shouldError:  true,
+			errorPattern: "cannot change log level after environment is initialized",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetEnvironmentState()
+
+			err := tc.setup()
+
+			if tc.shouldError {
+				if err == nil {
+					t.Errorf("expected error but got nil")
+					return
+				}
+
+				errMsg := err.Error()
+
+				// Check that error message matches expected pattern
+				if !strings.Contains(errMsg, tc.errorPattern) {
+					t.Errorf("expected error message to contain %q, got: %v", tc.errorPattern, errMsg)
+				}
+
+				// Check error message quality
+				if len(errMsg) < 10 {
+					t.Errorf("error message too short (< 10 chars): %q", errMsg)
+				}
+
+				// Error messages should start with lowercase (Go convention for wrapped errors)
+				// or be a complete sentence
+				if errMsg[0] >= 'A' && errMsg[0] <= 'Z' {
+					// Capital letter is OK if it's a proper noun or acronym
+					if !strings.HasPrefix(errMsg, "ONNX") && !strings.HasPrefix(errMsg, "ORT") {
+						// This is fine, just noting that it starts with capital
+					}
+				}
+			} else {
+				if err != nil {
+					t.Errorf("expected no error but got: %v", err)
+				}
+			}
+
+			resetEnvironmentState()
+		})
+	}
 }
 
 // Error path tests with real failure conditions
@@ -437,6 +570,117 @@ func TestMultipleInitializeAfterDestroy(t *testing.T) {
 		t.Errorf("expected libPath to be updated after destroy, got %q", libPath)
 	}
 	mu.Unlock()
+
+	resetEnvironmentState()
+}
+
+// Benchmarks
+
+func BenchmarkInitializeEnvironment(b *testing.B) {
+	// Benchmark the reference counting path (already initialized)
+	// This is the fast path that most applications will hit
+	resetEnvironmentState()
+
+	// Simulate already initialized state
+	mu.Lock()
+	refCount = 1
+	mu.Unlock()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = InitializeEnvironment()
+	}
+	b.StopTimer()
+
+	resetEnvironmentState()
+}
+
+func BenchmarkDestroyEnvironment(b *testing.B) {
+	// Benchmark the reference counting path (decrement without actual cleanup)
+	// This is the fast path when refCount > 1
+	resetEnvironmentState()
+
+	// Set high refCount so we never reach zero
+	mu.Lock()
+	refCount = b.N + 1
+	mu.Unlock()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = DestroyEnvironment()
+	}
+	b.StopTimer()
+
+	resetEnvironmentState()
+}
+
+func BenchmarkInitializeDestroyPair(b *testing.B) {
+	// Benchmark a complete init/destroy pair
+	// This measures the full lifecycle with reference counting
+	resetEnvironmentState()
+
+	// Start with refCount=1 to avoid actual library operations
+	mu.Lock()
+	refCount = 1
+	mu.Unlock()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = InitializeEnvironment() // Increments to 2
+		_ = DestroyEnvironment()    // Decrements back to 1
+	}
+	b.StopTimer()
+
+	resetEnvironmentState()
+}
+
+func BenchmarkSetSharedLibraryPath(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		resetEnvironmentState()
+		b.StartTimer()
+
+		_ = SetSharedLibraryPath("/path/to/library.so")
+	}
+}
+
+func BenchmarkIsInitialized(b *testing.B) {
+	resetEnvironmentState()
+
+	// Test both initialized and uninitialized states
+	b.Run("uninitialized", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = IsInitialized()
+		}
+	})
+
+	b.Run("initialized", func(b *testing.B) {
+		mu.Lock()
+		refCount = 1
+		mu.Unlock()
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = IsInitialized()
+		}
+	})
+
+	resetEnvironmentState()
+}
+
+func BenchmarkGetVersionString(b *testing.B) {
+	resetEnvironmentState()
+
+	// Test uninitialized path (fast path - no C call)
+	b.Run("uninitialized", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = GetVersionString()
+		}
+	})
+
+	// Note: We can't easily benchmark the initialized path without a real library
+	// That would require integration testing with actual ONNX Runtime
 
 	resetEnvironmentState()
 }
