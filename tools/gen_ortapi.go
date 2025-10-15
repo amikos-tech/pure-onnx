@@ -1,4 +1,11 @@
 // Package main generates the complete OrtApi struct from the C header
+//
+// NOTE: This generator uses simple regex-based parsing which works for the current
+// ONNX Runtime C API but may be fragile with future header changes. In a future PR,
+// we should consider using a proper C parser like tree-sitter-c for more robust
+// parsing and potentially auto-generating purego function bindings.
+//
+// See: https://github.com/tree-sitter/tree-sitter-c
 package main
 
 import (
