@@ -113,6 +113,33 @@ func main() {
 		seen[fn.Name] = true
 	}
 
+	// Validate key function positions to catch parser bugs
+	keyFunctions := map[string]int{
+		"CreateEnv":                        4,
+		"CreateTensorWithDataAsOrtValue":  50,
+		"CreateMemoryInfo":                69,
+		"ReleaseEnv":                      93,
+	}
+
+	for name, expectedPos := range keyFunctions {
+		found := false
+		for i, fn := range functions {
+			if fn.Name == name {
+				actualPos := i + 1 // 1-indexed
+				if actualPos != expectedPos {
+					fmt.Fprintf(os.Stderr, "Error: Key function '%s' found at position %d, expected %d. Parser may be broken.\n", name, actualPos, expectedPos)
+					os.Exit(1)
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			fmt.Fprintf(os.Stderr, "Error: Key function '%s' not found. Parser may be broken.\n", name)
+			os.Exit(1)
+		}
+	}
+
 	fmt.Printf("// Parsed %d function pointers\n\n", len(functions))
 
 	// Generate the Go struct

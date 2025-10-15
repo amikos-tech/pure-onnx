@@ -2,6 +2,8 @@ package ort
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -106,11 +108,15 @@ func InitializeEnvironment() error {
 	purego.RegisterFunc(&getErrorMessageFunc, ortAPI.GetErrorMessage)
 	purego.RegisterFunc(&releaseStatusFunc, ortAPI.ReleaseStatus)
 
-	// Validate ONNX Runtime version matches our API version baseline (1.21.x)
-	versionPtr := getVersionStringFunc()
-	version := CstringToGo(versionPtr)
-	if !strings.HasPrefix(version, "1.21.") {
-		return fmt.Errorf("ONNX Runtime version mismatch: library is %s, but this package expects 1.21.x (API version %d). Please install ONNX Runtime 1.21.x or update this package", version, ORT_API_VERSION)
+	// Validate ONNX Runtime version (warn if mismatch, unless explicitly skipped)
+	if os.Getenv("ONNXRUNTIME_SKIP_VERSION_CHECK") == "" {
+		versionPtr := getVersionStringFunc()
+		version := CstringToGo(versionPtr)
+		if !strings.HasPrefix(version, "1.21.") {
+			log.Printf("WARNING: ONNX Runtime version mismatch: library is %s, but this package was built against 1.21.x (API version %d). "+
+				"Minor version differences are usually backward compatible, but you may encounter issues. "+
+				"To suppress this warning, set ONNXRUNTIME_SKIP_VERSION_CHECK=1", version, ORT_API_VERSION)
+		}
 	}
 
 	var createEnv func(logLevel int32, logID uintptr, out *uintptr) uintptr
