@@ -19,16 +19,18 @@ const (
 )
 
 var (
-	mu                   sync.Mutex
-	refCount             int
-	ortLib               uintptr
-	ortAPI               *OrtApi
-	ortEnv               uintptr
-	libPath              string
-	logLevel             LoggingLevel = LoggingLevelWarning // Default to Warning
-	getVersionStringFunc func() uintptr
-	getErrorMessageFunc  func(uintptr) uintptr
-	releaseStatusFunc    func(uintptr)
+	mu                    sync.Mutex
+	refCount              int
+	ortLib                uintptr
+	ortAPI                *OrtApi
+	ortEnv                uintptr
+	libPath               string
+	logLevel              LoggingLevel = LoggingLevelWarning // Default to Warning
+	getVersionStringFunc  func() uintptr
+	getErrorMessageFunc   func(uintptr) uintptr
+	releaseStatusFunc     func(uintptr)
+	createMemoryInfoFunc  func(name uintptr, allocatorType AllocatorType, deviceID int32, memType MemType, out *uintptr) uintptr
+	releaseMemoryInfoFunc func(uintptr)
 )
 
 // getErrorMessage extracts the error message from an ORT status code.
@@ -77,6 +79,8 @@ func InitializeEnvironment() error {
 			getVersionStringFunc = nil
 			getErrorMessageFunc = nil
 			releaseStatusFunc = nil
+			createMemoryInfoFunc = nil
+			releaseMemoryInfoFunc = nil
 		}
 	}()
 
@@ -108,6 +112,8 @@ func InitializeEnvironment() error {
 	// Register frequently-used API functions once to avoid repeated RegisterFunc calls
 	purego.RegisterFunc(&getErrorMessageFunc, ortAPI.GetErrorMessage)
 	purego.RegisterFunc(&releaseStatusFunc, ortAPI.ReleaseStatus)
+	purego.RegisterFunc(&createMemoryInfoFunc, ortAPI.CreateMemoryInfo)
+	purego.RegisterFunc(&releaseMemoryInfoFunc, ortAPI.ReleaseMemoryInfo)
 
 	// Validate ONNX Runtime version (warn if mismatch, unless explicitly skipped)
 	if os.Getenv("ONNXRUNTIME_SKIP_VERSION_CHECK") == "" {
@@ -179,6 +185,8 @@ func DestroyEnvironment() error {
 	getVersionStringFunc = nil
 	getErrorMessageFunc = nil
 	releaseStatusFunc = nil
+	createMemoryInfoFunc = nil
+	releaseMemoryInfoFunc = nil
 
 	return nil
 }

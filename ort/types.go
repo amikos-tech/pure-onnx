@@ -105,7 +105,6 @@ type SessionOptions struct {
 type MemoryInfo struct {
 	handle        uintptr // Pointer to OrtMemoryInfo
 	name          string
-	id            int
 	memType       MemType
 	allocatorType AllocatorType
 	deviceID      int
