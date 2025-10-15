@@ -29,6 +29,8 @@ jobs:
           if [ "$(gofmt -l . | grep -v '^vendor/' | wc -l)" -gt 0 ]; then
             echo "The following files need formatting:"
             gofmt -l . | grep -v '^vendor/'
+            echo ""
+            echo "To fix locally, run: gofmt -w ."
             exit 1
           fi
 
