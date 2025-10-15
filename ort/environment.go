@@ -112,8 +112,8 @@ func InitializeEnvironment() error {
 	if os.Getenv("ONNXRUNTIME_SKIP_VERSION_CHECK") == "" {
 		versionPtr := getVersionStringFunc()
 		version := CstringToGo(versionPtr)
-		if !strings.HasPrefix(version, "1.21.") {
-			log.Printf("WARNING: ONNX Runtime version mismatch: library is %s, but this package was built against 1.21.x (API version %d). "+
+		if !strings.HasPrefix(version, "1.22.") {
+			log.Printf("WARNING: ONNX Runtime version mismatch: library is %s, but this package was built against 1.22.0+ (API version %d). "+
 				"Minor version differences are usually backward compatible, but you may encounter issues. "+
 				"To suppress this warning, set ONNXRUNTIME_SKIP_VERSION_CHECK=1", version, ORT_API_VERSION)
 		}

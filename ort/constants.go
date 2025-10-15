@@ -2,14 +2,14 @@ package ort
 
 const (
 	// ORT_API_VERSION is the ONNX Runtime API version this library is built against.
-	// Currently set to 21, which corresponds to ONNX Runtime 1.21.x (latest stable).
+	// Currently set to 22, which corresponds to ONNX Runtime 1.22.0+ (latest stable).
 	//
 	// Strategy: We use the latest stable ONNX Runtime version as our baseline.
 	// When new ONNX Runtime versions are released, we will update this in a separate PR
 	// and add support for new API functions incrementally.
 	//
 	// This must match the major version of your installed ONNX Runtime library.
-	ORT_API_VERSION = 21
+	ORT_API_VERSION = 22
 )
 
 // LoggingLevel represents the logging verbosity level

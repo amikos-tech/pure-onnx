@@ -46,9 +46,9 @@ go run main2.go
 ## Important Technical Details
 
 - The main working implementation is in `main2.go` (main.go is commented out/experimental)
-- Requires the ONNX Runtime library to be installed locally (currently hardcoded path: `/Users/tazarov/Downloads/onnxruntime-osx-arm64-1.21.0/lib/libonnxruntime.1.21.0.dylib`)
-- The `OrtApi` struct contains all ONNX Runtime API function pointers organized by API version (versions 1-21)
-- Uses API version 21 (`ORT_API_VERSION := uint32(21)`)
+- Requires the ONNX Runtime library to be installed locally (example path: `/Users/tazarov/Downloads/onnxruntime-osx-arm64-1.22.0/lib/libonnxruntime.1.22.0.dylib`)
+- The `OrtApi` struct contains all ONNX Runtime API function pointers organized by API version (versions 1-22)
+- Uses API version 22 (`ORT_API_VERSION := uint32(22)`)
 - C header files (`onnxruntime_c_api.h`, `ort_apis.h`) are included for reference but not used in compilation
 
 ## Current Implementation Status
