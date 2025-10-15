@@ -7,6 +7,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 func main() {
@@ -28,6 +29,7 @@ func main() {
 	// Find the start of OrtApi struct
 	inStruct := false
 	lineNum := 0
+	structLineNum := 0
 	var functions []FunctionPointer
 
 	// Regex patterns
@@ -46,6 +48,7 @@ func main() {
 		if !inStruct {
 			if ortApiPattern.MatchString(line) {
 				inStruct = true
+				structLineNum = lineNum
 				fmt.Printf("// Found OrtApi struct at line %d\n", lineNum)
 			}
 			continue
@@ -88,10 +91,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Validate function count
+	if len(functions) < 200 || len(functions) > 500 {
+		fmt.Fprintf(os.Stderr, "Warning: Parsed %d functions, expected ~305. Header may have changed.\n", len(functions))
+	}
+
+	// Check for duplicate function names
+	seen := make(map[string]bool)
+	for _, fn := range functions {
+		if seen[fn.Name] {
+			fmt.Fprintf(os.Stderr, "Error: Duplicate function name: %s\n", fn.Name)
+			os.Exit(1)
+		}
+		seen[fn.Name] = true
+	}
+
 	fmt.Printf("// Parsed %d function pointers\n\n", len(functions))
 
 	// Generate the Go struct
-	generateGoStruct(functions)
+	generateGoStruct(functions, headerPath, structLineNum)
 }
 
 type FunctionPointer struct {
@@ -99,11 +117,16 @@ type FunctionPointer struct {
 	LineNum int
 }
 
-func generateGoStruct(functions []FunctionPointer) {
+func generateGoStruct(functions []FunctionPointer, headerPath string, structLineNum int) {
 	fmt.Println("package ort")
 	fmt.Println()
+	fmt.Printf("// Auto-generated from: %s\n", headerPath)
+	fmt.Printf("// Generated on: %s\n", time.Now().Format(time.RFC3339))
+	fmt.Println("// Generator: tools/gen_ortapi.go")
+	fmt.Printf("// Found OrtApi struct at line %d\n", structLineNum)
+	fmt.Printf("// Parsed %d function pointers\n", len(functions))
+	fmt.Println("//")
 	fmt.Println("// OrtApi represents the ONNX Runtime C API function pointers")
-	fmt.Println("// This struct is automatically generated from onnxruntime_c_api.h")
 	fmt.Println("// DO NOT EDIT MANUALLY - regenerate using tools/gen_ortapi.go")
 	fmt.Println("type OrtApi struct {")
 

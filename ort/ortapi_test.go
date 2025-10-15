@@ -2,6 +2,7 @@ package ort
 
 import (
 	"os"
+	"reflect"
 	"testing"
 )
 
@@ -61,4 +62,15 @@ func TestReleaseEnvMultipleTimes(t *testing.T) {
 	}
 
 	t.Log("Successfully initialized and destroyed environment 3 times")
+}
+
+func TestOrtApiFieldCount(t *testing.T) {
+	apiType := reflect.TypeOf(OrtApi{})
+	expectedFields := 305
+	actualFields := apiType.NumField()
+
+	if actualFields != expectedFields {
+		t.Errorf("OrtApi struct has %d fields, expected %d", actualFields, expectedFields)
+	}
+	t.Logf("OrtApi struct has correct field count: %d", actualFields)
 }
