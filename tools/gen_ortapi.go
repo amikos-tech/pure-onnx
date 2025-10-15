@@ -115,10 +115,10 @@ func main() {
 
 	// Validate key function positions to catch parser bugs
 	keyFunctions := map[string]int{
-		"CreateEnv":                        4,
-		"CreateTensorWithDataAsOrtValue":  50,
-		"CreateMemoryInfo":                69,
-		"ReleaseEnv":                      93,
+		"CreateEnv":                      4,
+		"CreateTensorWithDataAsOrtValue": 50,
+		"CreateMemoryInfo":               69,
+		"ReleaseEnv":                     93,
 	}
 
 	for name, expectedPos := range keyFunctions {
