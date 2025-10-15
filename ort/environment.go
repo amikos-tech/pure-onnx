@@ -3,6 +3,7 @@ package ort
 import (
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -104,6 +105,13 @@ func InitializeEnvironment() error {
 	// Register frequently-used API functions once to avoid repeated RegisterFunc calls
 	purego.RegisterFunc(&getErrorMessageFunc, ortAPI.GetErrorMessage)
 	purego.RegisterFunc(&releaseStatusFunc, ortAPI.ReleaseStatus)
+
+	// Validate ONNX Runtime version matches our API version baseline (1.21.x)
+	versionPtr := getVersionStringFunc()
+	version := CstringToGo(versionPtr)
+	if !strings.HasPrefix(version, "1.21.") {
+		return fmt.Errorf("ONNX Runtime version mismatch: library is %s, but this package expects 1.21.x (API version %d). Please install ONNX Runtime 1.21.x or update this package", version, ORT_API_VERSION)
+	}
 
 	var createEnv func(logLevel int32, logID uintptr, out *uintptr) uintptr
 	purego.RegisterFunc(&createEnv, ortAPI.CreateEnv)

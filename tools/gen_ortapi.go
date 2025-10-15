@@ -99,8 +99,8 @@ func main() {
 	}
 
 	// Validate function count
-	if len(functions) < 200 || len(functions) > 500 {
-		fmt.Fprintf(os.Stderr, "Warning: Parsed %d functions, expected ~305. Header may have changed.\n", len(functions))
+	if len(functions) < 290 || len(functions) > 320 {
+		fmt.Fprintf(os.Stderr, "Warning: Parsed %d functions, expected ~305 (valid range: 290-320). Header may have changed.\n", len(functions))
 	}
 
 	// Check for duplicate function names
