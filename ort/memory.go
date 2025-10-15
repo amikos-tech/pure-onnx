@@ -3,13 +3,12 @@ package ort
 import (
 	"fmt"
 	"runtime"
+
+	"github.com/ebitengine/purego"
 )
 
 // CreateMemoryInfo creates a memory info structure with specified parameters.
-// NOTE: Due to OrtApi struct layout issues (see issue #20), this function creates
-// a lightweight Go-only wrapper that tracks memory info metadata without calling
-// the actual ONNX Runtime CreateMemoryInfo function. This is sufficient for tensor
-// creation which primarily needs the metadata.
+// Maps to OrtApi::CreateMemoryInfo in the ONNX Runtime C API.
 func CreateMemoryInfo(name string, allocatorType AllocatorType, deviceID int, memType MemType) (*MemoryInfo, error) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -18,10 +17,25 @@ func CreateMemoryInfo(name string, allocatorType AllocatorType, deviceID int, me
 		return nil, fmt.Errorf("ONNX Runtime not initialized")
 	}
 
-	// Create a Go-only memory info structure
-	// This avoids calling the broken CreateMemoryInfo C function
+	// Register the CreateMemoryInfo function
+	var createMemoryInfo func(name uintptr, allocatorType AllocatorType, deviceID int32, memType MemType, out *uintptr) uintptr
+	purego.RegisterFunc(&createMemoryInfo, ortAPI.CreateMemoryInfo)
+
+	// Convert the name string to C string
+	nameBytes, namePtr := GoToCstring(name)
+	defer runtime.KeepAlive(nameBytes)
+
+	var handle uintptr
+	// #nosec G115 -- deviceID is validated by ONNX Runtime, conversion is safe
+	status := createMemoryInfo(namePtr, allocatorType, int32(deviceID), memType, &handle)
+	if status != 0 {
+		errMsg := getErrorMessage(status)
+		releaseStatus(status)
+		return nil, fmt.Errorf("failed to create memory info: %s", errMsg)
+	}
+
 	memInfo := &MemoryInfo{
-		handle:        0, // No ORT handle - pure Go object for now
+		handle:        handle,
 		name:          name,
 		id:            deviceID,
 		memType:       memType,
@@ -29,25 +43,38 @@ func CreateMemoryInfo(name string, allocatorType AllocatorType, deviceID int, me
 		deviceID:      deviceID,
 	}
 
+	// Set finalizer to ensure cleanup even if Destroy() is not called
+	runtime.SetFinalizer(memInfo, func(m *MemoryInfo) {
+		_ = m.Destroy()
+	})
+
 	return memInfo, nil
 }
 
 // CreateCpuMemoryInfo creates a memory info structure for CPU memory.
 // This is a convenience function for the most common use case.
-// NOTE: Due to OrtApi struct layout issues (see issue #20), this function creates
-// a lightweight Go-only wrapper. This is sufficient for basic tensor operations.
 func CreateCpuMemoryInfo(allocatorType AllocatorType, memType MemType) (*MemoryInfo, error) {
 	return CreateMemoryInfo("Cpu", allocatorType, 0, memType)
 }
 
 // Destroy releases the memory info resources.
-// For Go-only MemoryInfo objects (handle == 0), this is a no-op.
+// Maps to OrtApi::ReleaseMemoryInfo in the ONNX Runtime C API.
 func (m *MemoryInfo) Destroy() error {
-	// For Go-only MemoryInfo objects, nothing to clean up
-	// When issue #20 is fixed and we create actual ORT handles,
-	// this will call ReleaseMemoryInfo
+	mu.Lock()
+	defer mu.Unlock()
+
+	if m.handle == 0 {
+		return nil
+	}
+
+	if ortAPI != nil {
+		var releaseMemoryInfo func(uintptr)
+		purego.RegisterFunc(&releaseMemoryInfo, ortAPI.ReleaseMemoryInfo)
+		releaseMemoryInfo(m.handle)
+	}
+
 	m.handle = 0
-	m.name = "" // Mark as destroyed for IsValid check
+	m.name = ""
 	runtime.SetFinalizer(m, nil)
 	return nil
 }
@@ -77,10 +104,7 @@ func (m *MemoryInfo) GetDeviceID() int {
 	return m.deviceID
 }
 
-// IsValid returns true if the memory info is valid.
-// For Go-only MemoryInfo objects, this checks if the object has been destroyed.
+// IsValid returns true if the memory info has a valid handle.
 func (m *MemoryInfo) IsValid() bool {
-	// For Go-only objects, consider them valid if they haven't been explicitly destroyed
-	// We use deviceID as a marker since handle is always 0 for Go-only objects
-	return m.name != ""
+	return m.handle != 0
 }
