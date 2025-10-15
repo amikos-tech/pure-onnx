@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"unsafe"
@@ -112,10 +113,16 @@ func InitializeEnvironment() error {
 	if os.Getenv("ONNXRUNTIME_SKIP_VERSION_CHECK") == "" {
 		versionPtr := getVersionStringFunc()
 		version := CstringToGo(versionPtr)
-		if !strings.HasPrefix(version, "1.22.") {
-			log.Printf("WARNING: ONNX Runtime version mismatch: library is %s, but this package was built against 1.22.0+ (API version %d). "+
-				"Minor version differences are usually backward compatible, but you may encounter issues. "+
-				"To suppress this warning, set ONNXRUNTIME_SKIP_VERSION_CHECK=1", version, ORT_API_VERSION)
+
+		// Parse version string (format: "1.XX.Y")
+		parts := strings.Split(version, ".")
+		if len(parts) >= 2 {
+			minor, err := strconv.Atoi(parts[1])
+			if err == nil && minor < 22 {
+				log.Printf("WARNING: ONNX Runtime version %s is older than 1.22.0 (API version %d). "+
+					"This package was built against 1.22.0+. You may encounter compatibility issues. "+
+					"To suppress this warning, set ONNXRUNTIME_SKIP_VERSION_CHECK=1", version, ORT_API_VERSION)
+			}
 		}
 	}
 
