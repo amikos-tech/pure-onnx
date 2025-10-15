@@ -9,6 +9,8 @@ linters:
   enable:
     - gocritic
     - mirror
+    - gofmt
+    - goimports
 
 linters-settings:
   gocritic:
@@ -34,12 +36,3 @@ issues:
     - examples/experimental
   exclude-files:
     - ".*\\.pb\\.go"
-
-formatters:
-  enable:
-    - gofmt
-    - goimports
-  exclude-dirs:
-    - third_party
-    - internal/c_api
-    - examples/experimental

@@ -2,7 +2,11 @@ package ort
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -105,6 +109,23 @@ func InitializeEnvironment() error {
 	purego.RegisterFunc(&getErrorMessageFunc, ortAPI.GetErrorMessage)
 	purego.RegisterFunc(&releaseStatusFunc, ortAPI.ReleaseStatus)
 
+	// Validate ONNX Runtime version (warn if mismatch, unless explicitly skipped)
+	if os.Getenv("ONNXRUNTIME_SKIP_VERSION_CHECK") == "" {
+		versionPtr := getVersionStringFunc()
+		version := CstringToGo(versionPtr)
+
+		// Parse version string (format: "1.XX.Y")
+		parts := strings.Split(version, ".")
+		if len(parts) >= 2 {
+			minor, err := strconv.Atoi(parts[1])
+			if err == nil && minor < 22 {
+				log.Printf("WARNING: ONNX Runtime version %s is older than 1.22.0 (API version %d). "+
+					"This package was built against 1.22.0+. You may encounter compatibility issues. "+
+					"To suppress this warning, set ONNXRUNTIME_SKIP_VERSION_CHECK=1", version, ORT_API_VERSION)
+			}
+		}
+	}
+
 	var createEnv func(logLevel int32, logID uintptr, out *uintptr) uintptr
 	purego.RegisterFunc(&createEnv, ortAPI.CreateEnv)
 
@@ -139,18 +160,11 @@ func DestroyEnvironment() error {
 	}
 
 	if ortAPI != nil && ortEnv != 0 {
-		// TODO(memory-leak): ReleaseEnv currently disabled due to OrtApi struct layout mismatch.
-		// The OrtApi struct definition in types.go is incomplete - it only defines a subset
-		// of the ~200+ functions in the full ONNX Runtime C API. This causes incorrect offsets
-		// when accessing function pointers beyond the first few functions.
-		//
-		// To fix this properly, we need to either:
-		// 1. Define ALL functions in the C API struct in correct order (tedious but complete), OR
-		// 2. Use individual GetApi() calls for each function we need (cleaner but more calls)
-		//
-		// For now, the OS will clean up the environment on process exit. This is acceptable
-		// for short-lived processes but should be fixed for long-running applications.
-		// See issue: https://github.com/amikos-tech/pure-onnx/issues/20
+		// Now that we have the complete OrtApi struct layout (all 305 functions),
+		// we can properly call ReleaseEnv
+		var releaseEnv func(uintptr)
+		purego.RegisterFunc(&releaseEnv, ortAPI.ReleaseEnv)
+		releaseEnv(ortEnv)
 		ortEnv = 0
 	}
 

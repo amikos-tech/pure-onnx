@@ -44,7 +44,7 @@ Integration tests verify actual FFI interactions with the ONNX Runtime library.
    export ONNXRUNTIME_LIB_PATH=/path/to/onnxruntime/lib/libonnxruntime.so
 
    # macOS specific example
-   export ONNXRUNTIME_LIB_PATH=/path/to/onnxruntime/lib/libonnxruntime.1.23.1.dylib
+   export ONNXRUNTIME_LIB_PATH=/path/to/onnxruntime/lib/libonnxruntime.1.22.0.dylib
 
    # Windows (PowerShell)
    $env:ONNXRUNTIME_LIB_PATH="C:\path\to\onnxruntime\lib\onnxruntime.dll"
