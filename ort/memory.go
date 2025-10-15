@@ -3,8 +3,6 @@ package ort
 import (
 	"fmt"
 	"runtime"
-
-	"github.com/ebitengine/purego"
 )
 
 // CreateMemoryInfo creates a memory info structure with specified parameters.
@@ -13,13 +11,9 @@ func CreateMemoryInfo(name string, allocatorType AllocatorType, deviceID int, me
 	mu.Lock()
 	defer mu.Unlock()
 
-	if ortAPI == nil {
+	if createMemoryInfoFunc == nil {
 		return nil, fmt.Errorf("ONNX Runtime not initialized")
 	}
-
-	// Register the CreateMemoryInfo function
-	var createMemoryInfo func(name uintptr, allocatorType AllocatorType, deviceID int32, memType MemType, out *uintptr) uintptr
-	purego.RegisterFunc(&createMemoryInfo, ortAPI.CreateMemoryInfo)
 
 	// Convert the name string to C string
 	nameBytes, namePtr := GoToCstring(name)
@@ -27,7 +21,7 @@ func CreateMemoryInfo(name string, allocatorType AllocatorType, deviceID int, me
 
 	var handle uintptr
 	// #nosec G115 -- deviceID is validated by ONNX Runtime, conversion is safe
-	status := createMemoryInfo(namePtr, allocatorType, int32(deviceID), memType, &handle)
+	status := createMemoryInfoFunc(namePtr, allocatorType, int32(deviceID), memType, &handle)
 	if status != 0 {
 		errMsg := getErrorMessage(status)
 		releaseStatus(status)
@@ -37,7 +31,6 @@ func CreateMemoryInfo(name string, allocatorType AllocatorType, deviceID int, me
 	memInfo := &MemoryInfo{
 		handle:        handle,
 		name:          name,
-		id:            deviceID,
 		memType:       memType,
 		allocatorType: allocatorType,
 		deviceID:      deviceID,
@@ -67,14 +60,11 @@ func (m *MemoryInfo) Destroy() error {
 		return nil
 	}
 
-	if ortAPI != nil {
-		var releaseMemoryInfo func(uintptr)
-		purego.RegisterFunc(&releaseMemoryInfo, ortAPI.ReleaseMemoryInfo)
-		releaseMemoryInfo(m.handle)
+	if releaseMemoryInfoFunc != nil {
+		releaseMemoryInfoFunc(m.handle)
 	}
 
 	m.handle = 0
-	m.name = ""
 	runtime.SetFinalizer(m, nil)
 	return nil
 }
@@ -82,11 +72,6 @@ func (m *MemoryInfo) Destroy() error {
 // GetName returns the name of the memory allocator
 func (m *MemoryInfo) GetName() string {
 	return m.name
-}
-
-// GetID returns the device ID
-func (m *MemoryInfo) GetID() int {
-	return m.id
 }
 
 // GetMemType returns the memory type
