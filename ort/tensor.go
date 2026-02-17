@@ -93,13 +93,14 @@ func newTensorFromData[T any](shape Shape, data []T, elementType TensorElementDa
 	if len(data) > 0 {
 		pinner = &runtime.Pinner{}
 		pinner.Pin(unsafe.SliceData(data))
-		// #nosec G103 -- Required for CGO-free FFI; pointer remains valid via runtime.KeepAlive(data)
+		// #nosec G103 -- Required for CGO-free FFI; backing array is pinned for OrtValue lifetime via runtime.Pinner.
 		dataPtr = uintptr(unsafe.Pointer(unsafe.SliceData(data)))
 	}
 
 	var valueHandle uintptr
 	status = createTensorWithData(memInfo, dataPtr, dataBytes, shapePtr(shape), uintptr(len(shape)), elementType, &valueHandle)
-	runtime.KeepAlive(data)
+	// ORT reads shape dimensions synchronously during CreateTensorWithDataAsOrtValue call.
+	// Keep shape alive for the call; tensor data lifetime is guarded by pinner.
 	runtime.KeepAlive(shape)
 	if status != 0 {
 		if pinner != nil {
@@ -258,6 +259,8 @@ func tensorDataByteSize(elementCount int, elementSize uintptr) (uintptr, error) 
 	return count * elementSize, nil
 }
 
+// tensorElementType maps Go generic element type T to ONNX tensor element metadata.
+// Supported types in this MVP are float32, float64, int32, and int64.
 func tensorElementType[T any]() (TensorElementDataType, uintptr, error) {
 	var zero T
 

@@ -64,10 +64,35 @@ func resolveOrtPackageDir() (string, error) {
 		if dir == "" {
 			continue
 		}
-		if fileInfo, err := os.Stat(filepath.Join(dir, "cgo_guard_test.go")); err == nil && !fileInfo.IsDir() {
+		if isOrtPackageDir(dir) {
 			return dir, nil
 		}
 	}
 
 	return "", fmt.Errorf("failed to locate ort package directory; checked: %v", candidates)
+}
+
+func isOrtPackageDir(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+
+	fset := token.NewFileSet()
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.PackageClauseOnly)
+		if err != nil {
+			continue
+		}
+		return file.Name != nil && file.Name.Name == "ort"
+	}
+
+	return false
 }
