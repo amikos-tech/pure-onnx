@@ -216,13 +216,14 @@ func (s *AdvancedSession) Destroy() error {
 	}
 
 	// Lock order here is runMu -> ortCallMu -> mu.
-	// We intentionally use ortCallMu.Lock (not RLock) to block until in-flight ORT calls
-	// complete before releasing this session handle.
+	// runMu prevents overlap with Run() on this same session.
+	// ortCallMu.RLock keeps environment teardown from closing the runtime while
+	// this release call is in flight, without stalling unrelated session runs.
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 
-	ortCallMu.Lock()
-	defer ortCallMu.Unlock()
+	ortCallMu.RLock()
+	defer ortCallMu.RUnlock()
 
 	var (
 		handle         uintptr

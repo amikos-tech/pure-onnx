@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 
@@ -14,7 +13,7 @@ import (
 func main() {
 	libPath := os.Getenv("ONNXRUNTIME_LIB_PATH")
 	if libPath == "" {
-		libPath = defaultLibraryPath()
+		log.Fatal("set ONNXRUNTIME_LIB_PATH to your ONNX Runtime shared library path")
 	}
 
 	modelPath := os.Getenv("ONNX_MODEL_PATH")
@@ -103,7 +102,7 @@ func main() {
 }
 
 func envOr(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
+	if value, ok := os.LookupEnv(key); ok {
 		return value
 	}
 	return fallback
@@ -123,10 +122,6 @@ func parseShapeEnv(key string) (ort.Shape, error) {
 }
 
 func parseInputData(raw string, expected int) ([]float32, error) {
-	if expected < 0 {
-		return nil, fmt.Errorf("expected element count must be >= 0")
-	}
-
 	if raw == "" {
 		data := make([]float32, expected)
 		for i := range data {
@@ -165,17 +160,4 @@ func printPreview(values []float32, max int) {
 	}
 
 	fmt.Printf("output preview (%d/%d): %v\n", end, len(values), values[:end])
-}
-
-func defaultLibraryPath() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return "/usr/local/lib/libonnxruntime.dylib"
-	case "linux":
-		return "/usr/lib/libonnxruntime.so"
-	case "windows":
-		return "onnxruntime.dll"
-	default:
-		return ""
-	}
 }

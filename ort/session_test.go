@@ -89,6 +89,24 @@ func TestNewAdvancedSessionValidation(t *testing.T) {
 			wantErr:      "unsupported value implementation",
 		},
 		{
+			name:         "nil input value",
+			modelPath:    "model.onnx",
+			inputNames:   []string{"input"},
+			outputNames:  []string{"output"},
+			inputValues:  []Value{nil},
+			outputValues: []Value{validValue},
+			wantErr:      "invalid input value at index 0: value is nil",
+		},
+		{
+			name:         "nil output value",
+			modelPath:    "model.onnx",
+			inputNames:   []string{"input"},
+			outputNames:  []string{"output"},
+			inputValues:  []Value{validValue},
+			outputValues: []Value{nil},
+			wantErr:      "invalid output value at index 0: value is nil",
+		},
+		{
 			name:         "zero handle output value",
 			modelPath:    "model.onnx",
 			inputNames:   []string{"input"},
@@ -302,7 +320,7 @@ func TestAdvancedSessionRunAndDestroyConcurrent(t *testing.T) {
 	var closeRunStarted sync.Once
 
 	releasedCount := int32(0)
-	releasedHandle := uintptr(0)
+	var releasedHandle atomic.Uintptr
 
 	mu.Lock()
 	ortAPI = &OrtApi{}
@@ -313,7 +331,7 @@ func TestAdvancedSessionRunAndDestroyConcurrent(t *testing.T) {
 	}
 	releaseSessionFunc = func(handle uintptr) {
 		atomic.AddInt32(&releasedCount, 1)
-		releasedHandle = handle
+		releasedHandle.Store(handle)
 	}
 	mu.Unlock()
 
@@ -355,12 +373,150 @@ func TestAdvancedSessionRunAndDestroyConcurrent(t *testing.T) {
 	if got := atomic.LoadInt32(&releasedCount); got != 1 {
 		t.Fatalf("expected release callback once, got %d", got)
 	}
-	if releasedHandle != 456 {
-		t.Fatalf("expected release callback handle 456, got %d", releasedHandle)
+	if got := releasedHandle.Load(); got != 456 {
+		t.Fatalf("expected release callback handle 456, got %d", got)
 	}
 
 	if err := session.Run(); err == nil || !strings.Contains(err.Error(), "session has been destroyed") {
 		t.Fatalf("expected destroyed session error after concurrent destroy, got: %v", err)
+	}
+}
+
+func TestAdvancedSessionDestroyDoesNotBlockUnrelatedRun(t *testing.T) {
+	resetEnvironmentState()
+	defer resetEnvironmentState()
+
+	runStarted := make(chan struct{})
+	allowRunReturn := make(chan struct{})
+	var closeRunStarted sync.Once
+
+	otherDestroyed := int32(0)
+
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	runSessionFunc = func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr {
+		closeRunStarted.Do(func() { close(runStarted) })
+		<-allowRunReturn
+		return 0
+	}
+	releaseSessionFunc = func(handle uintptr) {
+		if handle == 222 {
+			atomic.StoreInt32(&otherDestroyed, 1)
+		}
+	}
+	mu.Unlock()
+
+	runningSession := &AdvancedSession{
+		handle:       111,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{&fakeValue{handle: 1}},
+		outputValues: []Value{&fakeValue{handle: 2}},
+	}
+	otherSession := &AdvancedSession{
+		handle:       222,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{&fakeValue{handle: 3}},
+		outputValues: []Value{&fakeValue{handle: 4}},
+	}
+
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- runningSession.Run()
+	}()
+
+	<-runStarted
+
+	destroyErrCh := make(chan error, 1)
+	go func() {
+		destroyErrCh <- otherSession.Destroy()
+	}()
+
+	select {
+	case err := <-destroyErrCh:
+		if err != nil {
+			t.Fatalf("destroy failed: %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("destroy should not block on unrelated in-flight Run")
+	}
+
+	close(allowRunReturn)
+
+	if err := <-runErrCh; err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	if got := atomic.LoadInt32(&otherDestroyed); got != 1 {
+		t.Fatalf("expected unrelated session to be released once, got flag=%d", got)
+	}
+
+	if err := otherSession.Run(); err == nil || !strings.Contains(err.Error(), "session has been destroyed") {
+		t.Fatalf("expected destroyed session error for other session, got: %v", err)
+	}
+}
+
+func TestTensorDestroyWaitsForInFlightRun(t *testing.T) {
+	resetEnvironmentState()
+	defer resetEnvironmentState()
+
+	runStarted := make(chan struct{})
+	allowRunReturn := make(chan struct{})
+	var closeRunStarted sync.Once
+
+	releasedTensor := int32(0)
+
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	runSessionFunc = func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr {
+		closeRunStarted.Do(func() { close(runStarted) })
+		<-allowRunReturn
+		return 0
+	}
+	releaseValueFunc = func(handle uintptr) {
+		atomic.AddInt32(&releasedTensor, 1)
+	}
+	mu.Unlock()
+
+	inputTensor := &Tensor[float32]{handle: 1}
+	session := &AdvancedSession{
+		handle:       333,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{inputTensor},
+		outputValues: []Value{&fakeValue{handle: 2}},
+	}
+
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- session.Run()
+	}()
+
+	<-runStarted
+
+	tensorDestroyErrCh := make(chan error, 1)
+	go func() {
+		tensorDestroyErrCh <- inputTensor.Destroy()
+	}()
+
+	select {
+	case err := <-tensorDestroyErrCh:
+		t.Fatalf("tensor destroy returned before run completed: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(allowRunReturn)
+
+	if err := <-runErrCh; err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if err := <-tensorDestroyErrCh; err != nil {
+		t.Fatalf("tensor destroy failed: %v", err)
+	}
+
+	if got := atomic.LoadInt32(&releasedTensor); got != 1 {
+		t.Fatalf("expected tensor release callback once, got %d", got)
 	}
 }
 

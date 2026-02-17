@@ -55,6 +55,9 @@ func resolveOrtPackageDir() (string, error) {
 		candidates = append(candidates, wd, filepath.Join(wd, "ort"))
 	}
 
+	// runtime.Caller can return trimmed paths when tests run with -trimpath.
+	// We still include it as a best-effort candidate, but rely on cwd-based
+	// candidates first for robust resolution in CI and local runs.
 	if _, thisFile, _, ok := runtime.Caller(0); ok {
 		callerDir := filepath.Dir(thisFile)
 		candidates = append(candidates, callerDir)
