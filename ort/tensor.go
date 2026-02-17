@@ -125,7 +125,8 @@ func newTensorFromData[T any](shape Shape, data []T, elementType TensorElementDa
 	return tensor, nil
 }
 
-// GetData returns the tensor data
+// GetData returns the tensor data.
+// After Destroy() it returns nil.
 func (t *Tensor[T]) GetData() []T {
 	return t.data
 }
@@ -141,6 +142,7 @@ func (t *Tensor[T]) Destroy() error {
 		return nil
 	}
 
+	// Lock order here is ortCallMu -> mu.
 	ortCallMu.Lock()
 	defer ortCallMu.Unlock()
 

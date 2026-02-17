@@ -86,7 +86,8 @@ func NewShape(dims ...int64) Shape {
 	return Shape(dims)
 }
 
-// SessionOptions represents options for creating a session
+// SessionOptions represents options for creating a session.
+// It is not safe to mutate a SessionOptions instance concurrently with session creation.
 type SessionOptions struct {
 	handle                 uintptr // Pointer to OrtSessionOptions
 	graphOptimizationLevel GraphOptimizationLevel

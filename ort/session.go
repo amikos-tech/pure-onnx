@@ -119,6 +119,7 @@ func (s *AdvancedSession) Run() error {
 		return fmt.Errorf("session is nil")
 	}
 
+	// Lock order here is runMu -> ortCallMu -> mu.
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 
@@ -207,6 +208,7 @@ func (s *AdvancedSession) Destroy() error {
 		return nil
 	}
 
+	// Lock order here is runMu -> ortCallMu -> mu.
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 

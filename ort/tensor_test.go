@@ -182,6 +182,31 @@ func TestTensorDestroyNil(t *testing.T) {
 	}
 }
 
+func TestTensorDestroyDoubleWithoutORT(t *testing.T) {
+	resetEnvironmentState()
+
+	tensor := &Tensor[float32]{
+		handle: 123,
+		data:   []float32{1, 2, 3},
+		shape:  Shape{3},
+	}
+
+	if err := tensor.Destroy(); err != nil {
+		t.Fatalf("first destroy failed: %v", err)
+	}
+	if tensor.handle != 0 {
+		t.Fatalf("expected handle to be reset")
+	}
+	if tensor.data != nil || tensor.shape != nil {
+		t.Fatalf("expected tensor fields to be cleared")
+	}
+
+	// With ORT funcs unset, second destroy should remain a safe no-op.
+	if err := tensor.Destroy(); err != nil {
+		t.Fatalf("second destroy should be no-op, got: %v", err)
+	}
+}
+
 func TestNewTensorWithORT(t *testing.T) {
 	cleanup := setupTestEnvironment(t)
 	defer cleanup()
