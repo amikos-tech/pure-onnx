@@ -21,7 +21,8 @@ const (
 var (
 	// Lock hierarchy across ORT lifecycle and calls:
 	// 1) object-level locks (for example AdvancedSession.runMu)
-	// 2) ortCallMu (RLock for regular ORT calls, Lock for init/destroy transitions)
+	// 2) ortCallMu (RLock for regular ORT calls; Lock for environment init/destroy
+	//    and object release calls that must not overlap in-flight ORT use)
 	// 3) mu (global runtime pointers/function snapshots)
 	//
 	// Keep this order to avoid deadlocks.

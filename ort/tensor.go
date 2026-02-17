@@ -95,6 +95,9 @@ func newTensorFromData[T any](shape Shape, data []T, elementType TensorElementDa
 		pinner.Pin(unsafe.SliceData(data))
 		// #nosec G103 -- Required for CGO-free FFI; backing array is pinned for OrtValue lifetime via runtime.Pinner.
 		dataPtr = uintptr(unsafe.Pointer(unsafe.SliceData(data)))
+	} else {
+		// For zero-element tensors, ORT receives a nil data pointer with byte length 0.
+		dataPtr = 0
 	}
 
 	var valueHandle uintptr
@@ -150,6 +153,8 @@ func (t *Tensor[T]) Destroy() error {
 	}
 
 	// Lock order here is ortCallMu -> mu.
+	// We intentionally use ortCallMu.Lock (not RLock) so handle release cannot overlap
+	// with in-flight ORT calls that may still read this OrtValue.
 	ortCallMu.Lock()
 	defer ortCallMu.Unlock()
 
@@ -204,6 +209,7 @@ func shapeElementCount(shape Shape) (int, error) {
 		}
 
 		if dim == 0 {
+			// Continue scanning to validate remaining dimensions (for example reject {0, -1}).
 			count = 0
 			continue
 		}
@@ -237,6 +243,8 @@ func shapePtr(shape Shape) *int64 {
 	if len(shape) == 0 {
 		return nil
 	}
+	// The returned pointer aliases shape's backing array.
+	// Callers must KeepAlive(shape) until ORT returns.
 	return unsafe.SliceData(shape)
 }
 

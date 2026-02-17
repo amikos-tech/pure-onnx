@@ -10,6 +10,11 @@ import (
 // All dimensions must be non-negative concrete sizes.
 // Dynamic dimensions from model metadata (for example -1) are not accepted here.
 func ParseShape(raw string) (Shape, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, fmt.Errorf("shape string must not be empty")
+	}
+
 	parts := strings.Split(raw, ",")
 	shape := make(Shape, 0, len(parts))
 	for _, part := range parts {

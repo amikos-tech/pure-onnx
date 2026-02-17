@@ -21,6 +21,7 @@ type AdvancedSession struct {
 // NewAdvancedSession creates a new session with specified inputs and outputs.
 // Callers retain ownership of input/output values and must keep them alive.
 // Values must not be Destroy()'d while this session may still Run().
+// If a value is destroyed early, Run() returns a "...value at index N has been destroyed" error.
 func NewAdvancedSession(modelPath string, inputNames []string, outputNames []string,
 	inputValues []Value, outputValues []Value, options *SessionOptions) (*AdvancedSession, error) {
 	if modelPath == "" {
@@ -38,10 +39,14 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 	if len(outputNames) != len(outputValues) {
 		return nil, fmt.Errorf("output names/values count mismatch: got %d names and %d values", len(outputNames), len(outputValues))
 	}
+	if options != nil && options.handle == 0 {
+		return nil, fmt.Errorf("session options handle is not initialized")
+	}
 
 	ortCallMu.RLock()
 	defer ortCallMu.RUnlock()
 
+	// Validate values while ortCallMu is held so handles cannot be released concurrently.
 	for i, v := range inputValues {
 		if err := validateSessionValue(v, "input", i); err != nil {
 			return nil, err
@@ -51,9 +56,6 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 		if err := validateSessionValue(v, "output", i); err != nil {
 			return nil, err
 		}
-	}
-	if options != nil && options.handle == 0 {
-		return nil, fmt.Errorf("session options handle is not initialized")
 	}
 
 	mu.Lock()
@@ -91,6 +93,8 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 
 	var sessionHandle uintptr
 	status := createSession(envHandle, modelPathPtr, sessionOptionsHandle, &sessionHandle)
+	// modelPathBacking owns the native char buffer returned by goStringToORTChar.
+	// Keep it alive until createSession returns.
 	runtime.KeepAlive(modelPathBacking)
 	if status != 0 {
 		errMsg := getErrorMessage(status)
@@ -113,7 +117,9 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 	return session, nil
 }
 
-// Run executes inference on the session
+// Run executes inference on the session.
+// Calls are intentionally serialized per session instance via runMu because this MVP
+// binds fixed input/output value handles onto the session object.
 func (s *AdvancedSession) Run() error {
 	if s == nil {
 		return fmt.Errorf("session is nil")
@@ -123,6 +129,8 @@ func (s *AdvancedSession) Run() error {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 
+	// Holding ortCallMu RLock keeps DestroyEnvironment() from closing the runtime
+	// while raw pointers are passed into ORT.
 	ortCallMu.RLock()
 	defer ortCallMu.RUnlock()
 
@@ -208,6 +216,8 @@ func (s *AdvancedSession) Destroy() error {
 	}
 
 	// Lock order here is runMu -> ortCallMu -> mu.
+	// We intentionally use ortCallMu.Lock (not RLock) to block until in-flight ORT calls
+	// complete before releasing this session handle.
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 

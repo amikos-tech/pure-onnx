@@ -118,7 +118,7 @@ func TestParseShape(t *testing.T) {
 		{
 			name:    "empty input",
 			raw:     "",
-			wantErr: "empty dimension",
+			wantErr: "shape string must not be empty",
 		},
 		{
 			name:    "empty dimension",
