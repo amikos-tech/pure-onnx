@@ -275,3 +275,38 @@ func TestNewEmptyTensorWithORT(t *testing.T) {
 		t.Fatalf("second destroy should be no-op, got: %v", err)
 	}
 }
+
+func TestScalarTensorWithORT(t *testing.T) {
+	cleanup := setupTestEnvironment(t)
+	defer cleanup()
+
+	tensor, err := NewTensor[float32](Shape{}, []float32{3.14})
+	if err != nil {
+		t.Fatalf("NewTensor scalar failed: %v", err)
+	}
+	defer func() {
+		_ = tensor.Destroy()
+	}()
+
+	if got := tensor.Shape(); !reflect.DeepEqual(got, Shape{}) {
+		t.Fatalf("unexpected scalar shape: got %v, want []", got)
+	}
+	if got := tensor.GetData(); len(got) != 1 || got[0] != float32(3.14) {
+		t.Fatalf("unexpected scalar data: %v", got)
+	}
+
+	emptyScalar, err := NewEmptyTensor[float32](Shape{})
+	if err != nil {
+		t.Fatalf("NewEmptyTensor scalar failed: %v", err)
+	}
+	defer func() {
+		_ = emptyScalar.Destroy()
+	}()
+
+	if got := emptyScalar.Shape(); !reflect.DeepEqual(got, Shape{}) {
+		t.Fatalf("unexpected empty scalar shape: got %v, want []", got)
+	}
+	if got := emptyScalar.GetData(); len(got) != 1 {
+		t.Fatalf("unexpected empty scalar data length: got %d, want 1", len(got))
+	}
+}

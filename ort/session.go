@@ -59,6 +59,8 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 	}
 
 	mu.Lock()
+	// Safe to snapshot under mu here because ortCallMu.RLock is already held.
+	// DestroyEnvironment takes ortCallMu.Lock before it can nil these globals.
 	if ortAPI == nil || ortEnv == 0 || createSessionOptionsFunc == nil || releaseSessionOptionsFunc == nil || createSessionFunc == nil {
 		mu.Unlock()
 		return nil, fmt.Errorf("ONNX Runtime not initialized")
@@ -163,6 +165,8 @@ func (s *AdvancedSession) Run() error {
 	outputValues = s.outputValues
 
 	// Global runtime pointers/functions are guarded by mu.
+	// Safe to snapshot under mu here because ortCallMu.RLock is already held.
+	// DestroyEnvironment takes ortCallMu.Lock before it can nil these globals.
 	mu.Lock()
 	if ortAPI == nil || runSessionFunc == nil {
 		mu.Unlock()

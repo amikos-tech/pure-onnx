@@ -79,6 +79,7 @@ func newTensorFromData[T any](shape Shape, data []T, elementType TensorElementDa
 
 	nameBytes, namePtr := GoToCstring("Cpu")
 	var memInfo uintptr
+	// TODO: allow caller-configurable allocator/memory type once non-CPU providers are exposed.
 	status := createMemoryInfo(namePtr, AllocatorTypeArena, 0, MemTypeCPU, &memInfo)
 	runtime.KeepAlive(nameBytes)
 	if status != 0 {
@@ -160,6 +161,8 @@ func (t *Tensor[T]) Destroy() error {
 	// Lock order here is ortCallMu -> mu.
 	// We intentionally use ortCallMu.Lock (not RLock) so handle release cannot overlap
 	// with in-flight ORT calls that may still read this OrtValue.
+	// TODO: replace this global write lock with finer-grained lifetime tracking so
+	// destroying one tensor does not stall unrelated in-flight inference.
 	ortCallMu.Lock()
 	defer ortCallMu.Unlock()
 

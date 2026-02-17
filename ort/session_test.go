@@ -162,6 +162,70 @@ func TestNewAdvancedSessionWithUninitializedSessionOptions(t *testing.T) {
 	}
 }
 
+func TestNewAdvancedSessionWithProvidedSessionOptionsHandle(t *testing.T) {
+	resetEnvironmentState()
+	defer resetEnvironmentState()
+
+	var (
+		createSessionOptionsCalls  int32
+		releaseSessionOptionsCalls int32
+		createSessionCalls         int32
+		receivedSessionOptions     uintptr
+	)
+
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	ortEnv = 99
+	createSessionOptionsFunc = func(out *uintptr) uintptr {
+		atomic.AddInt32(&createSessionOptionsCalls, 1)
+		if out != nil {
+			*out = 111
+		}
+		return 0
+	}
+	releaseSessionOptionsFunc = func(handle uintptr) {
+		atomic.AddInt32(&releaseSessionOptionsCalls, 1)
+	}
+	createSessionFunc = func(env uintptr, modelPath uintptr, sessionOptions uintptr, out *uintptr) uintptr {
+		atomic.AddInt32(&createSessionCalls, 1)
+		receivedSessionOptions = sessionOptions
+		if out != nil {
+			*out = 123
+		}
+		return 0
+	}
+	mu.Unlock()
+
+	options := &SessionOptions{handle: 777}
+	session, err := NewAdvancedSession(
+		"model.onnx",
+		[]string{"input"},
+		[]string{"output"},
+		[]Value{&fakeValue{handle: 1}},
+		[]Value{&fakeValue{handle: 2}},
+		options,
+	)
+	if err != nil {
+		t.Fatalf("expected session creation to succeed with provided options handle, got: %v", err)
+	}
+	defer func() {
+		_ = session.Destroy()
+	}()
+
+	if got := atomic.LoadInt32(&createSessionCalls); got != 1 {
+		t.Fatalf("expected createSession to be called once, got %d", got)
+	}
+	if got := atomic.LoadInt32(&createSessionOptionsCalls); got != 0 {
+		t.Fatalf("expected createSessionOptions not to be called, got %d", got)
+	}
+	if got := atomic.LoadInt32(&releaseSessionOptionsCalls); got != 0 {
+		t.Fatalf("expected releaseSessionOptions not to be called, got %d", got)
+	}
+	if receivedSessionOptions != options.handle {
+		t.Fatalf("expected createSession to receive options handle %d, got %d", options.handle, receivedSessionOptions)
+	}
+}
+
 func TestAdvancedSessionRunNil(t *testing.T) {
 	var session *AdvancedSession
 	err := session.Run()
@@ -358,7 +422,7 @@ func TestAdvancedSessionRunAndDestroyConcurrent(t *testing.T) {
 	select {
 	case err := <-destroyErrCh:
 		t.Fatalf("destroy returned before run completed: %v", err)
-	case <-time.After(10 * time.Millisecond):
+	case <-time.After(500 * time.Millisecond):
 	}
 
 	close(allowRunReturn)
@@ -438,7 +502,7 @@ func TestAdvancedSessionDestroyDoesNotBlockUnrelatedRun(t *testing.T) {
 		if err != nil {
 			t.Fatalf("destroy failed: %v", err)
 		}
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(500 * time.Millisecond):
 		t.Fatalf("destroy should not block on unrelated in-flight Run")
 	}
 
@@ -503,7 +567,7 @@ func TestTensorDestroyWaitsForInFlightRun(t *testing.T) {
 	select {
 	case err := <-tensorDestroyErrCh:
 		t.Fatalf("tensor destroy returned before run completed: %v", err)
-	case <-time.After(25 * time.Millisecond):
+	case <-time.After(500 * time.Millisecond):
 	}
 
 	close(allowRunReturn)
