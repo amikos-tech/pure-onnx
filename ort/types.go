@@ -57,7 +57,8 @@ type Session struct {
 	outputCount int
 }
 
-// Value represents an ONNX Runtime value (tensor, sequence, map, etc.)
+// Value represents an ONNX Runtime value (tensor, sequence, map, etc.).
+// Sessions currently only accept Value implementations created by this package.
 type Value interface {
 	// Destroy releases the underlying resources
 	Destroy() error

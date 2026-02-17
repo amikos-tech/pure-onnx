@@ -115,24 +115,10 @@ func parseShapeEnv(key string) (ort.Shape, error) {
 		return nil, fmt.Errorf("set %s (example: \"1,384\")", key)
 	}
 
-	parts := strings.Split(raw, ",")
-	shape := make(ort.Shape, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			return nil, fmt.Errorf("%s contains an empty dimension", key)
-		}
-
-		dim, err := strconv.ParseInt(part, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("%s has invalid dimension %q: %w", key, part, err)
-		}
-		if dim < 0 {
-			return nil, fmt.Errorf("%s has negative dimension %d", key, dim)
-		}
-		shape = append(shape, dim)
+	shape, err := ort.ParseShape(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s is invalid: %w", key, err)
 	}
-
 	return shape, nil
 }
 

@@ -20,6 +20,7 @@ const (
 
 var (
 	mu                                 sync.Mutex
+	ortCallMu                          sync.RWMutex
 	refCount                           int
 	ortLib                             uintptr
 	ortAPI                             *OrtApi
@@ -62,6 +63,9 @@ func releaseStatus(status uintptr) {
 
 // InitializeEnvironment initializes the ONNX Runtime environment
 func InitializeEnvironment() error {
+	ortCallMu.Lock()
+	defer ortCallMu.Unlock()
+
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -174,6 +178,9 @@ func InitializeEnvironment() error {
 
 // DestroyEnvironment cleans up the ONNX Runtime environment
 func DestroyEnvironment() error {
+	ortCallMu.Lock()
+	defer ortCallMu.Unlock()
+
 	mu.Lock()
 	defer mu.Unlock()
 

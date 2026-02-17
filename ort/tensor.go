@@ -10,7 +10,8 @@ import (
 type Tensor[T any] struct {
 	shape  Shape
 	data   []T
-	handle uintptr // Pointer to OrtValue
+	handle uintptr         // Pointer to OrtValue
+	pinner *runtime.Pinner // Pins data backing array while OrtValue may access it.
 }
 
 func (t *Tensor[T]) ortValueHandle() uintptr {
@@ -36,57 +37,7 @@ func NewTensor[T any](shape Shape, data []T) (*Tensor[T], error) {
 		return nil, fmt.Errorf("data length mismatch: got %d elements, expected %d for shape %v", len(data), elementCount, shapeCopy)
 	}
 
-	dataBytes, err := tensorDataByteSize(len(data), elementSize)
-	if err != nil {
-		return nil, err
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	if ortAPI == nil || createMemoryInfoFunc == nil || releaseMemoryInfoFunc == nil || createTensorWithDataAsOrtValueFunc == nil {
-		return nil, fmt.Errorf("ONNX Runtime not initialized")
-	}
-
-	nameBytes, namePtr := GoToCstring("Cpu")
-	var memInfo uintptr
-	status := createMemoryInfoFunc(namePtr, AllocatorTypeArena, 0, MemTypeCPU, &memInfo)
-	runtime.KeepAlive(nameBytes)
-	if status != 0 {
-		errMsg := getErrorMessage(status)
-		releaseStatus(status)
-		return nil, fmt.Errorf("failed to create CPU memory info: %s", errMsg)
-	}
-	defer releaseMemoryInfoFunc(memInfo)
-
-	var dataPtr uintptr
-	if len(data) > 0 {
-		// #nosec G103 -- Required for CGO-free FFI; pointer remains valid via runtime.KeepAlive(data)
-		dataPtr = uintptr(unsafe.Pointer(unsafe.SliceData(data)))
-	}
-
-	var valueHandle uintptr
-	status = createTensorWithDataAsOrtValueFunc(memInfo, dataPtr, dataBytes, shapePtr(shapeCopy), uintptr(len(shapeCopy)), elementType, &valueHandle)
-	runtime.KeepAlive(data)
-	runtime.KeepAlive(shapeCopy)
-	if status != 0 {
-		errMsg := getErrorMessage(status)
-		releaseStatus(status)
-		return nil, fmt.Errorf("failed to create tensor: %s", errMsg)
-	}
-
-	tensor := &Tensor[T]{
-		shape:  shapeCopy,
-		data:   data,
-		handle: valueHandle,
-	}
-
-	// Finalizer is a safety net to avoid leaking OrtValue if callers forget Destroy().
-	runtime.SetFinalizer(tensor, func(t *Tensor[T]) {
-		_ = t.Destroy()
-	})
-
-	return tensor, nil
+	return newTensorFromData(shapeCopy, data, elementType, elementSize)
 }
 
 // NewEmptyTensor creates a new empty tensor with the given shape
@@ -103,49 +54,67 @@ func NewEmptyTensor[T any](shape Shape) (*Tensor[T], error) {
 	}
 
 	data := make([]T, elementCount)
-	dataBytes, err := tensorDataByteSize(elementCount, elementSize)
+
+	return newTensorFromData(shapeCopy, data, elementType, elementSize)
+}
+
+func newTensorFromData[T any](shape Shape, data []T, elementType TensorElementDataType, elementSize uintptr) (*Tensor[T], error) {
+	dataBytes, err := tensorDataByteSize(len(data), elementSize)
 	if err != nil {
 		return nil, err
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
+	ortCallMu.RLock()
+	defer ortCallMu.RUnlock()
 
+	mu.Lock()
 	if ortAPI == nil || createMemoryInfoFunc == nil || releaseMemoryInfoFunc == nil || createTensorWithDataAsOrtValueFunc == nil {
+		mu.Unlock()
 		return nil, fmt.Errorf("ONNX Runtime not initialized")
 	}
+	createMemoryInfo := createMemoryInfoFunc
+	releaseMemoryInfo := releaseMemoryInfoFunc
+	createTensorWithData := createTensorWithDataAsOrtValueFunc
+	mu.Unlock()
 
 	nameBytes, namePtr := GoToCstring("Cpu")
 	var memInfo uintptr
-	status := createMemoryInfoFunc(namePtr, AllocatorTypeArena, 0, MemTypeCPU, &memInfo)
+	status := createMemoryInfo(namePtr, AllocatorTypeArena, 0, MemTypeCPU, &memInfo)
 	runtime.KeepAlive(nameBytes)
 	if status != 0 {
 		errMsg := getErrorMessage(status)
 		releaseStatus(status)
 		return nil, fmt.Errorf("failed to create CPU memory info: %s", errMsg)
 	}
-	defer releaseMemoryInfoFunc(memInfo)
+	defer releaseMemoryInfo(memInfo)
 
 	var dataPtr uintptr
+	var pinner *runtime.Pinner
 	if len(data) > 0 {
+		pinner = &runtime.Pinner{}
+		pinner.Pin(unsafe.SliceData(data))
 		// #nosec G103 -- Required for CGO-free FFI; pointer remains valid via runtime.KeepAlive(data)
 		dataPtr = uintptr(unsafe.Pointer(unsafe.SliceData(data)))
 	}
 
 	var valueHandle uintptr
-	status = createTensorWithDataAsOrtValueFunc(memInfo, dataPtr, dataBytes, shapePtr(shapeCopy), uintptr(len(shapeCopy)), elementType, &valueHandle)
+	status = createTensorWithData(memInfo, dataPtr, dataBytes, shapePtr(shape), uintptr(len(shape)), elementType, &valueHandle)
 	runtime.KeepAlive(data)
-	runtime.KeepAlive(shapeCopy)
+	runtime.KeepAlive(shape)
 	if status != 0 {
+		if pinner != nil {
+			pinner.Unpin()
+		}
 		errMsg := getErrorMessage(status)
 		releaseStatus(status)
 		return nil, fmt.Errorf("failed to create tensor: %s", errMsg)
 	}
 
 	tensor := &Tensor[T]{
-		shape:  shapeCopy,
+		shape:  shape,
 		data:   data,
 		handle: valueHandle,
+		pinner: pinner,
 	}
 
 	// Finalizer is a safety net to avoid leaking OrtValue if callers forget Destroy().
@@ -172,17 +141,30 @@ func (t *Tensor[T]) Destroy() error {
 		return nil
 	}
 
+	ortCallMu.Lock()
+	defer ortCallMu.Unlock()
+
+	var handle uintptr
+	var releaseValue func(uintptr)
+	var pinner *runtime.Pinner
+
 	mu.Lock()
-	defer mu.Unlock()
-
-	if t.handle != 0 && releaseValueFunc != nil {
-		releaseValueFunc(t.handle)
-	}
-
+	handle = t.handle
+	releaseValue = releaseValueFunc
+	pinner = t.pinner
 	t.handle = 0
 	t.data = nil
 	t.shape = nil
+	t.pinner = nil
 	runtime.SetFinalizer(t, nil)
+	mu.Unlock()
+
+	if handle != 0 && releaseValue != nil {
+		releaseValue(handle)
+	}
+	if pinner != nil {
+		pinner.Unpin()
+	}
 
 	return nil
 }

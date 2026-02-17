@@ -1,9 +1,7 @@
 package ort
 
 import (
-	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -94,7 +92,7 @@ func TestNewAdvancedSessionValidation(t *testing.T) {
 			outputNames:  []string{"output"},
 			inputValues:  []Value{validValue},
 			outputValues: []Value{&fakeValue{handle: 0}},
-			wantErr:      "value handle is not initialized",
+			wantErr:      "output value at index 0 has been destroyed",
 		},
 	}
 
@@ -178,6 +176,17 @@ func TestAdvancedSessionRunDestroyed(t *testing.T) {
 }
 
 func TestAdvancedSessionDestroy(t *testing.T) {
+	resetEnvironmentState()
+
+	releasedCount := 0
+	releasedHandle := uintptr(0)
+	mu.Lock()
+	releaseSessionFunc = func(handle uintptr) {
+		releasedCount++
+		releasedHandle = handle
+	}
+	mu.Unlock()
+
 	session := &AdvancedSession{
 		handle:       123,
 		inputNames:   []string{"input"},
@@ -195,9 +204,69 @@ func TestAdvancedSessionDestroy(t *testing.T) {
 	if session.inputNames != nil || session.outputNames != nil || session.inputValues != nil || session.outputValues != nil {
 		t.Fatalf("expected session fields to be cleared")
 	}
+	if releasedCount != 1 {
+		t.Fatalf("expected release callback to be called once, got %d", releasedCount)
+	}
+	if releasedHandle != 123 {
+		t.Fatalf("expected release callback to receive handle 123, got %d", releasedHandle)
+	}
 
 	if err := session.Destroy(); err != nil {
 		t.Fatalf("second destroy should be no-op, got: %v", err)
+	}
+	if releasedCount != 1 {
+		t.Fatalf("expected second destroy to not release again, got %d releases", releasedCount)
+	}
+
+	resetEnvironmentState()
+}
+
+func TestAdvancedSessionRunDestroyedInputValue(t *testing.T) {
+	resetEnvironmentState()
+
+	runCalled := false
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	runSessionFunc = func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr {
+		runCalled = true
+		return 0
+	}
+	mu.Unlock()
+
+	session := &AdvancedSession{
+		handle:       123,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{&fakeValue{handle: 0}},
+		outputValues: []Value{&fakeValue{handle: 2}},
+	}
+
+	err := session.Run()
+	if err == nil || !strings.Contains(err.Error(), "input value at index 0 has been destroyed") {
+		t.Fatalf("expected destroyed input value error, got: %v", err)
+	}
+	if runCalled {
+		t.Fatalf("expected runSessionFunc not to be called when input value is destroyed")
+	}
+
+	resetEnvironmentState()
+}
+
+func TestMakeCStringPointerArrayEmpty(t *testing.T) {
+	backings, ptrs := makeCStringPointerArray(nil)
+	if backings != nil {
+		t.Fatalf("expected nil backings for empty input")
+	}
+	if ptrs != nil {
+		t.Fatalf("expected nil ptrs for empty input")
+	}
+
+	backings, ptrs = makeCStringPointerArray([]string{})
+	if backings != nil {
+		t.Fatalf("expected nil backings for empty slice")
+	}
+	if ptrs != nil {
+		t.Fatalf("expected nil ptrs for empty slice")
 	}
 }
 
@@ -248,11 +317,11 @@ func TestAdvancedSessionRunWithRealModel(t *testing.T) {
 		t.Skip("set ONNXRUNTIME_TEST_MODEL_PATH, ONNXRUNTIME_TEST_INPUT_NAME, ONNXRUNTIME_TEST_OUTPUT_NAME, ONNXRUNTIME_TEST_INPUT_SHAPE, ONNXRUNTIME_TEST_OUTPUT_SHAPE for real model run test")
 	}
 
-	inputShape, err := parseShape(inputShapeRaw)
+	inputShape, err := ParseShape(inputShapeRaw)
 	if err != nil {
 		t.Fatalf("invalid ONNXRUNTIME_TEST_INPUT_SHAPE: %v", err)
 	}
-	outputShape, err := parseShape(outputShapeRaw)
+	outputShape, err := ParseShape(outputShapeRaw)
 	if err != nil {
 		t.Fatalf("invalid ONNXRUNTIME_TEST_OUTPUT_SHAPE: %v", err)
 	}
@@ -303,21 +372,4 @@ func TestAdvancedSessionRunWithRealModel(t *testing.T) {
 	if err := session.Run(); err != nil {
 		t.Fatalf("session run failed: %v", err)
 	}
-}
-
-func parseShape(raw string) (Shape, error) {
-	parts := strings.Split(raw, ",")
-	out := make(Shape, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			return nil, fmt.Errorf("empty dimension")
-		}
-		dim, err := strconv.ParseInt(part, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse dimension %q: %w", part, err)
-		}
-		out = append(out, dim)
-	}
-	return out, nil
 }

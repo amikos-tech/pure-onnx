@@ -9,6 +9,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// goStringToORTChar converts a Go string to ORTCHAR_T for Windows.
+// The returned backing object must be kept alive by the caller until ORT
+// has finished using the returned pointer.
 func goStringToORTChar(s string) (uintptr, any, error) {
 	utf16, err := windows.UTF16FromString(s)
 	if err != nil {

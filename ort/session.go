@@ -1,8 +1,10 @@
 package ort
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
+	"sync"
 	"unsafe"
 )
 
@@ -13,9 +15,12 @@ type AdvancedSession struct {
 	outputNames  []string
 	inputValues  []Value
 	outputValues []Value
+	runMu        sync.Mutex
 }
 
-// NewAdvancedSession creates a new session with specified inputs and outputs
+// NewAdvancedSession creates a new session with specified inputs and outputs.
+// Callers retain ownership of input/output values and must keep them alive.
+// Values must not be Destroy()'d while this session may still Run().
 func NewAdvancedSession(modelPath string, inputNames []string, outputNames []string,
 	inputValues []Value, outputValues []Value, options *SessionOptions) (*AdvancedSession, error) {
 	if modelPath == "" {
@@ -34,16 +39,17 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 		return nil, fmt.Errorf("output names/values count mismatch: got %d names and %d values", len(outputNames), len(outputValues))
 	}
 
+	ortCallMu.RLock()
+	defer ortCallMu.RUnlock()
+
 	for i, v := range inputValues {
-		_, err := valueHandle(v)
-		if err != nil {
-			return nil, fmt.Errorf("invalid input value at index %d: %w", i, err)
+		if err := validateSessionValue(v, "input", i); err != nil {
+			return nil, err
 		}
 	}
 	for i, v := range outputValues {
-		_, err := valueHandle(v)
-		if err != nil {
-			return nil, fmt.Errorf("invalid output value at index %d: %w", i, err)
+		if err := validateSessionValue(v, "output", i); err != nil {
+			return nil, err
 		}
 	}
 	if options != nil && options.handle == 0 {
@@ -51,18 +57,22 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 	}
 
 	mu.Lock()
-	defer mu.Unlock()
-
 	if ortAPI == nil || ortEnv == 0 || createSessionOptionsFunc == nil || releaseSessionOptionsFunc == nil || createSessionFunc == nil {
+		mu.Unlock()
 		return nil, fmt.Errorf("ONNX Runtime not initialized")
 	}
+	envHandle := ortEnv
+	createSessionOptions := createSessionOptionsFunc
+	releaseSessionOptions := releaseSessionOptionsFunc
+	createSession := createSessionFunc
+	mu.Unlock()
 
 	sessionOptionsHandle := uintptr(0)
 	releaseCreatedOptions := false
 	if options != nil {
 		sessionOptionsHandle = options.handle
 	} else {
-		status := createSessionOptionsFunc(&sessionOptionsHandle)
+		status := createSessionOptions(&sessionOptionsHandle)
 		if status != 0 {
 			errMsg := getErrorMessage(status)
 			releaseStatus(status)
@@ -71,7 +81,7 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 		releaseCreatedOptions = true
 	}
 	if releaseCreatedOptions {
-		defer releaseSessionOptionsFunc(sessionOptionsHandle)
+		defer releaseSessionOptions(sessionOptionsHandle)
 	}
 
 	modelPathPtr, modelPathBacking, err := goStringToORTChar(modelPath)
@@ -80,7 +90,7 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 	}
 
 	var sessionHandle uintptr
-	status := createSessionFunc(ortEnv, modelPathPtr, sessionOptionsHandle, &sessionHandle)
+	status := createSession(envHandle, modelPathPtr, sessionOptionsHandle, &sessionHandle)
 	runtime.KeepAlive(modelPathBacking)
 	if status != 0 {
 		errMsg := getErrorMessage(status)
@@ -109,39 +119,64 @@ func (s *AdvancedSession) Run() error {
 		return fmt.Errorf("session is nil")
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
 
+	ortCallMu.RLock()
+	defer ortCallMu.RUnlock()
+
+	var (
+		sessionHandle uintptr
+		run           func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr
+		inputNames    []string
+		outputNames   []string
+		inputValues   []Value
+		outputValues  []Value
+	)
+
+	mu.Lock()
 	if ortAPI == nil || runSessionFunc == nil {
+		mu.Unlock()
 		return fmt.Errorf("ONNX Runtime not initialized")
 	}
 	if s.handle == 0 {
+		mu.Unlock()
 		return fmt.Errorf("session has been destroyed")
 	}
 	if len(s.inputNames) == 0 || len(s.outputNames) == 0 {
+		mu.Unlock()
 		return fmt.Errorf("session is missing input/output names")
 	}
 	if len(s.inputNames) != len(s.inputValues) {
+		mu.Unlock()
 		return fmt.Errorf("session input names/values count mismatch: got %d names and %d values", len(s.inputNames), len(s.inputValues))
 	}
 	if len(s.outputNames) != len(s.outputValues) {
+		mu.Unlock()
 		return fmt.Errorf("session output names/values count mismatch: got %d names and %d values", len(s.outputNames), len(s.outputValues))
 	}
+	sessionHandle = s.handle
+	run = runSessionFunc
+	inputNames = s.inputNames
+	outputNames = s.outputNames
+	inputValues = s.inputValues
+	outputValues = s.outputValues
+	mu.Unlock()
 
-	inputNameBackings, inputNamePtrs := makeCStringPointerArray(s.inputNames)
-	outputNameBackings, outputNamePtrs := makeCStringPointerArray(s.outputNames)
+	inputNameBackings, inputNamePtrs := makeCStringPointerArray(inputNames)
+	outputNameBackings, outputNamePtrs := makeCStringPointerArray(outputNames)
 
-	inputValueHandles, err := valuesToHandles(s.inputValues)
+	inputValueHandles, err := valuesToHandles(inputValues, "input")
 	if err != nil {
-		return fmt.Errorf("failed to prepare input values: %w", err)
+		return err
 	}
-	outputValueHandles, err := valuesToHandles(s.outputValues)
+	outputValueHandles, err := valuesToHandles(outputValues, "output")
 	if err != nil {
-		return fmt.Errorf("failed to prepare output values: %w", err)
+		return err
 	}
 
-	status := runSessionFunc(
-		s.handle,
+	status := run(
+		sessionHandle,
 		0, // RunOptions not yet implemented
 		uintptrSlicePtr(inputNamePtrs),
 		uintptrSlicePtr(inputValueHandles),
@@ -150,6 +185,7 @@ func (s *AdvancedSession) Run() error {
 		uintptr(len(outputValueHandles)),
 		uintptrSlicePtr(outputValueHandles),
 	)
+	// Keep backing slices alive until ORT returns because runSessionFunc receives raw pointers into them.
 	runtime.KeepAlive(inputNameBackings)
 	runtime.KeepAlive(outputNameBackings)
 	runtime.KeepAlive(inputNamePtrs)
@@ -171,43 +207,74 @@ func (s *AdvancedSession) Destroy() error {
 		return nil
 	}
 
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+
+	ortCallMu.Lock()
+	defer ortCallMu.Unlock()
+
+	var (
+		handle         uintptr
+		releaseSession func(uintptr)
+	)
+
 	mu.Lock()
-	defer mu.Unlock()
-
-	if s.handle != 0 && releaseSessionFunc != nil {
-		releaseSessionFunc(s.handle)
-	}
-
+	handle = s.handle
+	releaseSession = releaseSessionFunc
 	s.handle = 0
 	s.inputNames = nil
 	s.outputNames = nil
 	s.inputValues = nil
 	s.outputValues = nil
 	runtime.SetFinalizer(s, nil)
+	mu.Unlock()
+
+	if handle != 0 && releaseSession != nil {
+		releaseSession(handle)
+	}
 
 	return nil
 }
 
+// valueWithORTHandle is intentionally package-private.
+// Today, sessions only support Value implementations created by this package.
 type valueWithORTHandle interface {
 	ortValueHandle() uintptr
 }
 
+var (
+	errValueNil         = errors.New("value is nil")
+	errValueDestroyed   = errors.New("value has been destroyed")
+	errValueUnsupported = errors.New("unsupported value implementation")
+)
+
 func valueHandle(v Value) (uintptr, error) {
 	if v == nil {
-		return 0, fmt.Errorf("value is nil")
+		return 0, errValueNil
 	}
 	handleProvider, ok := v.(valueWithORTHandle)
 	if !ok {
-		return 0, fmt.Errorf("unsupported value implementation %T", v)
+		return 0, fmt.Errorf("%w %T", errValueUnsupported, v)
 	}
 	handle := handleProvider.ortValueHandle()
 	if handle == 0 {
-		return 0, fmt.Errorf("value handle is not initialized")
+		return 0, errValueDestroyed
 	}
 	return handle, nil
 }
 
-func valuesToHandles(values []Value) ([]uintptr, error) {
+func validateSessionValue(v Value, role string, index int) error {
+	_, err := valueHandle(v)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, errValueDestroyed) {
+		return fmt.Errorf("%s value at index %d has been destroyed", role, index)
+	}
+	return fmt.Errorf("invalid %s value at index %d: %w", role, index, err)
+}
+
+func valuesToHandles(values []Value, role string) ([]uintptr, error) {
 	if len(values) == 0 {
 		return nil, nil
 	}
@@ -215,7 +282,10 @@ func valuesToHandles(values []Value) ([]uintptr, error) {
 	for i, v := range values {
 		handle, err := valueHandle(v)
 		if err != nil {
-			return nil, fmt.Errorf("value at index %d is invalid: %w", i, err)
+			if errors.Is(err, errValueDestroyed) {
+				return nil, fmt.Errorf("%s value at index %d has been destroyed", role, i)
+			}
+			return nil, fmt.Errorf("%s value at index %d is invalid: %w", role, i, err)
 		}
 		handles[i] = handle
 	}
@@ -259,6 +329,8 @@ func uintptrSlicePtr(values []uintptr) *uintptr {
 	if len(values) == 0 {
 		return nil
 	}
+	// The returned pointer aliases values' backing array.
+	// Callers must KeepAlive(values) until ORT returns.
 	// #nosec G103 -- Required for CGO-free FFI to pass pointer arrays to ONNX Runtime C API.
 	return (*uintptr)(unsafe.Pointer(unsafe.SliceData(values)))
 }

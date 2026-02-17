@@ -2,6 +2,7 @@ package ort
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -92,6 +93,62 @@ func TestStatus_GetErrorCode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.status.GetErrorCode(); got != tt.want {
 				t.Errorf("Status.GetErrorCode() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseShape(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    Shape
+		wantErr string
+	}{
+		{
+			name: "standard",
+			raw:  "1,384",
+			want: Shape{1, 384},
+		},
+		{
+			name: "trim spaces",
+			raw:  " 2, 3 ,4 ",
+			want: Shape{2, 3, 4},
+		},
+		{
+			name:    "empty dimension",
+			raw:     "1,,3",
+			wantErr: "empty dimension",
+		},
+		{
+			name:    "negative dimension",
+			raw:     "1,-1,3",
+			wantErr: "negative dimension",
+		},
+		{
+			name:    "invalid integer",
+			raw:     "1,a,3",
+			wantErr: "failed to parse dimension",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseShape(tt.raw)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("unexpected shape: got %v, want %v", got, tt.want)
 			}
 		})
 	}
