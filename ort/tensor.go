@@ -146,7 +146,12 @@ func (t *Tensor[T]) Shape() Shape {
 	return t.shape
 }
 
-// Destroy releases the tensor resources
+// Destroy releases the tensor resources.
+//
+// Concurrency note: Destroy acquires a global ORT call write-lock so value release
+// cannot overlap any in-flight ORT call that may still read this OrtValue handle.
+// As a result, tensor destruction may block while inference is running, and can
+// temporarily pause new inference calls across sessions.
 func (t *Tensor[T]) Destroy() error {
 	if t == nil {
 		return nil
