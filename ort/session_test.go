@@ -3,7 +3,10 @@ package ort
 import (
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type fakeValue struct {
@@ -219,6 +222,146 @@ func TestAdvancedSessionDestroy(t *testing.T) {
 	}
 
 	resetEnvironmentState()
+}
+
+func TestAdvancedSessionRunConcurrent(t *testing.T) {
+	resetEnvironmentState()
+	defer resetEnvironmentState()
+
+	const runCalls = 32
+
+	var (
+		calls       int32
+		inFlight    int32
+		maxInFlight int32
+	)
+
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	runSessionFunc = func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr {
+		atomic.AddInt32(&calls, 1)
+		current := atomic.AddInt32(&inFlight, 1)
+		for {
+			seen := atomic.LoadInt32(&maxInFlight)
+			if current <= seen {
+				break
+			}
+			if atomic.CompareAndSwapInt32(&maxInFlight, seen, current) {
+				break
+			}
+		}
+		time.Sleep(1 * time.Millisecond)
+		atomic.AddInt32(&inFlight, -1)
+		return 0
+	}
+	mu.Unlock()
+
+	session := &AdvancedSession{
+		handle:       123,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{&fakeValue{handle: 1}},
+		outputValues: []Value{&fakeValue{handle: 2}},
+	}
+
+	start := make(chan struct{})
+	errCh := make(chan error, runCalls)
+	var wg sync.WaitGroup
+	for i := 0; i < runCalls; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errCh <- session.Run()
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent run failed: %v", err)
+		}
+	}
+
+	if got := atomic.LoadInt32(&calls); got != runCalls {
+		t.Fatalf("expected %d Run() calls to reach runtime, got %d", runCalls, got)
+	}
+	if got := atomic.LoadInt32(&maxInFlight); got != 1 {
+		t.Fatalf("expected Run() calls to be serialized per session, max in-flight=%d", got)
+	}
+}
+
+func TestAdvancedSessionRunAndDestroyConcurrent(t *testing.T) {
+	resetEnvironmentState()
+	defer resetEnvironmentState()
+
+	runStarted := make(chan struct{})
+	allowRunReturn := make(chan struct{})
+	var closeRunStarted sync.Once
+
+	releasedCount := int32(0)
+	releasedHandle := uintptr(0)
+
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	runSessionFunc = func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr {
+		closeRunStarted.Do(func() { close(runStarted) })
+		<-allowRunReturn
+		return 0
+	}
+	releaseSessionFunc = func(handle uintptr) {
+		atomic.AddInt32(&releasedCount, 1)
+		releasedHandle = handle
+	}
+	mu.Unlock()
+
+	session := &AdvancedSession{
+		handle:       456,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{&fakeValue{handle: 1}},
+		outputValues: []Value{&fakeValue{handle: 2}},
+	}
+
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- session.Run()
+	}()
+
+	<-runStarted
+
+	destroyErrCh := make(chan error, 1)
+	go func() {
+		destroyErrCh <- session.Destroy()
+	}()
+
+	select {
+	case err := <-destroyErrCh:
+		t.Fatalf("destroy returned before run completed: %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	close(allowRunReturn)
+
+	if err := <-runErrCh; err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if err := <-destroyErrCh; err != nil {
+		t.Fatalf("destroy failed: %v", err)
+	}
+
+	if got := atomic.LoadInt32(&releasedCount); got != 1 {
+		t.Fatalf("expected release callback once, got %d", got)
+	}
+	if releasedHandle != 456 {
+		t.Fatalf("expected release callback handle 456, got %d", releasedHandle)
+	}
+
+	if err := session.Run(); err == nil || !strings.Contains(err.Error(), "session has been destroyed") {
+		t.Fatalf("expected destroyed session error after concurrent destroy, got: %v", err)
+	}
 }
 
 func TestAdvancedSessionRunDestroyedInputValue(t *testing.T) {
