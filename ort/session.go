@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"runtime"
 	"unsafe"
-
-	"github.com/ebitengine/purego"
 )
 
 // AdvancedSession represents an ONNX Runtime inference session
@@ -55,24 +53,16 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 	mu.Lock()
 	defer mu.Unlock()
 
-	if ortAPI == nil || ortEnv == 0 {
+	if ortAPI == nil || ortEnv == 0 || createSessionOptionsFunc == nil || releaseSessionOptionsFunc == nil || createSessionFunc == nil {
 		return nil, fmt.Errorf("ONNX Runtime not initialized")
 	}
-
-	var createSessionOptions func(out *uintptr) uintptr
-	var releaseSessionOptions func(sessionOptions uintptr)
-	var createSession func(env uintptr, modelPath uintptr, sessionOptions uintptr, out *uintptr) uintptr
-
-	purego.RegisterFunc(&createSessionOptions, ortAPI.CreateSessionOptions)
-	purego.RegisterFunc(&releaseSessionOptions, ortAPI.ReleaseSessionOptions)
-	purego.RegisterFunc(&createSession, ortAPI.CreateSession)
 
 	sessionOptionsHandle := uintptr(0)
 	releaseCreatedOptions := false
 	if options != nil {
 		sessionOptionsHandle = options.handle
 	} else {
-		status := createSessionOptions(&sessionOptionsHandle)
+		status := createSessionOptionsFunc(&sessionOptionsHandle)
 		if status != 0 {
 			errMsg := getErrorMessage(status)
 			releaseStatus(status)
@@ -81,7 +71,7 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 		releaseCreatedOptions = true
 	}
 	if releaseCreatedOptions {
-		defer releaseSessionOptions(sessionOptionsHandle)
+		defer releaseSessionOptionsFunc(sessionOptionsHandle)
 	}
 
 	modelPathPtr, modelPathBacking, err := goStringToORTChar(modelPath)
@@ -90,7 +80,7 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 	}
 
 	var sessionHandle uintptr
-	status := createSession(ortEnv, modelPathPtr, sessionOptionsHandle, &sessionHandle)
+	status := createSessionFunc(ortEnv, modelPathPtr, sessionOptionsHandle, &sessionHandle)
 	runtime.KeepAlive(modelPathBacking)
 	if status != 0 {
 		errMsg := getErrorMessage(status)
@@ -122,7 +112,7 @@ func (s *AdvancedSession) Run() error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if ortAPI == nil {
+	if ortAPI == nil || runSessionFunc == nil {
 		return fmt.Errorf("ONNX Runtime not initialized")
 	}
 	if s.handle == 0 {
@@ -138,9 +128,6 @@ func (s *AdvancedSession) Run() error {
 		return fmt.Errorf("session output names/values count mismatch: got %d names and %d values", len(s.outputNames), len(s.outputValues))
 	}
 
-	var run func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr
-	purego.RegisterFunc(&run, ortAPI.Run)
-
 	inputNameBackings, inputNamePtrs := makeCStringPointerArray(s.inputNames)
 	outputNameBackings, outputNamePtrs := makeCStringPointerArray(s.outputNames)
 
@@ -153,7 +140,7 @@ func (s *AdvancedSession) Run() error {
 		return fmt.Errorf("failed to prepare output values: %w", err)
 	}
 
-	status := run(
+	status := runSessionFunc(
 		s.handle,
 		0, // RunOptions not yet implemented
 		uintptrSlicePtr(inputNamePtrs),
@@ -187,10 +174,8 @@ func (s *AdvancedSession) Destroy() error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if s.handle != 0 && ortAPI != nil {
-		var releaseSession func(session uintptr)
-		purego.RegisterFunc(&releaseSession, ortAPI.ReleaseSession)
-		releaseSession(s.handle)
+	if s.handle != 0 && releaseSessionFunc != nil {
+		releaseSessionFunc(s.handle)
 	}
 
 	s.handle = 0

@@ -156,6 +156,9 @@ func TestAdvancedSessionRunDestroyed(t *testing.T) {
 
 	mu.Lock()
 	ortAPI = &OrtApi{}
+	runSessionFunc = func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr {
+		return 0
+	}
 	mu.Unlock()
 
 	session := &AdvancedSession{

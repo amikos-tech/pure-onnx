@@ -20,6 +20,15 @@ func resetEnvironmentState() {
 	getVersionStringFunc = nil
 	getErrorMessageFunc = nil
 	releaseStatusFunc = nil
+	createMemoryInfoFunc = nil
+	releaseMemoryInfoFunc = nil
+	createTensorWithDataAsOrtValueFunc = nil
+	releaseValueFunc = nil
+	createSessionOptionsFunc = nil
+	releaseSessionOptionsFunc = nil
+	createSessionFunc = nil
+	runSessionFunc = nil
+	releaseSessionFunc = nil
 }
 
 func TestIsInitialized(t *testing.T) {

@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"runtime"
 	"unsafe"
-
-	"github.com/ebitengine/purego"
 )
 
 // Tensor represents a tensor with data of type T
@@ -46,12 +44,9 @@ func NewTensor[T any](shape Shape, data []T) (*Tensor[T], error) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if ortAPI == nil || createMemoryInfoFunc == nil || releaseMemoryInfoFunc == nil {
+	if ortAPI == nil || createMemoryInfoFunc == nil || releaseMemoryInfoFunc == nil || createTensorWithDataAsOrtValueFunc == nil {
 		return nil, fmt.Errorf("ONNX Runtime not initialized")
 	}
-
-	var createTensorWithDataAsOrtValue func(info uintptr, pData uintptr, pDataLen uintptr, shape *int64, shapeLen uintptr, dataType TensorElementDataType, out *uintptr) uintptr
-	purego.RegisterFunc(&createTensorWithDataAsOrtValue, ortAPI.CreateTensorWithDataAsOrtValue)
 
 	nameBytes, namePtr := GoToCstring("Cpu")
 	var memInfo uintptr
@@ -71,7 +66,7 @@ func NewTensor[T any](shape Shape, data []T) (*Tensor[T], error) {
 	}
 
 	var valueHandle uintptr
-	status = createTensorWithDataAsOrtValue(memInfo, dataPtr, dataBytes, shapePtr(shapeCopy), uintptr(len(shapeCopy)), elementType, &valueHandle)
+	status = createTensorWithDataAsOrtValueFunc(memInfo, dataPtr, dataBytes, shapePtr(shapeCopy), uintptr(len(shapeCopy)), elementType, &valueHandle)
 	runtime.KeepAlive(data)
 	runtime.KeepAlive(shapeCopy)
 	if status != 0 {
@@ -96,7 +91,7 @@ func NewTensor[T any](shape Shape, data []T) (*Tensor[T], error) {
 
 // NewEmptyTensor creates a new empty tensor with the given shape
 func NewEmptyTensor[T any](shape Shape) (*Tensor[T], error) {
-	elementType, _, err := tensorElementType[T]()
+	elementType, elementSize, err := tensorElementType[T]()
 	if err != nil {
 		return nil, err
 	}
@@ -107,59 +102,44 @@ func NewEmptyTensor[T any](shape Shape) (*Tensor[T], error) {
 		return nil, err
 	}
 
+	data := make([]T, elementCount)
+	dataBytes, err := tensorDataByteSize(elementCount, elementSize)
+	if err != nil {
+		return nil, err
+	}
+
 	mu.Lock()
 	defer mu.Unlock()
 
-	if ortAPI == nil {
+	if ortAPI == nil || createMemoryInfoFunc == nil || releaseMemoryInfoFunc == nil || createTensorWithDataAsOrtValueFunc == nil {
 		return nil, fmt.Errorf("ONNX Runtime not initialized")
 	}
 
-	var getAllocatorWithDefaultOptions func(out *uintptr) uintptr
-	var createTensorAsOrtValue func(allocator uintptr, shape *int64, shapeLen uintptr, dataType TensorElementDataType, out *uintptr) uintptr
-	var getTensorMutableData func(value uintptr, out *uintptr) uintptr
-	var releaseValue func(value uintptr)
-
-	purego.RegisterFunc(&getAllocatorWithDefaultOptions, ortAPI.GetAllocatorWithDefaultOptions)
-	purego.RegisterFunc(&createTensorAsOrtValue, ortAPI.CreateTensorAsOrtValue)
-	purego.RegisterFunc(&getTensorMutableData, ortAPI.GetTensorMutableData)
-	purego.RegisterFunc(&releaseValue, ortAPI.ReleaseValue)
-
-	var allocator uintptr
-	status := getAllocatorWithDefaultOptions(&allocator)
+	nameBytes, namePtr := GoToCstring("Cpu")
+	var memInfo uintptr
+	status := createMemoryInfoFunc(namePtr, AllocatorTypeArena, 0, MemTypeCPU, &memInfo)
+	runtime.KeepAlive(nameBytes)
 	if status != 0 {
 		errMsg := getErrorMessage(status)
 		releaseStatus(status)
-		return nil, fmt.Errorf("failed to get default allocator: %s", errMsg)
+		return nil, fmt.Errorf("failed to create CPU memory info: %s", errMsg)
+	}
+	defer releaseMemoryInfoFunc(memInfo)
+
+	var dataPtr uintptr
+	if len(data) > 0 {
+		// #nosec G103 -- Required for CGO-free FFI; pointer remains valid via runtime.KeepAlive(data)
+		dataPtr = uintptr(unsafe.Pointer(unsafe.SliceData(data)))
 	}
 
 	var valueHandle uintptr
-	status = createTensorAsOrtValue(allocator, shapePtr(shapeCopy), uintptr(len(shapeCopy)), elementType, &valueHandle)
+	status = createTensorWithDataAsOrtValueFunc(memInfo, dataPtr, dataBytes, shapePtr(shapeCopy), uintptr(len(shapeCopy)), elementType, &valueHandle)
+	runtime.KeepAlive(data)
 	runtime.KeepAlive(shapeCopy)
 	if status != 0 {
 		errMsg := getErrorMessage(status)
 		releaseStatus(status)
-		return nil, fmt.Errorf("failed to create empty tensor: %s", errMsg)
-	}
-
-	var rawData uintptr
-	status = getTensorMutableData(valueHandle, &rawData)
-	if status != 0 {
-		releaseValue(valueHandle)
-		errMsg := getErrorMessage(status)
-		releaseStatus(status)
-		return nil, fmt.Errorf("failed to access tensor data: %s", errMsg)
-	}
-	if elementCount > 0 && rawData == 0 {
-		releaseValue(valueHandle)
-		return nil, fmt.Errorf("failed to access tensor data: got null data pointer")
-	}
-
-	var data []T
-	if elementCount > 0 {
-		// #nosec G103 -- Required for CGO-free FFI; rawData points to memory owned by OrtValue.
-		data = unsafe.Slice((*T)(unsafe.Pointer(rawData)), elementCount)
-	} else {
-		data = make([]T, 0)
+		return nil, fmt.Errorf("failed to create tensor: %s", errMsg)
 	}
 
 	tensor := &Tensor[T]{
@@ -195,10 +175,8 @@ func (t *Tensor[T]) Destroy() error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if t.handle != 0 && ortAPI != nil {
-		var releaseValue func(value uintptr)
-		purego.RegisterFunc(&releaseValue, ortAPI.ReleaseValue)
-		releaseValue(t.handle)
+	if t.handle != 0 && releaseValueFunc != nil {
+		releaseValueFunc(t.handle)
 	}
 
 	t.handle = 0

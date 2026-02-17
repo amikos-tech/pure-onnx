@@ -19,18 +19,25 @@ const (
 )
 
 var (
-	mu                    sync.Mutex
-	refCount              int
-	ortLib                uintptr
-	ortAPI                *OrtApi
-	ortEnv                uintptr
-	libPath               string
-	logLevel              LoggingLevel = LoggingLevelWarning // Default to Warning
-	getVersionStringFunc  func() uintptr
-	getErrorMessageFunc   func(uintptr) uintptr
-	releaseStatusFunc     func(uintptr)
-	createMemoryInfoFunc  func(name uintptr, allocatorType AllocatorType, deviceID int32, memType MemType, out *uintptr) uintptr
-	releaseMemoryInfoFunc func(uintptr)
+	mu                                 sync.Mutex
+	refCount                           int
+	ortLib                             uintptr
+	ortAPI                             *OrtApi
+	ortEnv                             uintptr
+	libPath                            string
+	logLevel                           LoggingLevel = LoggingLevelWarning // Default to Warning
+	getVersionStringFunc               func() uintptr
+	getErrorMessageFunc                func(uintptr) uintptr
+	releaseStatusFunc                  func(uintptr)
+	createMemoryInfoFunc               func(name uintptr, allocatorType AllocatorType, deviceID int32, memType MemType, out *uintptr) uintptr
+	releaseMemoryInfoFunc              func(uintptr)
+	createTensorWithDataAsOrtValueFunc func(info uintptr, pData uintptr, pDataLen uintptr, shape *int64, shapeLen uintptr, dataType TensorElementDataType, out *uintptr) uintptr
+	releaseValueFunc                   func(uintptr)
+	createSessionOptionsFunc           func(out *uintptr) uintptr
+	releaseSessionOptionsFunc          func(uintptr)
+	createSessionFunc                  func(env uintptr, modelPath uintptr, sessionOptions uintptr, out *uintptr) uintptr
+	runSessionFunc                     func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr
+	releaseSessionFunc                 func(uintptr)
 )
 
 // getErrorMessage extracts the error message from an ORT status code.
@@ -81,6 +88,13 @@ func InitializeEnvironment() error {
 			releaseStatusFunc = nil
 			createMemoryInfoFunc = nil
 			releaseMemoryInfoFunc = nil
+			createTensorWithDataAsOrtValueFunc = nil
+			releaseValueFunc = nil
+			createSessionOptionsFunc = nil
+			releaseSessionOptionsFunc = nil
+			createSessionFunc = nil
+			runSessionFunc = nil
+			releaseSessionFunc = nil
 		}
 	}()
 
@@ -114,6 +128,13 @@ func InitializeEnvironment() error {
 	purego.RegisterFunc(&releaseStatusFunc, ortAPI.ReleaseStatus)
 	purego.RegisterFunc(&createMemoryInfoFunc, ortAPI.CreateMemoryInfo)
 	purego.RegisterFunc(&releaseMemoryInfoFunc, ortAPI.ReleaseMemoryInfo)
+	purego.RegisterFunc(&createTensorWithDataAsOrtValueFunc, ortAPI.CreateTensorWithDataAsOrtValue)
+	purego.RegisterFunc(&releaseValueFunc, ortAPI.ReleaseValue)
+	purego.RegisterFunc(&createSessionOptionsFunc, ortAPI.CreateSessionOptions)
+	purego.RegisterFunc(&releaseSessionOptionsFunc, ortAPI.ReleaseSessionOptions)
+	purego.RegisterFunc(&createSessionFunc, ortAPI.CreateSession)
+	purego.RegisterFunc(&runSessionFunc, ortAPI.Run)
+	purego.RegisterFunc(&releaseSessionFunc, ortAPI.ReleaseSession)
 
 	// Validate ONNX Runtime version (warn if mismatch, unless explicitly skipped)
 	if os.Getenv("ONNXRUNTIME_SKIP_VERSION_CHECK") == "" {
@@ -187,6 +208,13 @@ func DestroyEnvironment() error {
 	releaseStatusFunc = nil
 	createMemoryInfoFunc = nil
 	releaseMemoryInfoFunc = nil
+	createTensorWithDataAsOrtValueFunc = nil
+	releaseValueFunc = nil
+	createSessionOptionsFunc = nil
+	releaseSessionOptionsFunc = nil
+	createSessionFunc = nil
+	runSessionFunc = nil
+	releaseSessionFunc = nil
 
 	return nil
 }
