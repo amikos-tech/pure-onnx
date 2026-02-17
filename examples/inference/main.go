@@ -34,7 +34,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	inputElementCount, err := elementCount(inputShape)
+	inputElementCount, err := ort.ShapeElementCount(inputShape)
 	if err != nil {
 		log.Fatalf("invalid input shape: %v", err)
 	}
@@ -120,31 +120,6 @@ func parseShapeEnv(key string) (ort.Shape, error) {
 		return nil, fmt.Errorf("%s is invalid: %w", key, err)
 	}
 	return shape, nil
-}
-
-func elementCount(shape ort.Shape) (int, error) {
-	maxInt := int(^uint(0) >> 1)
-	count := 1
-
-	for i, dim := range shape {
-		if dim < 0 {
-			return 0, fmt.Errorf("dimension %d is negative (%d)", i, dim)
-		}
-		if dim == 0 {
-			return 0, nil
-		}
-		if dim > int64(maxInt) {
-			return 0, fmt.Errorf("dimension %d is too large (%d)", i, dim)
-		}
-
-		d := int(dim)
-		if count > maxInt/d {
-			return 0, fmt.Errorf("shape %v is too large", shape)
-		}
-		count *= d
-	}
-
-	return count, nil
 }
 
 func parseInputData(raw string, expected int) ([]float32, error) {

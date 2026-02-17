@@ -128,40 +128,39 @@ func (s *AdvancedSession) Run() error {
 
 	var (
 		sessionHandle uintptr
-		run           func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr
 		inputNames    []string
 		outputNames   []string
 		inputValues   []Value
 		outputValues  []Value
+		run           func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr
 	)
 
+	// Session-owned fields are guarded by runMu.
+	if s.handle == 0 {
+		return fmt.Errorf("session has been destroyed")
+	}
+	if len(s.inputNames) == 0 || len(s.outputNames) == 0 {
+		return fmt.Errorf("session is missing input/output names")
+	}
+	if len(s.inputNames) != len(s.inputValues) {
+		return fmt.Errorf("session input names/values count mismatch: got %d names and %d values", len(s.inputNames), len(s.inputValues))
+	}
+	if len(s.outputNames) != len(s.outputValues) {
+		return fmt.Errorf("session output names/values count mismatch: got %d names and %d values", len(s.outputNames), len(s.outputValues))
+	}
+	sessionHandle = s.handle
+	inputNames = s.inputNames
+	outputNames = s.outputNames
+	inputValues = s.inputValues
+	outputValues = s.outputValues
+
+	// Global runtime pointers/functions are guarded by mu.
 	mu.Lock()
 	if ortAPI == nil || runSessionFunc == nil {
 		mu.Unlock()
 		return fmt.Errorf("ONNX Runtime not initialized")
 	}
-	if s.handle == 0 {
-		mu.Unlock()
-		return fmt.Errorf("session has been destroyed")
-	}
-	if len(s.inputNames) == 0 || len(s.outputNames) == 0 {
-		mu.Unlock()
-		return fmt.Errorf("session is missing input/output names")
-	}
-	if len(s.inputNames) != len(s.inputValues) {
-		mu.Unlock()
-		return fmt.Errorf("session input names/values count mismatch: got %d names and %d values", len(s.inputNames), len(s.inputValues))
-	}
-	if len(s.outputNames) != len(s.outputValues) {
-		mu.Unlock()
-		return fmt.Errorf("session output names/values count mismatch: got %d names and %d values", len(s.outputNames), len(s.outputValues))
-	}
-	sessionHandle = s.handle
 	run = runSessionFunc
-	inputNames = s.inputNames
-	outputNames = s.outputNames
-	inputValues = s.inputValues
-	outputValues = s.outputValues
 	mu.Unlock()
 
 	inputNameBackings, inputNamePtrs := makeCStringPointerArray(inputNames)
@@ -296,6 +295,7 @@ func valuesToHandles(values []Value, role string) ([]uintptr, error) {
 
 func cloneStringSlice(input []string) []string {
 	if len(input) == 0 {
+		// Use nil for optional string collections when there are no entries.
 		return nil
 	}
 	out := make([]string, len(input))

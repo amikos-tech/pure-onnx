@@ -126,13 +126,19 @@ func newTensorFromData[T any](shape Shape, data []T, elementType TensorElementDa
 }
 
 // GetData returns the tensor data.
-// After Destroy() it returns nil.
+// After Destroy() it returns nil. Calling on a nil receiver also returns nil.
 func (t *Tensor[T]) GetData() []T {
+	if t == nil {
+		return nil
+	}
 	return t.data
 }
 
 // Shape returns the tensor shape
 func (t *Tensor[T]) Shape() Shape {
+	if t == nil {
+		return nil
+	}
 	return t.shape
 }
 
@@ -178,6 +184,7 @@ func (t *Tensor[T]) Type() ValueType {
 
 func cloneShape(shape Shape) Shape {
 	if len(shape) == 0 {
+		// Keep scalar tensors as non-nil empty shape (rank 0), not nil.
 		return Shape{}
 	}
 
@@ -217,6 +224,12 @@ func shapeElementCount(shape Shape) (int, error) {
 	}
 
 	return count, nil
+}
+
+// ShapeElementCount returns the total element count for a shape.
+// Dimensions must be non-negative; zero dimensions produce a count of zero.
+func ShapeElementCount(shape Shape) (int, error) {
+	return shapeElementCount(shape)
 }
 
 func shapePtr(shape Shape) *int64 {

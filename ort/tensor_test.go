@@ -182,6 +182,16 @@ func TestTensorDestroyNil(t *testing.T) {
 	}
 }
 
+func TestTensorAccessorsNilReceiver(t *testing.T) {
+	var tns *Tensor[float32]
+	if data := tns.GetData(); data != nil {
+		t.Fatalf("expected nil data for nil receiver, got %v", data)
+	}
+	if shape := tns.Shape(); shape != nil {
+		t.Fatalf("expected nil shape for nil receiver, got %v", shape)
+	}
+}
+
 func TestTensorDestroyDoubleWithoutORT(t *testing.T) {
 	resetEnvironmentState()
 

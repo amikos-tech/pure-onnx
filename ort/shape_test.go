@@ -153,3 +153,49 @@ func TestParseShape(t *testing.T) {
 		})
 	}
 }
+
+func TestShapeElementCountExported(t *testing.T) {
+	tests := []struct {
+		name      string
+		shape     Shape
+		wantCount int
+		wantErr   string
+	}{
+		{
+			name:      "standard",
+			shape:     Shape{2, 3, 4},
+			wantCount: 24,
+		},
+		{
+			name:      "zero dimension",
+			shape:     Shape{5, 0, 7},
+			wantCount: 0,
+		},
+		{
+			name:    "negative dimension",
+			shape:   Shape{2, -1},
+			wantErr: "must be >= 0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ShapeElementCount(tt.shape)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.wantCount {
+				t.Fatalf("unexpected count: got %d, want %d", got, tt.wantCount)
+			}
+		})
+	}
+}

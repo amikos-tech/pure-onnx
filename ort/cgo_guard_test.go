@@ -1,6 +1,7 @@
 package ort
 
 import (
+	"fmt"
 	"go/parser"
 	"go/token"
 	"os"
@@ -12,11 +13,10 @@ import (
 
 // TestNoCgoImportInOrtPackage enforces the project's no-CGO contract for ort/.
 func TestNoCgoImportInOrtPackage(t *testing.T) {
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("failed to determine current file path")
+	ortDir, err := resolveOrtPackageDir()
+	if err != nil {
+		t.Fatal(err)
 	}
-	ortDir := filepath.Dir(thisFile)
 
 	entries, err := os.ReadDir(ortDir)
 	if err != nil {
@@ -46,4 +46,28 @@ func TestNoCgoImportInOrtPackage(t *testing.T) {
 			}
 		}
 	}
+}
+
+func resolveOrtPackageDir() (string, error) {
+	candidates := make([]string, 0, 4)
+
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		candidates = append(candidates, wd, filepath.Join(wd, "ort"))
+	}
+
+	if _, thisFile, _, ok := runtime.Caller(0); ok {
+		callerDir := filepath.Dir(thisFile)
+		candidates = append(candidates, callerDir)
+	}
+
+	for _, dir := range candidates {
+		if dir == "" {
+			continue
+		}
+		if fileInfo, err := os.Stat(filepath.Join(dir, "cgo_guard_test.go")); err == nil && !fileInfo.IsDir() {
+			return dir, nil
+		}
+	}
+
+	return "", fmt.Errorf("failed to locate ort package directory; checked: %v", candidates)
 }

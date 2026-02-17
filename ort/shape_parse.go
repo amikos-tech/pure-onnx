@@ -7,6 +7,8 @@ import (
 )
 
 // ParseShape parses a comma-separated shape string (for example: "1,384").
+// All dimensions must be non-negative concrete sizes.
+// Dynamic dimensions from model metadata (for example -1) are not accepted here.
 func ParseShape(raw string) (Shape, error) {
 	parts := strings.Split(raw, ",")
 	shape := make(Shape, 0, len(parts))
@@ -21,7 +23,7 @@ func ParseShape(raw string) (Shape, error) {
 			return nil, fmt.Errorf("failed to parse dimension %q: %w", part, err)
 		}
 		if dim < 0 {
-			return nil, fmt.Errorf("negative dimension %d", dim)
+			return nil, fmt.Errorf("negative dimension %d (dynamic dimensions like -1 are not supported; provide concrete runtime sizes)", dim)
 		}
 		shape = append(shape, dim)
 	}
