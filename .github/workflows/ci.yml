@@ -96,7 +96,7 @@ jobs:
     timeout-minutes: 35
     env:
       ORT_VERSION: '1.24.1'
-      ONNXRUNTIME_TEST_MODEL_CACHE_DIR: ${{ runner.temp }}/onnx-model-cache
+      ONNXRUNTIME_TEST_MODEL_CACHE_DIR: ${{ github.workspace }}/.cache/onnx-model-cache
       ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH: '8'
       ONNXRUNTIME_TEST_LEAK_ITERATIONS: '40'
       ONNXRUNTIME_TEST_LEAK_MAX_GROWTH_MB: '96'
