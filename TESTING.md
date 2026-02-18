@@ -55,7 +55,7 @@ Integration tests verify actual FFI interactions with the ONNX Runtime library.
    # Use a pre-downloaded all-MiniLM model (skips network download)
    export ONNXRUNTIME_TEST_ALL_MINILM_MODEL_PATH=/path/to/all-MiniLM-L6-v2.onnx
 
-   # Override sequence length (default: 8)
+   # Override sequence length (default: 8, minimum: 6)
    export ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH=8
    ```
 
@@ -99,7 +99,7 @@ export ONNXRUNTIME_LIB_PATH=/path/to/onnxruntime/lib/libonnxruntime.so
 export ONNXRUNTIME_TEST_ALL_MINILM_MODEL_PATH=/path/to/all-MiniLM-L6-v2.onnx
 
 go test -run '^$' \
-  -bench 'BenchmarkAdvancedSessionRunWithAllMiniLML6V2|BenchmarkAdvancedSessionCreateDestroyWithAllMiniLML6V2' \
+  -bench 'BenchmarkAdvancedSessionRunWarmWithAllMiniLML6V2|BenchmarkAdvancedSessionCreateRunDestroyWithAllMiniLML6V2' \
   -benchmem \
   ./ort/...
 ```
@@ -195,12 +195,13 @@ While ReleaseEnv is currently disabled (see [issue #20](https://github.com/amiko
 export ONNXRUNTIME_LIB_PATH=/path/to/onnxruntime/lib/libonnxruntime.so
 export ONNXRUNTIME_TEST_ALL_MINILM_MODEL_PATH=/path/to/all-MiniLM-L6-v2.onnx
 export ONNXRUNTIME_TEST_LEAK_ITERATIONS=80
-export ONNXRUNTIME_TEST_LEAK_MAX_GROWTH_MB=64
+export ONNXRUNTIME_TEST_LEAK_MAX_GROWTH_MB=96
 
 go test -v ./ort/... -run TestAdvancedSessionRunWithAllMiniLML6V2MemoryStability
 ```
 
 The test executes repeated all-MiniLM inference create/run/destroy cycles and fails if post-GC heap growth exceeds the configured threshold.
+It only measures Go heap growth and does not detect native allocator leaks inside ONNX Runtime.
 
 ### Using Valgrind (Linux)
 

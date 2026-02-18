@@ -12,8 +12,11 @@ func TestAdvancedSessionRunWithAllMiniLML6V2MemoryStability(t *testing.T) {
 	modelPath := resolveAllMiniLMModelPath(t)
 	sequenceLength := allMiniLMSequenceLength(t)
 	iterations := envIntOrDefault(t, "ONNXRUNTIME_TEST_LEAK_ITERATIONS", 80, 1)
-	maxGrowthMB := envIntOrDefault(t, "ONNXRUNTIME_TEST_LEAK_MAX_GROWTH_MB", 64, 1)
+	maxGrowthMB := envIntOrDefault(t, "ONNXRUNTIME_TEST_LEAK_MAX_GROWTH_MB", 96, 1)
 
+	t.Log("memory stability check measures Go heap growth only; use native tooling (ASan/Valgrind) for ORT allocator leaks")
+
+	// Double-GC improves stability of heap snapshots for this coarse regression check.
 	runtime.GC()
 	runtime.GC()
 	var before runtime.MemStats

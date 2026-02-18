@@ -2,7 +2,7 @@ package ort
 
 import "testing"
 
-func BenchmarkAdvancedSessionRunWithAllMiniLML6V2(b *testing.B) {
+func BenchmarkAdvancedSessionRunWarmWithAllMiniLML6V2(b *testing.B) {
 	cleanup := setupTestEnvironment(b)
 	defer cleanup()
 
@@ -63,7 +63,7 @@ func BenchmarkAdvancedSessionRunWithAllMiniLML6V2(b *testing.B) {
 	}
 }
 
-func BenchmarkAdvancedSessionCreateDestroyWithAllMiniLML6V2(b *testing.B) {
+func BenchmarkAdvancedSessionCreateRunDestroyWithAllMiniLML6V2(b *testing.B) {
 	cleanup := setupTestEnvironment(b)
 	defer cleanup()
 
