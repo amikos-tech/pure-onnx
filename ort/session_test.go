@@ -1,7 +1,13 @@
 package ort
 
 import (
+	"fmt"
+	"io"
+	"math"
+	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +27,11 @@ type unsupportedValue struct{}
 
 func (u *unsupportedValue) Destroy() error  { return nil }
 func (u *unsupportedValue) Type() ValueType { return ValueTypeTensor }
+
+const (
+	allMiniLMModelURL           = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx"
+	allMiniLMOutputEmbeddingDim = int64(384)
+)
 
 func TestNewAdvancedSessionValidation(t *testing.T) {
 	validValue := &fakeValue{handle: 1}
@@ -735,4 +746,215 @@ func TestAdvancedSessionRunWithRealModel(t *testing.T) {
 	if err := session.Run(); err != nil {
 		t.Fatalf("session run failed: %v", err)
 	}
+}
+
+func TestAdvancedSessionRunWithAllMiniLML6V2(t *testing.T) {
+	cleanup := setupTestEnvironment(t)
+	defer cleanup()
+
+	modelPath := resolveAllMiniLMModelPath(t)
+	sequenceLength := allMiniLMSequenceLength(t)
+
+	inputShape := Shape{1, int64(sequenceLength)}
+	outputShape := Shape{1, int64(sequenceLength), allMiniLMOutputEmbeddingDim}
+
+	inputIDs, attentionMask, tokenTypeIDs := makeAllMiniLMInputs(sequenceLength)
+
+	inputIDsTensor, err := NewTensor[int64](inputShape, inputIDs)
+	if err != nil {
+		t.Fatalf("failed to create input_ids tensor: %v", err)
+	}
+	defer func() {
+		_ = inputIDsTensor.Destroy()
+	}()
+
+	attentionMaskTensor, err := NewTensor[int64](inputShape, attentionMask)
+	if err != nil {
+		t.Fatalf("failed to create attention_mask tensor: %v", err)
+	}
+	defer func() {
+		_ = attentionMaskTensor.Destroy()
+	}()
+
+	tokenTypeIDsTensor, err := NewTensor[int64](inputShape, tokenTypeIDs)
+	if err != nil {
+		t.Fatalf("failed to create token_type_ids tensor: %v", err)
+	}
+	defer func() {
+		_ = tokenTypeIDsTensor.Destroy()
+	}()
+
+	outputTensor, err := NewEmptyTensor[float32](outputShape)
+	if err != nil {
+		t.Fatalf("failed to create output tensor: %v", err)
+	}
+	defer func() {
+		_ = outputTensor.Destroy()
+	}()
+
+	session, err := NewAdvancedSession(
+		modelPath,
+		[]string{"input_ids", "attention_mask", "token_type_ids"},
+		[]string{"last_hidden_state"},
+		[]Value{inputIDsTensor, attentionMaskTensor, tokenTypeIDsTensor},
+		[]Value{outputTensor},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("failed to create all-MiniLM session: %v", err)
+	}
+	defer func() {
+		_ = session.Destroy()
+	}()
+
+	if err := session.Run(); err != nil {
+		t.Fatalf("all-MiniLM inference failed: %v", err)
+	}
+
+	output := outputTensor.GetData()
+	expected := sequenceLength * int(allMiniLMOutputEmbeddingDim)
+	if len(output) != expected {
+		t.Fatalf("unexpected output length: got %d want %d", len(output), expected)
+	}
+	for i, value := range output {
+		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+			t.Fatalf("output contains non-finite value at index %d: %v", i, value)
+		}
+	}
+}
+
+func allMiniLMSequenceLength(tb testing.TB) int {
+	tb.Helper()
+
+	raw := os.Getenv("ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH")
+	if raw == "" {
+		return 8
+	}
+
+	sequenceLength, err := strconv.Atoi(raw)
+	if err != nil {
+		tb.Fatalf("invalid ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH %q: %v", raw, err)
+	}
+	if sequenceLength < 2 {
+		tb.Fatalf("ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH must be >= 2, got %d", sequenceLength)
+	}
+
+	return sequenceLength
+}
+
+func resolveAllMiniLMModelPath(tb testing.TB) string {
+	tb.Helper()
+
+	if modelPath := os.Getenv("ONNXRUNTIME_TEST_ALL_MINILM_MODEL_PATH"); modelPath != "" {
+		if _, err := os.Stat(modelPath); err != nil {
+			tb.Fatalf("ONNXRUNTIME_TEST_ALL_MINILM_MODEL_PATH %q is not usable: %v", modelPath, err)
+		}
+		return modelPath
+	}
+
+	cacheRoot := os.Getenv("ONNXRUNTIME_TEST_MODEL_CACHE_DIR")
+	if cacheRoot == "" {
+		userCacheDir, err := os.UserCacheDir()
+		if err != nil {
+			tb.Skipf("cannot determine user cache directory: %v; set ONNXRUNTIME_TEST_ALL_MINILM_MODEL_PATH", err)
+		}
+		cacheRoot = filepath.Join(userCacheDir, "onnx-purego", "models")
+	}
+
+	modelPath := filepath.Join(cacheRoot, "all-MiniLM-L6-v2.onnx")
+	if info, err := os.Stat(modelPath); err == nil && info.Size() > 0 {
+		return modelPath
+	}
+
+	if err := os.MkdirAll(filepath.Dir(modelPath), 0o755); err != nil {
+		tb.Fatalf("failed to create model cache directory: %v", err)
+	}
+
+	url := os.Getenv("ONNXRUNTIME_TEST_ALL_MINILM_MODEL_URL")
+	if url == "" {
+		url = allMiniLMModelURL
+	}
+
+	tb.Logf("downloading all-MiniLM model from %s", url)
+	if err := downloadModelFile(modelPath, url); err != nil {
+		tb.Skipf("unable to download all-MiniLM model: %v", err)
+	}
+
+	return modelPath
+}
+
+func downloadModelFile(destinationPath string, modelURL string) error {
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+		if err := downloadModelFileOnce(destinationPath, modelURL); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+func downloadModelFileOnce(destinationPath string, modelURL string) error {
+	client := &http.Client{Timeout: 3 * time.Minute}
+	response, err := client.Get(modelURL)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected HTTP status %d", response.StatusCode)
+	}
+
+	tempPath := destinationPath + ".tmp"
+	file, err := os.Create(tempPath)
+	if err != nil {
+		return err
+	}
+
+	copyErr := error(nil)
+	if _, err := io.Copy(file, response.Body); err != nil {
+		copyErr = err
+	}
+	closeErr := file.Close()
+	if copyErr != nil {
+		_ = os.Remove(tempPath)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tempPath)
+		return closeErr
+	}
+
+	if err := os.Rename(tempPath, destinationPath); err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
+
+	return nil
+}
+
+func makeAllMiniLMInputs(sequenceLength int) ([]int64, []int64, []int64) {
+	// [CLS] this is a test [SEP] + padding.
+	templateTokenIDs := []int64{101, 2023, 2003, 1037, 3231, 102}
+
+	inputIDs := make([]int64, sequenceLength)
+	attentionMask := make([]int64, sequenceLength)
+	tokenTypeIDs := make([]int64, sequenceLength)
+
+	nonPaddingCount := sequenceLength
+	if nonPaddingCount > len(templateTokenIDs) {
+		nonPaddingCount = len(templateTokenIDs)
+	}
+
+	copy(inputIDs, templateTokenIDs[:nonPaddingCount])
+	for i := 0; i < nonPaddingCount; i++ {
+		attentionMask[i] = 1
+	}
+
+	return inputIDs, attentionMask, tokenTypeIDs
 }

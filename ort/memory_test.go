@@ -3,28 +3,29 @@ package ort
 import (
 	"os"
 	"runtime"
+	"strings"
 	"testing"
 )
 
-func setupTestEnvironment(t *testing.T) func() {
-	t.Helper()
+func setupTestEnvironment(tb testing.TB) func() {
+	tb.Helper()
 
 	libPath := os.Getenv("ONNXRUNTIME_LIB_PATH")
 	if libPath == "" {
-		t.Skip("ONNXRUNTIME_LIB_PATH not set, skipping test")
+		tb.Skip("ONNXRUNTIME_LIB_PATH not set, skipping test")
 	}
 
 	if err := SetSharedLibraryPath(libPath); err != nil {
-		t.Fatalf("Failed to set library path: %v", err)
+		tb.Fatalf("Failed to set library path: %v", err)
 	}
 
 	if err := InitializeEnvironment(); err != nil {
-		t.Fatalf("Failed to initialize environment: %v", err)
+		tb.Fatalf("Failed to initialize environment: %v", err)
 	}
 
 	return func() {
 		if err := DestroyEnvironment(); err != nil {
-			t.Errorf("Failed to destroy environment: %v", err)
+			tb.Errorf("Failed to destroy environment: %v", err)
 		}
 	}
 }
@@ -101,12 +102,13 @@ func TestCreateMemoryInfo(t *testing.T) {
 	defer cleanup()
 
 	tests := []struct {
-		name          string
-		allocName     string
-		allocatorType AllocatorType
-		deviceID      int
-		memType       MemType
-		wantErr       bool
+		name              string
+		allocName         string
+		allocatorType     AllocatorType
+		deviceID          int
+		memType           MemType
+		wantErr           bool
+		allowNotSupported bool
 	}{
 		{
 			name:          "CPU memory info",
@@ -117,18 +119,26 @@ func TestCreateMemoryInfo(t *testing.T) {
 			wantErr:       false,
 		},
 		{
-			name:          "Custom allocator",
-			allocName:     "CustomAlloc",
-			allocatorType: AllocatorTypeDevice,
-			deviceID:      0,
-			memType:       MemTypeDefault,
-			wantErr:       false,
+			name:              "Custom allocator",
+			allocName:         "CustomAlloc",
+			allocatorType:     AllocatorTypeDevice,
+			deviceID:          0,
+			memType:           MemTypeDefault,
+			wantErr:           false,
+			allowNotSupported: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			memInfo, err := CreateMemoryInfo(tt.allocName, tt.allocatorType, tt.deviceID, tt.memType)
+			if tt.allowNotSupported && err != nil {
+				errLower := strings.ToLower(err.Error())
+				if strings.Contains(errLower, "not supported") {
+					t.Logf("allocator not supported by this ONNX Runtime build, skipping strict assertion: %v", err)
+					return
+				}
+			}
 			if (err != nil) != tt.wantErr {
 				t.Errorf("CreateMemoryInfo() error = %v, wantErr %v", err, tt.wantErr)
 				return

@@ -50,7 +50,16 @@ Integration tests verify actual FFI interactions with the ONNX Runtime library.
    $env:ONNXRUNTIME_LIB_PATH="C:\path\to\onnxruntime\lib\onnxruntime.dll"
    ```
 
-4. Run tests:
+4. Optional: configure all-MiniLM integration test model settings:
+   ```bash
+   # Use a pre-downloaded all-MiniLM model (skips network download)
+   export ONNXRUNTIME_TEST_ALL_MINILM_MODEL_PATH=/path/to/all-MiniLM-L6-v2.onnx
+
+   # Override sequence length (default: 8)
+   export ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH=8
+   ```
+
+5. Run tests:
    ```bash
    go test -v ./ort/...
    ```
@@ -59,6 +68,7 @@ Integration tests verify actual FFI interactions with the ONNX Runtime library.
 
 When `ONNXRUNTIME_LIB_PATH` is set, the following additional tests run:
 - `TestInitializeWithActualLibrary`: Tests actual library loading, environment creation, version retrieval, and proper cleanup
+- `TestAdvancedSessionRunWithAllMiniLML6V2`: Downloads (or reuses cached) `all-MiniLM-L6-v2` ONNX model and runs end-to-end multi-input inference
 - Tests all FFI interactions including:
   - Dynamic library loading
   - Symbol resolution
@@ -66,6 +76,10 @@ When `ONNXRUNTIME_LIB_PATH` is set, the following additional tests run:
   - Version string retrieval
   - Error message extraction
   - Reference counting with real library
+
+The all-MiniLM model is cached under your user cache directory by default (`.../onnx-purego/models/all-MiniLM-L6-v2.onnx`).
+Use `ONNXRUNTIME_TEST_MODEL_CACHE_DIR` to override cache location and
+`ONNXRUNTIME_TEST_ALL_MINILM_MODEL_URL` to override the download URL.
 
 ### 3. Benchmark Tests
 
@@ -79,13 +93,25 @@ go test -bench=BenchmarkGoToCstring -benchmem ./ort/...
 go test -bench=BenchmarkCstringToGo -benchmem ./ort/...
 ```
 
+Run real-model all-MiniLM benchmarks (requires ONNX Runtime library path):
+```bash
+export ONNXRUNTIME_LIB_PATH=/path/to/onnxruntime/lib/libonnxruntime.so
+export ONNXRUNTIME_TEST_ALL_MINILM_MODEL_PATH=/path/to/all-MiniLM-L6-v2.onnx
+
+go test -run '^$' \
+  -bench 'BenchmarkAdvancedSessionRunWithAllMiniLML6V2|BenchmarkAdvancedSessionCreateDestroyWithAllMiniLML6V2' \
+  -benchmem \
+  ./ort/...
+```
+
 ## Continuous Integration
 
 ### GitHub Actions
 
 The CI pipeline runs tests in multiple configurations:
 - **Unit Tests**: Run on all platforms (Linux, macOS, Windows) with Go 1.23.x and 1.24.x
-- **Integration Tests**: Skipped in CI (no ONNX Runtime library available)
+- **Integration Tests (matrix job)**: Skipped in the cross-platform matrix (no ONNX Runtime library preinstalled)
+- **Real-model Integration Job**: Linux job downloads ONNX Runtime, runs all-MiniLM integration + memory stability tests, and runs all-MiniLM benchmarks
 - **Race Detection**: Partially disabled due to checkptr incompatibility with purego FFI
 
 ### Local CI Simulation
@@ -162,6 +188,19 @@ go test -v -run Concurrent ./ort/...
 ## Memory Leak Detection
 
 While ReleaseEnv is currently disabled (see [issue #20](https://github.com/amikos-tech/pure-onnx/issues/20)), you can check for other memory leaks:
+
+### Integration Memory Stability Test
+
+```bash
+export ONNXRUNTIME_LIB_PATH=/path/to/onnxruntime/lib/libonnxruntime.so
+export ONNXRUNTIME_TEST_ALL_MINILM_MODEL_PATH=/path/to/all-MiniLM-L6-v2.onnx
+export ONNXRUNTIME_TEST_LEAK_ITERATIONS=80
+export ONNXRUNTIME_TEST_LEAK_MAX_GROWTH_MB=64
+
+go test -v ./ort/... -run TestAdvancedSessionRunWithAllMiniLML6V2MemoryStability
+```
+
+The test executes repeated all-MiniLM inference create/run/destroy cycles and fails if post-GC heap growth exceeds the configured threshold.
 
 ### Using Valgrind (Linux)
 
