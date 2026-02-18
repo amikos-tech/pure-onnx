@@ -42,7 +42,8 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          # Pin v2 because .golangci.yml uses v2 formatters config.
+          version: v2.8.0
           args: --concurrency=8 --fix
         # Allow lint failures to not block CI while we iteratively improve code quality.
         # The --fix flag will automatically fix issues where possible, and any remaining

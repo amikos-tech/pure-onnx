@@ -9,6 +9,9 @@ linters:
   enable:
     - gocritic
     - mirror
+
+formatters:
+  enable:
     - gofmt
     - goimports
 

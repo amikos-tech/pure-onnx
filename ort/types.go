@@ -57,7 +57,8 @@ type Session struct {
 	outputCount int
 }
 
-// Value represents an ONNX Runtime value (tensor, sequence, map, etc.)
+// Value represents an ONNX Runtime value (tensor, sequence, map, etc.).
+// Sessions currently only accept Value implementations created by this package.
 type Value interface {
 	// Destroy releases the underlying resources
 	Destroy() error
@@ -85,7 +86,8 @@ func NewShape(dims ...int64) Shape {
 	return Shape(dims)
 }
 
-// SessionOptions represents options for creating a session
+// SessionOptions represents options for creating a session.
+// It is not safe to mutate a SessionOptions instance concurrently with session creation.
 type SessionOptions struct {
 	handle                 uintptr // Pointer to OrtSessionOptions
 	graphOptimizationLevel GraphOptimizationLevel

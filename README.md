@@ -64,17 +64,29 @@ import (
 )
 
 func main() {
-    // Initialize ONNX Runtime
-    err := ort.InitializeEnvironment()
-    if err != nil {
+    if err := ort.SetSharedLibraryPath("/path/to/libonnxruntime.so"); err != nil {
+        log.Fatal(err)
+    }
+    if err := ort.InitializeEnvironment(); err != nil {
         log.Fatal(err)
     }
     defer ort.DestroyEnvironment()
 
-    // Create a session (coming soon)
-    // session, err := ort.NewSession("model.onnx", nil)
-    // ...
+    fmt.Println("ONNX Runtime version:", ort.GetVersionString())
 }
+```
+
+### End-to-end Inference Example
+
+A runnable inference example lives at:
+
+- `examples/inference/main.go`
+- `examples/inference/README.md`
+
+Run it with:
+
+```bash
+go run ./examples/inference
 ```
 
 ## Project Status
