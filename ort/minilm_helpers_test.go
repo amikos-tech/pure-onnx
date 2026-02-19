@@ -198,7 +198,11 @@ func downloadModelFileOnce(destinationPath string, modelURL string) (err error) 
 	}()
 
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected HTTP status %d", response.StatusCode)
+		requestURL := modelURL
+		if response.Request != nil && response.Request.URL != nil {
+			requestURL = response.Request.URL.String()
+		}
+		return fmt.Errorf("unexpected HTTP status %d from %s", response.StatusCode, requestURL)
 	}
 
 	file, err := os.CreateTemp(filepath.Dir(destinationPath), "all-minilm-*.tmp")
