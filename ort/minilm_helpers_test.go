@@ -311,13 +311,8 @@ func makeAllMiniLMInputs(tb testing.TB, sequenceLength int) ([]int64, []int64, [
 	attentionMask := make([]int64, sequenceLength)
 	tokenTypeIDs := make([]int64, sequenceLength)
 
-	nonPaddingCount := len(templateTokenIDs)
-	if sequenceLength < nonPaddingCount {
-		nonPaddingCount = sequenceLength
-	}
-
-	copy(inputIDs, templateTokenIDs[:nonPaddingCount])
-	for i := 0; i < nonPaddingCount; i++ {
+	copy(inputIDs, templateTokenIDs[:])
+	for i := 0; i < len(templateTokenIDs); i++ {
 		attentionMask[i] = 1
 	}
 
