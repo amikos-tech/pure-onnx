@@ -11,7 +11,7 @@ func BenchmarkAdvancedSessionRunWarmWithAllMiniLML6V2(b *testing.B) {
 
 	inputShape := Shape{1, int64(sequenceLength)}
 	outputShape := Shape{1, int64(sequenceLength), allMiniLMOutputEmbeddingDim}
-	inputIDs, attentionMask, tokenTypeIDs := makeAllMiniLMInputs(sequenceLength)
+	inputIDs, attentionMask, tokenTypeIDs := makeAllMiniLMInputs(b, sequenceLength)
 
 	inputIDsTensor, err := NewTensor[int64](inputShape, inputIDs)
 	if err != nil {

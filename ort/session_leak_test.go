@@ -13,6 +13,8 @@ func TestAdvancedSessionRunWithAllMiniLML6V2MemoryStability(t *testing.T) {
 	modelPath := resolveAllMiniLMModelPath(t)
 	sequenceLength := allMiniLMSequenceLength(t)
 	iterations := envIntOrDefault(t, "ONNXRUNTIME_TEST_LEAK_ITERATIONS", 80, 1)
+	// Keep this aligned with CI default to reduce local-vs-CI divergence; value leaves
+	// headroom for allocator variance across ORT versions and runner profiles.
 	maxGrowthMB := envIntOrDefault(t, "ONNXRUNTIME_TEST_LEAK_MAX_GROWTH_MB", 96, 1)
 
 	t.Log("memory stability check measures Go heap growth only; use native tooling (ASan/Valgrind) for ORT allocator leaks")

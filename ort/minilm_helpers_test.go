@@ -53,7 +53,7 @@ func runAllMiniLMInference(tb testing.TB, modelPath string, sequenceLength int) 
 
 	inputShape := Shape{1, int64(sequenceLength)}
 	outputShape := Shape{1, int64(sequenceLength), allMiniLMOutputEmbeddingDim}
-	inputIDs, attentionMask, tokenTypeIDs := makeAllMiniLMInputs(sequenceLength)
+	inputIDs, attentionMask, tokenTypeIDs := makeAllMiniLMInputs(tb, sequenceLength)
 
 	inputIDsTensor, err := NewTensor[int64](inputShape, inputIDs)
 	if err != nil {
@@ -250,6 +250,8 @@ func downloadModelFileOnce(destinationPath string, modelURL string) (err error) 
 		return err
 	}
 	tempPath := file.Name()
+	// On success the Rename below moves tempPath to destinationPath, so this remove
+	// becomes a no-op. It still guarantees temp-file cleanup on all failure paths.
 	defer func() {
 		_ = os.Remove(tempPath)
 	}()
@@ -295,7 +297,13 @@ func verifyFileSHA256(path string, expected string) error {
 	return nil
 }
 
-func makeAllMiniLMInputs(sequenceLength int) ([]int64, []int64, []int64) {
+func makeAllMiniLMInputs(tb testing.TB, sequenceLength int) ([]int64, []int64, []int64) {
+	tb.Helper()
+
+	if sequenceLength < allMiniLMTemplateTokenCount {
+		tb.Fatalf("sequenceLength %d must be >= %d", sequenceLength, allMiniLMTemplateTokenCount)
+	}
+
 	// [CLS] this is a test [SEP] plus zero-padding as needed.
 	templateTokenIDs := [allMiniLMTemplateTokenCount]int64{101, 2023, 2003, 1037, 3231, 102}
 
