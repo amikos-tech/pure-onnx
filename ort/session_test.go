@@ -1,7 +1,6 @@
 package ort
 
 import (
-	"math"
 	"os"
 	"strings"
 	"sync"
@@ -744,61 +743,6 @@ func TestAdvancedSessionRunWithAllMiniLML6V2(t *testing.T) {
 
 	modelPath := resolveAllMiniLMModelPath(t)
 	sequenceLength := allMiniLMSequenceLength(t)
-
-	inputShape := Shape{1, int64(sequenceLength)}
-	outputShape := Shape{1, int64(sequenceLength), allMiniLMOutputEmbeddingDim}
-
-	inputIDs, attentionMask, tokenTypeIDs := makeAllMiniLMInputs(sequenceLength)
-
-	inputIDsTensor, err := NewTensor[int64](inputShape, inputIDs)
-	if err != nil {
-		t.Fatalf("failed to create input_ids tensor: %v", err)
-	}
-	defer requireDestroy(t, "input_ids tensor", inputIDsTensor.Destroy)
-
-	attentionMaskTensor, err := NewTensor[int64](inputShape, attentionMask)
-	if err != nil {
-		t.Fatalf("failed to create attention_mask tensor: %v", err)
-	}
-	defer requireDestroy(t, "attention_mask tensor", attentionMaskTensor.Destroy)
-
-	tokenTypeIDsTensor, err := NewTensor[int64](inputShape, tokenTypeIDs)
-	if err != nil {
-		t.Fatalf("failed to create token_type_ids tensor: %v", err)
-	}
-	defer requireDestroy(t, "token_type_ids tensor", tokenTypeIDsTensor.Destroy)
-
-	outputTensor, err := NewEmptyTensor[float32](outputShape)
-	if err != nil {
-		t.Fatalf("failed to create output tensor: %v", err)
-	}
-	defer requireDestroy(t, "output tensor", outputTensor.Destroy)
-
-	session, err := NewAdvancedSession(
-		modelPath,
-		[]string{"input_ids", "attention_mask", "token_type_ids"},
-		[]string{"last_hidden_state"},
-		[]Value{inputIDsTensor, attentionMaskTensor, tokenTypeIDsTensor},
-		[]Value{outputTensor},
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("failed to create all-MiniLM session: %v", err)
-	}
-	defer requireDestroy(t, "session", session.Destroy)
-
-	if err := session.Run(); err != nil {
-		t.Fatalf("all-MiniLM inference failed: %v", err)
-	}
-
-	output := outputTensor.GetData()
-	expected := sequenceLength * int(allMiniLMOutputEmbeddingDim)
-	if len(output) != expected {
-		t.Fatalf("unexpected output length: got %d want %d", len(output), expected)
-	}
-	for i, value := range output {
-		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
-			t.Fatalf("output contains non-finite value at index %d: %v", i, value)
-		}
-	}
+	output := runAllMiniLMInference(t, modelPath, sequenceLength)
+	requireFiniteFloat32Slice(t, "all-MiniLM output", output)
 }

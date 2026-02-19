@@ -98,6 +98,7 @@ jobs:
       ORT_VERSION: '1.24.1'
       ONNXRUNTIME_TEST_MODEL_CACHE_DIR: ${{ github.workspace }}/.cache/onnx-model-cache
       ONNXRUNTIME_TEST_ALL_MINILM_MODEL_URL: 'https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx'
+      ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256: '6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452'
       ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH: '8'
       ONNXRUNTIME_TEST_LEAK_ITERATIONS: '40'
       ONNXRUNTIME_TEST_LEAK_MAX_GROWTH_MB: '96'
@@ -118,7 +119,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.ONNXRUNTIME_TEST_MODEL_CACHE_DIR }}
-          key: all-minilm-l6-v2-model-v2-${{ runner.os }}-${{ env.ORT_VERSION }}-${{ env.ONNXRUNTIME_TEST_ALL_MINILM_MODEL_URL }}
+          key: all-minilm-l6-v2-model-v3-${{ runner.os }}-${{ env.ORT_VERSION }}-${{ env.ONNXRUNTIME_TEST_ALL_MINILM_MODEL_URL }}-${{ env.ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256 }}
 
       - name: Download ONNX Runtime shared library
         timeout-minutes: 10
@@ -129,7 +130,7 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/onnxruntime"
           tar -xzf "${RUNNER_TEMP}/onnxruntime.tgz" -C "${RUNNER_TEMP}/onnxruntime" --strip-components=1
           echo "ONNXRUNTIME_LIB_PATH=${RUNNER_TEMP}/onnxruntime/lib/libonnxruntime.so" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=${RUNNER_TEMP}/onnxruntime/lib:${LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${RUNNER_TEMP}/onnxruntime/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" >> "$GITHUB_ENV"
 
       - name: Run real-model integration tests
         run: |

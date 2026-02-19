@@ -1,6 +1,7 @@
 package ort
 
 import (
+	"fmt"
 	"runtime"
 	"testing"
 )
@@ -23,7 +24,10 @@ func TestAdvancedSessionRunWithAllMiniLML6V2MemoryStability(t *testing.T) {
 	runtime.ReadMemStats(&before)
 
 	for i := 0; i < iterations; i++ {
-		runAllMiniLMInferenceOnce(t, modelPath, sequenceLength)
+		output := runAllMiniLMInference(t, modelPath, sequenceLength)
+		if i == 0 || i == iterations-1 {
+			requireFiniteFloat32Slice(t, fmt.Sprintf("all-MiniLM output (iteration %d/%d)", i+1, iterations), output)
+		}
 		if (i+1)%10 == 0 {
 			runtime.GC()
 		}

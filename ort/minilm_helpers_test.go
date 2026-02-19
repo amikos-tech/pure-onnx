@@ -1,22 +1,26 @@
 package ort
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
 
 const (
 	allMiniLMModelURL           = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx"
+	allMiniLMModelSHA256        = "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452"
 	allMiniLMOutputEmbeddingDim = int64(384)
+	allMiniLMTemplateTokenCount = 6
 )
-
-var allMiniLMTemplateTokenIDs = []int64{101, 2023, 2003, 1037, 3231, 102}
 
 func requireDestroy(tb testing.TB, name string, destroy func() error) {
 	tb.Helper()
@@ -44,7 +48,7 @@ func envIntOrDefault(tb testing.TB, key string, defaultValue int, minValue int) 
 	return value
 }
 
-func runAllMiniLMInferenceOnce(tb testing.TB, modelPath string, sequenceLength int) {
+func runAllMiniLMInference(tb testing.TB, modelPath string, sequenceLength int) []float32 {
 	tb.Helper()
 
 	inputShape := Shape{1, int64(sequenceLength)}
@@ -93,29 +97,32 @@ func runAllMiniLMInferenceOnce(tb testing.TB, modelPath string, sequenceLength i
 	}
 
 	expectedOutputSize := sequenceLength * int(allMiniLMOutputEmbeddingDim)
-	if got := len(outputTensor.GetData()); got != expectedOutputSize {
+	output := outputTensor.GetData()
+	if got := len(output); got != expectedOutputSize {
 		tb.Fatalf("unexpected output length: got %d, want %d", got, expectedOutputSize)
+	}
+
+	return output
+}
+
+func runAllMiniLMInferenceOnce(tb testing.TB, modelPath string, sequenceLength int) {
+	tb.Helper()
+	_ = runAllMiniLMInference(tb, modelPath, sequenceLength)
+}
+
+func requireFiniteFloat32Slice(tb testing.TB, label string, values []float32) {
+	tb.Helper()
+	for i, value := range values {
+		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+			tb.Fatalf("%s contains non-finite value at index %d: %v", label, i, value)
+		}
 	}
 }
 
 func allMiniLMSequenceLength(tb testing.TB) int {
 	tb.Helper()
 
-	raw := os.Getenv("ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH")
-	if raw == "" {
-		return 8
-	}
-
-	sequenceLength, err := strconv.Atoi(raw)
-	if err != nil {
-		tb.Fatalf("invalid ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH %q: %v", raw, err)
-	}
-	minTokens := len(allMiniLMTemplateTokenIDs)
-	if sequenceLength < minTokens {
-		tb.Fatalf("ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH must be >= %d, got %d", minTokens, sequenceLength)
-	}
-
-	return sequenceLength
+	return envIntOrDefault(tb, "ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH", 8, allMiniLMTemplateTokenCount)
 }
 
 func resolveAllMiniLMModelPath(tb testing.TB) string {
@@ -124,6 +131,11 @@ func resolveAllMiniLMModelPath(tb testing.TB) string {
 	if modelPath := os.Getenv("ONNXRUNTIME_TEST_ALL_MINILM_MODEL_PATH"); modelPath != "" {
 		if _, err := os.Stat(modelPath); err != nil {
 			tb.Fatalf("ONNXRUNTIME_TEST_ALL_MINILM_MODEL_PATH %q is not usable: %v", modelPath, err)
+		}
+		if expectedSHA := strings.TrimSpace(os.Getenv("ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256")); expectedSHA != "" {
+			if err := verifyFileSHA256(modelPath, expectedSHA); err != nil {
+				tb.Fatalf("ONNXRUNTIME_TEST_ALL_MINILM_MODEL_PATH failed checksum validation: %v", err)
+			}
 		}
 		return modelPath
 	}
@@ -138,9 +150,6 @@ func resolveAllMiniLMModelPath(tb testing.TB) string {
 	}
 
 	modelPath := filepath.Join(cacheRoot, "all-MiniLM-L6-v2.onnx")
-	if info, err := os.Stat(modelPath); err == nil && info.Size() > 0 {
-		return modelPath
-	}
 
 	if err := os.MkdirAll(filepath.Dir(modelPath), 0o755); err != nil {
 		tb.Fatalf("failed to create model cache directory: %v", err)
@@ -150,6 +159,21 @@ func resolveAllMiniLMModelPath(tb testing.TB) string {
 	if url == "" {
 		url = allMiniLMModelURL
 	}
+	expectedSHA := allMiniLMExpectedSHA256(url)
+
+	if info, err := os.Stat(modelPath); err == nil && info.Size() > 0 {
+		if expectedSHA == "" {
+			return modelPath
+		}
+		if err := verifyFileSHA256(modelPath, expectedSHA); err == nil {
+			return modelPath
+		}
+
+		tb.Logf("cached all-MiniLM checksum mismatch, re-downloading model")
+		if removeErr := os.Remove(modelPath); removeErr != nil {
+			tb.Fatalf("failed to remove stale cached model: %v", removeErr)
+		}
+	}
 
 	// Concurrent test processes may race this download. The downloader handles that
 	// by writing to unique temp files and treating an existing destination as success.
@@ -157,8 +181,24 @@ func resolveAllMiniLMModelPath(tb testing.TB) string {
 	if err := downloadModelFile(modelPath, url); err != nil {
 		tb.Skipf("unable to download all-MiniLM model: %v", err)
 	}
+	if expectedSHA != "" {
+		if err := verifyFileSHA256(modelPath, expectedSHA); err != nil {
+			_ = os.Remove(modelPath)
+			tb.Fatalf("downloaded all-MiniLM model failed checksum validation: %v", err)
+		}
+	}
 
 	return modelPath
+}
+
+func allMiniLMExpectedSHA256(modelURL string) string {
+	if expectedSHA := strings.TrimSpace(os.Getenv("ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256")); expectedSHA != "" {
+		return strings.ToLower(expectedSHA)
+	}
+	if modelURL == allMiniLMModelURL {
+		return allMiniLMModelSHA256
+	}
+	return ""
 }
 
 func downloadModelFile(destinationPath string, modelURL string) error {
@@ -232,18 +272,43 @@ func downloadModelFileOnce(destinationPath string, modelURL string) (err error) 
 	return nil
 }
 
+func verifyFileSHA256(path string, expected string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return err
+	}
+
+	actual := hex.EncodeToString(hash.Sum(nil))
+	expected = strings.ToLower(strings.TrimSpace(expected))
+	if actual != expected {
+		return fmt.Errorf("sha256 mismatch for %s: got %s want %s", path, actual, expected)
+	}
+
+	return nil
+}
+
 func makeAllMiniLMInputs(sequenceLength int) ([]int64, []int64, []int64) {
 	// [CLS] this is a test [SEP] plus zero-padding as needed.
+	templateTokenIDs := [allMiniLMTemplateTokenCount]int64{101, 2023, 2003, 1037, 3231, 102}
+
 	inputIDs := make([]int64, sequenceLength)
 	attentionMask := make([]int64, sequenceLength)
 	tokenTypeIDs := make([]int64, sequenceLength)
 
-	nonPaddingCount := len(allMiniLMTemplateTokenIDs)
+	nonPaddingCount := len(templateTokenIDs)
 	if sequenceLength < nonPaddingCount {
 		nonPaddingCount = sequenceLength
 	}
 
-	copy(inputIDs, allMiniLMTemplateTokenIDs[:nonPaddingCount])
+	copy(inputIDs, templateTokenIDs[:nonPaddingCount])
 	for i := 0; i < nonPaddingCount; i++ {
 		attentionMask[i] = 1
 	}
@@ -251,6 +316,7 @@ func makeAllMiniLMInputs(sequenceLength int) ([]int64, []int64, []int64) {
 	return inputIDs, attentionMask, tokenTypeIDs
 }
 
+// Used by heap-growth assertions in session_leak_test.go.
 func formatMB(bytes int64) string {
 	return fmt.Sprintf("%.2f MiB", float64(bytes)/1024.0/1024.0)
 }

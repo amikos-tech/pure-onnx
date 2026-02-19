@@ -57,6 +57,10 @@ Integration tests verify actual FFI interactions with the ONNX Runtime library.
 
    # Override sequence length (default: 8, minimum: 6)
    export ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH=8
+
+   # Optional integrity check for custom model path/URL.
+   # When unset, the default HuggingFace URL is verified against a built-in SHA-256.
+   export ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256=<expected_sha256>
    ```
 
 5. Run tests:
@@ -80,6 +84,7 @@ When `ONNXRUNTIME_LIB_PATH` is set, the following additional tests run:
 The all-MiniLM model is cached under your user cache directory by default (`.../onnx-purego/models/all-MiniLM-L6-v2.onnx`).
 Use `ONNXRUNTIME_TEST_MODEL_CACHE_DIR` to override cache location and
 `ONNXRUNTIME_TEST_ALL_MINILM_MODEL_URL` to override the download URL.
+For custom URLs, set `ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256` to enable checksum verification.
 
 ### 3. Benchmark Tests
 
