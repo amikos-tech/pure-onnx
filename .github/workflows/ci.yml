@@ -90,6 +90,63 @@ jobs:
           name: codecov-umbrella
           fail_ci_if_error: false
 
+  integration-real-model:
+    name: Integration (ONNX Runtime + all-MiniLM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      ORT_VERSION: '1.24.1'
+      # Keep in sync with the release asset digest for onnxruntime-linux-x64-${ORT_VERSION}.tgz.
+      ORT_ARCHIVE_SHA256: '9142552248b735920f9390027e4512a2cacf8946a1ffcbe9071a5c210531026f'
+      ONNXRUNTIME_TEST_MODEL_CACHE_DIR: ${{ github.workspace }}/.cache/onnx-model-cache
+      ONNXRUNTIME_TEST_ALL_MINILM_MODEL_URL: 'https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx'
+      ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256: '6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452'
+      ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH: '8'
+      ONNXRUNTIME_TEST_LEAK_ITERATIONS: '40'
+      ONNXRUNTIME_TEST_LEAK_MAX_GROWTH_MB: '96'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION_STABLE }}
+          cache: true
+
+      - name: Get dependencies
+        run: go mod download
+
+      - name: Cache all-MiniLM model
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ONNXRUNTIME_TEST_MODEL_CACHE_DIR }}
+          key: all-minilm-l6-v2-model-v4-${{ runner.os }}-${{ env.ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256 }}
+
+      - name: Download ONNX Runtime shared library
+        timeout-minutes: 10
+        run: |
+          ORT_ARCHIVE="onnxruntime-linux-x64-${ORT_VERSION}"
+          ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_ARCHIVE}.tgz"
+          curl -L --fail --retry 3 --retry-delay 2 --max-time 180 -o "${RUNNER_TEMP}/onnxruntime.tgz" "${ORT_URL}"
+          echo "${ORT_ARCHIVE_SHA256}  ${RUNNER_TEMP}/onnxruntime.tgz" | sha256sum -c -
+          mkdir -p "${RUNNER_TEMP}/onnxruntime"
+          tar -xzf "${RUNNER_TEMP}/onnxruntime.tgz" -C "${RUNNER_TEMP}/onnxruntime" --strip-components=1
+          echo "ONNXRUNTIME_LIB_PATH=${RUNNER_TEMP}/onnxruntime/lib/libonnxruntime.so" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${RUNNER_TEMP}/onnxruntime/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" >> "$GITHUB_ENV"
+
+      - name: Run real-model integration tests
+        run: |
+          go test -v ./ort/... -run 'TestAdvancedSessionRunWithAllMiniLML6V2|TestAdvancedSessionRunWithAllMiniLML6V2MemoryStability'
+
+      - name: Run real-model benchmarks
+        run: |
+          go test -run '^$' \
+            -bench 'BenchmarkAdvancedSessionRunWarmWithAllMiniLML6V2|BenchmarkAdvancedSessionCreateRunDestroyWithAllMiniLML6V2' \
+            -benchmem \
+            -benchtime=3x \
+            ./ort/...
+
   build:
     name: Build
     strategy:

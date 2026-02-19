@@ -736,3 +736,13 @@ func TestAdvancedSessionRunWithRealModel(t *testing.T) {
 		t.Fatalf("session run failed: %v", err)
 	}
 }
+
+func TestAdvancedSessionRunWithAllMiniLML6V2(t *testing.T) {
+	cleanup := setupTestEnvironment(t)
+	defer cleanup()
+
+	modelPath := resolveAllMiniLMModelPath(t)
+	sequenceLength := allMiniLMSequenceLength(t)
+	output := runAllMiniLMInference(t, modelPath, sequenceLength)
+	requireFiniteFloat32Slice(t, "all-MiniLM output", output)
+}
