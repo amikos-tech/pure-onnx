@@ -40,7 +40,7 @@ jobs:
           go vet -unsafeptr=false ./examples/basic/...
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           # Pin v2 because .golangci.yml uses v2 formatters config.
           version: v2.8.0
