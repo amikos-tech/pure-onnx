@@ -44,7 +44,7 @@ GREEN := \033[0;32m
 YELLOW := \033[1;33m
 NC := \033[0m # No Color
 
-.PHONY: all build test clean fmt vet lint verify help install-tools download-ort list-ort-versions
+.PHONY: all build test test-race clean fmt vet lint verify help install-tools download-ort list-ort-versions
 
 ## help: Show this help message
 help:
@@ -70,13 +70,19 @@ build:
 ## test: Run tests
 test:
 	@echo "$(YELLOW)Running tests...$(NC)"
-	$(GO) test -v -race -cover ./ort/...
+	$(GO) test -v -cover ./...
 	@echo "$(GREEN)✓ Tests complete$(NC)"
+
+## test-race: Run race-enabled tests for core ort package
+test-race:
+	@echo "$(YELLOW)Running race-enabled tests (ort)...$(NC)"
+	$(GO) test -v -race ./ort/...
+	@echo "$(GREEN)✓ Race tests complete$(NC)"
 
 ## test-coverage: Run tests with coverage report
 test-coverage:
 	@echo "$(YELLOW)Running tests with coverage...$(NC)"
-	$(GO) test -v -race -coverprofile=coverage.out ./ort/...
+	$(GO) test -v -coverprofile=coverage.out ./...
 	$(GO) tool cover -html=coverage.out -o coverage.html
 	@echo "$(GREEN)✓ Coverage report generated: coverage.html$(NC)"
 
@@ -97,6 +103,7 @@ vet:
 	@echo "$(YELLOW)Running go vet...$(NC)"
 	@$(GO) vet ./ort/... || true
 	@$(GO) vet ./examples/basic/... || true
+	@$(GO) vet ./embeddings/... || true
 	@echo "$(GREEN)✓ Vet complete$(NC)"
 
 ## lint: Run golangci-lint (requires golangci-lint to be installed)

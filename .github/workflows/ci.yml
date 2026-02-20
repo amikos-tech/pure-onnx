@@ -38,6 +38,7 @@ jobs:
         run: |
           go vet -unsafeptr=false ./ort/...
           go vet -unsafeptr=false ./examples/basic/...
+          go vet ./embeddings/...
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v8
@@ -72,14 +73,14 @@ jobs:
 
       - name: Run tests (Unix)
         if: runner.os != 'Windows'
-        run: go test -v -coverprofile=coverage.out ./ort/...
+        run: go test -v -coverprofile=coverage.out ./...
         # Note: -race flag disabled because checkptr is incompatible with purego's
         # C string conversion (unsafe.Slice on C allocations). This is a known
         # limitation when using purego for CGO-free C interop.
 
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
-        run: go test -v -coverprofile="${PWD}/coverage.out" ./ort/...
+        run: go test -v -coverprofile="${PWD}/coverage.out" ./...
 
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest' && matrix.go-version == env.GO_VERSION_STABLE
@@ -101,6 +102,8 @@ jobs:
       ONNXRUNTIME_TEST_MODEL_CACHE_DIR: ${{ github.workspace }}/.cache/onnx-model-cache
       ONNXRUNTIME_TEST_ALL_MINILM_MODEL_URL: 'https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx'
       ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256: '6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452'
+      ONNXRUNTIME_TEST_ALL_MINILM_TOKENIZER_URL: 'https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json'
+      ONNXRUNTIME_TEST_ALL_MINILM_TOKENIZER_SHA256: 'be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037'
       ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH: '8'
       ONNXRUNTIME_TEST_LEAK_ITERATIONS: '40'
       ONNXRUNTIME_TEST_LEAK_MAX_GROWTH_MB: '96'
@@ -121,7 +124,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.ONNXRUNTIME_TEST_MODEL_CACHE_DIR }}
-          key: all-minilm-l6-v2-model-v4-${{ runner.os }}-${{ env.ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256 }}
+          key: all-minilm-l6-v2-assets-v5-${{ runner.os }}-${{ env.ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256 }}-${{ env.ONNXRUNTIME_TEST_ALL_MINILM_TOKENIZER_SHA256 }}
 
       - name: Download ONNX Runtime shared library
         timeout-minutes: 10
@@ -138,6 +141,7 @@ jobs:
       - name: Run real-model integration tests
         run: |
           go test -v ./ort/... -run 'TestAdvancedSessionRunWithAllMiniLML6V2|TestAdvancedSessionRunWithAllMiniLML6V2MemoryStability'
+          go test -v ./embeddings/minilm -run TestEmbedDocumentsWithAllMiniLML6V2
 
       - name: Run real-model benchmarks
         run: |
