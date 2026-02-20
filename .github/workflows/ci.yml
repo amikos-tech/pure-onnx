@@ -51,6 +51,7 @@ jobs:
           version: v2.8.0
           args: --concurrency=8
           only-new-issues: true
+          verify: false
 
       - name: Run golangci-lint (push informational)
         if: github.event_name != 'pull_request'
@@ -59,6 +60,7 @@ jobs:
           # Pin v2 because .golangci.yml uses v2 formatters config.
           version: v2.8.0
           args: --concurrency=8
+          verify: false
         # Main/develop pushes keep lint informational until historical lint debt is cleared.
         continue-on-error: true
 
