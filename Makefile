@@ -121,7 +121,7 @@ vet:
 	@$(GO) vet ./embeddings/...
 	@echo "$(GREEN)✓ Vet complete$(NC)"
 
-## lint: Run golangci-lint (requires golangci-lint to be installed)
+## lint: Run golangci-lint --fix (requires golangci-lint; may modify files)
 lint:
 	@echo "$(YELLOW)Running linter...$(NC)"
 	@if command -v golangci-lint &> /dev/null; then \

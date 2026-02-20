@@ -56,7 +56,7 @@ Integration tests verify actual FFI interactions with the ONNX Runtime library.
    export ONNXRUNTIME_TEST_ALL_MINILM_MODEL_PATH=/path/to/all-MiniLM-L6-v2.onnx
 
    # Override sequence length for ./ort real-model tests only
-   # (default: 8, minimum: 6 in ort/minilm helper tests)
+   # (CI uses 8; minimum is 6 in ort/minilm helper tests)
    export ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH=8
 
    # Optional integrity check for custom model path/URL.

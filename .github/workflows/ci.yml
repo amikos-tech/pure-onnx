@@ -19,10 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: ${{ env.GO_VERSION_STABLE }}
           cache: true
@@ -45,7 +45,7 @@ jobs:
 
       - name: Run golangci-lint (PR new issues)
         if: github.event_name == 'pull_request'
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
         with:
           # Pin v2 because .golangci.yml uses v2 formatters config.
           version: v2.8.0
@@ -55,7 +55,7 @@ jobs:
 
       - name: Run golangci-lint (push informational)
         if: github.event_name != 'pull_request'
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
         with:
           # Pin v2 because .golangci.yml uses v2 formatters config.
           version: v2.8.0
@@ -73,10 +73,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
@@ -97,7 +97,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest' && matrix.go-version == env.GO_VERSION_STABLE
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
         with:
           file: ./coverage.out
           flags: unittests
@@ -117,13 +117,12 @@ jobs:
       ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256: '6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452'
       ONNXRUNTIME_TEST_ALL_MINILM_TOKENIZER_URL: 'https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json'
       ONNXRUNTIME_TEST_ALL_MINILM_TOKENIZER_SHA256: 'be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037'
-      ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH: '8'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: ${{ env.GO_VERSION_STABLE }}
           cache: true
@@ -132,7 +131,7 @@ jobs:
         run: go mod download
 
       - name: Cache all-MiniLM model
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ env.ONNXRUNTIME_TEST_MODEL_CACHE_DIR }}
           key: all-minilm-l6-v2-assets-v5-${{ runner.os }}-${{ env.ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256 }}-${{ env.ONNXRUNTIME_TEST_ALL_MINILM_TOKENIZER_SHA256 }}
@@ -151,6 +150,7 @@ jobs:
 
       - name: Run ort real-model integration tests
         env:
+          ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH: '8'
           ONNXRUNTIME_TEST_LEAK_ITERATIONS: '40'
           ONNXRUNTIME_TEST_LEAK_MAX_GROWTH_MB: '96'
         run: |
@@ -161,6 +161,8 @@ jobs:
           go test -v ./embeddings/minilm -run TestEmbedDocumentsWithAllMiniLML6V2
 
       - name: Run real-model benchmarks
+        env:
+          ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH: '8'
         run: |
           go test -run '^$' \
             -bench 'BenchmarkAdvancedSessionRunWarmWithAllMiniLML6V2|BenchmarkAdvancedSessionCreateRunDestroyWithAllMiniLML6V2' \
@@ -177,10 +179,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
@@ -201,10 +203,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: ${{ env.GO_VERSION_STABLE }}
           cache: true
@@ -219,16 +221,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: ${{ env.GO_VERSION_STABLE }}
           cache: true
 
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@v2.23.0
+        uses: securego/gosec@398ad549bbf1a51dc978fd966169f660c59774de # v2.23.0
         with:
           args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=examples/experimental ./...'
         # Allow gosec to continue even if it finds issues. This project uses unsafe operations
@@ -238,7 +240,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4
         if: always()
         with:
           sarif_file: results.sarif
@@ -253,10 +255,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: ${{ env.GO_VERSION_VULNCHECK }}
           cache: true
@@ -269,10 +271,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: ${{ env.GO_VERSION_STABLE }}
           cache: true
