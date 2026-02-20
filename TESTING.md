@@ -55,13 +55,18 @@ Integration tests verify actual FFI interactions with the ONNX Runtime library.
    # Use a pre-downloaded all-MiniLM model (skips network download)
    export ONNXRUNTIME_TEST_ALL_MINILM_MODEL_PATH=/path/to/all-MiniLM-L6-v2.onnx
 
-   # Override sequence length (default: 8, minimum: 6)
+   # Override sequence length for ./ort real-model tests only
+   # (default: 8, minimum: 6 in ort/minilm helper tests)
    export ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH=8
 
    # Optional integrity check for custom model path/URL.
    # When unset, the default HuggingFace URL is verified against a built-in SHA-256.
    export ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256=<expected_sha256>
    ```
+
+   Note: `embeddings/minilm` integration tests do not read
+   `ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH`; they use the embedder default
+   sequence length (`256`) unless `WithSequenceLength(...)` is set in code.
 
 5. Run tests:
    ```bash

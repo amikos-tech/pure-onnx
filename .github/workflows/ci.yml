@@ -118,8 +118,6 @@ jobs:
       ONNXRUNTIME_TEST_ALL_MINILM_TOKENIZER_URL: 'https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json'
       ONNXRUNTIME_TEST_ALL_MINILM_TOKENIZER_SHA256: 'be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037'
       ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH: '8'
-      ONNXRUNTIME_TEST_LEAK_ITERATIONS: '40'
-      ONNXRUNTIME_TEST_LEAK_MAX_GROWTH_MB: '96'
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -151,9 +149,15 @@ jobs:
           echo "ONNXRUNTIME_LIB_PATH=${RUNNER_TEMP}/onnxruntime/lib/libonnxruntime.so" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=${RUNNER_TEMP}/onnxruntime/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" >> "$GITHUB_ENV"
 
-      - name: Run real-model integration tests
+      - name: Run ort real-model integration tests
+        env:
+          ONNXRUNTIME_TEST_LEAK_ITERATIONS: '40'
+          ONNXRUNTIME_TEST_LEAK_MAX_GROWTH_MB: '96'
         run: |
           go test -v ./ort/... -run 'TestAdvancedSessionRunWithAllMiniLML6V2|TestAdvancedSessionRunWithAllMiniLML6V2MemoryStability'
+
+      - name: Run embeddings real-model integration tests
+        run: |
           go test -v ./embeddings/minilm -run TestEmbedDocumentsWithAllMiniLML6V2
 
       - name: Run real-model benchmarks
