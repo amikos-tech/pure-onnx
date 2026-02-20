@@ -48,10 +48,9 @@ jobs:
         with:
           # Pin v2 because .golangci.yml uses v2 formatters config.
           version: v2.8.0
-          args: --concurrency=8 --fix
+          args: --concurrency=8
         # Allow lint failures to not block CI while we iteratively improve code quality.
-        # The --fix flag will automatically fix issues where possible, and any remaining
-        # issues are tracked but don't fail the build to maintain development velocity.
+        # Keep this non-blocking for now while lint debt is reduced incrementally.
         continue-on-error: true
 
   test:
@@ -214,7 +213,7 @@ jobs:
           cache: true
 
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@master
+        uses: securego/gosec@v2.23.0
         with:
           args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=examples/experimental ./...'
         # Allow gosec to continue even if it finds issues. This project uses unsafe operations

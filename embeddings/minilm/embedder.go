@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"reflect"
 	"sync"
 
 	"github.com/amikos-tech/pure-onnx/ort"
@@ -91,12 +92,25 @@ func WithInputOutputNames(inputIDsName, attentionMaskName, tokenTypeIDsName, out
 // The caller must initialize ONNX Runtime via ort.SetSharedLibraryPath and
 // ort.InitializeEnvironment before calling EmbedDocuments/EmbedQuery.
 type Embedder struct {
-	modelPath      string
-	sequenceLength int
-	tokenizer      *tokenizers.Tokenizer
-	inputNames     []string
-	outputNames    []string
-	runMu          sync.Mutex
+	modelPath       string
+	sequenceLength  int
+	tokenizer       *tokenizers.Tokenizer
+	inputNames      []string
+	outputNames     []string
+	sessionsByBatch map[int]*embeddingSession
+	runMu           sync.Mutex
+}
+
+type embeddingSession struct {
+	inputIDs      []int64
+	attentionMask []int64
+	tokenTypeIDs  []int64
+
+	inputIDsTensor      *ort.Tensor[int64]
+	attentionMaskTensor *ort.Tensor[int64]
+	tokenTypeIDsTensor  *ort.Tensor[int64]
+	outputTensor        *ort.Tensor[float32]
+	session             *ort.AdvancedSession
 }
 
 // NewEmbedder creates a high-level all-MiniLM-L6-v2 embedder.
@@ -153,17 +167,36 @@ func NewEmbedder(modelPath string, tokenizerPath string, opts ...Option) (*Embed
 			cfg.attentionMaskName,
 			cfg.tokenTypeIDsName,
 		},
-		outputNames: []string{cfg.outputName},
+		outputNames:     []string{cfg.outputName},
+		sessionsByBatch: make(map[int]*embeddingSession),
 	}, nil
 }
 
 // Close releases tokenizer resources.
 func (e *Embedder) Close() error {
-	if e == nil || e.tokenizer == nil {
+	if e == nil {
 		return nil
 	}
-	err := e.tokenizer.Close()
-	e.tokenizer = nil
+
+	e.runMu.Lock()
+	defer e.runMu.Unlock()
+
+	var err error
+
+	for batchSize, session := range e.sessionsByBatch {
+		if destroyErr := session.Destroy(); destroyErr != nil {
+			err = errors.Join(err, fmt.Errorf("failed to destroy batch-%d embedding resources: %w", batchSize, destroyErr))
+		}
+	}
+	e.sessionsByBatch = nil
+
+	if e.tokenizer != nil {
+		if closeErr := e.tokenizer.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+		e.tokenizer = nil
+	}
+
 	return err
 }
 
@@ -172,36 +205,91 @@ func (e *Embedder) EmbedDocuments(documents []string) (_ [][]float32, err error)
 	if e == nil {
 		return nil, fmt.Errorf("embedder is nil")
 	}
-	if e.tokenizer == nil {
-		return nil, fmt.Errorf("embedder has been closed")
-	}
 	if len(documents) == 0 {
 		return [][]float32{}, nil
-	}
-	if !ort.IsInitialized() {
-		return nil, fmt.Errorf("ONNX Runtime not initialized: call ort.SetSharedLibraryPath and ort.InitializeEnvironment first")
 	}
 
 	e.runMu.Lock()
 	defer e.runMu.Unlock()
 
-	inputIDs, attentionMask, tokenTypeIDs, err := e.tokenize(documents)
+	if e.tokenizer == nil || e.sessionsByBatch == nil {
+		return nil, fmt.Errorf("embedder has been closed")
+	}
+	if !ort.IsInitialized() {
+		return nil, fmt.Errorf("ONNX Runtime not initialized: call ort.SetSharedLibraryPath and ort.InitializeEnvironment first")
+	}
+
+	session, err := e.sessionForBatchLocked(len(documents))
 	if err != nil {
 		return nil, err
 	}
 
-	shape := ort.Shape{int64(len(documents)), int64(e.sequenceLength)}
+	if err := e.tokenizeInto(
+		documents,
+		session.inputIDs,
+		session.attentionMask,
+		session.tokenTypeIDs,
+	); err != nil {
+		return nil, err
+	}
+
+	if err := session.session.Run(); err != nil {
+		return nil, fmt.Errorf("embedding inference failed: %w", err)
+	}
+
+	embeddings, err := meanPoolAndNormalize(
+		session.outputTensor.GetData(),
+		session.attentionMask,
+		len(documents),
+		e.sequenceLength,
+		OutputEmbeddingDimension,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return embeddings, nil
+}
+
+func (e *Embedder) sessionForBatchLocked(batchSize int) (_ *embeddingSession, err error) {
+	if batchSize <= 0 {
+		return nil, fmt.Errorf("batch size must be > 0, got %d", batchSize)
+	}
+
+	if session, ok := e.sessionsByBatch[batchSize]; ok {
+		return session, nil
+	}
+
+	session, err := newEmbeddingSession(
+		e.modelPath,
+		e.inputNames,
+		e.outputNames,
+		e.sequenceLength,
+		batchSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	e.sessionsByBatch[batchSize] = session
+	return session, nil
+}
+
+func newEmbeddingSession(modelPath string, inputNames []string, outputNames []string, sequenceLength int, batchSize int) (_ *embeddingSession, err error) {
+	totalTokens := batchSize * sequenceLength
+	inputIDs := make([]int64, totalTokens)
+	attentionMask := make([]int64, totalTokens)
+	tokenTypeIDs := make([]int64, totalTokens)
+
+	shape := ort.Shape{int64(batchSize), int64(sequenceLength)}
 	inputIDsTensor, err := ort.NewTensor[int64](shape, inputIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create input_ids tensor: %w", err)
 	}
-
 	attentionMaskTensor, err := ort.NewTensor[int64](shape, attentionMask)
 	if err != nil {
 		_ = inputIDsTensor.Destroy()
 		return nil, fmt.Errorf("failed to create attention_mask tensor: %w", err)
 	}
-
 	tokenTypeIDsTensor, err := ort.NewTensor[int64](shape, tokenTypeIDs)
 	if err != nil {
 		_ = attentionMaskTensor.Destroy()
@@ -209,7 +297,7 @@ func (e *Embedder) EmbedDocuments(documents []string) (_ [][]float32, err error)
 		return nil, fmt.Errorf("failed to create token_type_ids tensor: %w", err)
 	}
 
-	outputShape := ort.Shape{int64(len(documents)), int64(e.sequenceLength), OutputEmbeddingDimension}
+	outputShape := ort.Shape{int64(batchSize), int64(sequenceLength), OutputEmbeddingDimension}
 	outputTensor, err := ort.NewEmptyTensor[float32](outputShape)
 	if err != nil {
 		_ = tokenTypeIDsTensor.Destroy()
@@ -219,9 +307,9 @@ func (e *Embedder) EmbedDocuments(documents []string) (_ [][]float32, err error)
 	}
 
 	session, err := ort.NewAdvancedSession(
-		e.modelPath,
-		e.inputNames,
-		e.outputNames,
+		modelPath,
+		inputNames,
+		outputNames,
 		[]ort.Value{inputIDsTensor, attentionMaskTensor, tokenTypeIDsTensor},
 		[]ort.Value{outputTensor},
 		nil,
@@ -234,41 +322,40 @@ func (e *Embedder) EmbedDocuments(documents []string) (_ [][]float32, err error)
 		return nil, fmt.Errorf("failed to create embedding session: %w", err)
 	}
 
-	defer func() {
-		cleanupErr := destroyAll(
-			session,
-			outputTensor,
-			tokenTypeIDsTensor,
-			attentionMaskTensor,
-			inputIDsTensor,
-		)
-		if cleanupErr == nil {
-			return
-		}
-		wrapped := fmt.Errorf("failed to release embedding resources: %w", cleanupErr)
-		if err == nil {
-			err = wrapped
-			return
-		}
-		err = errors.Join(err, wrapped)
-	}()
+	return &embeddingSession{
+		inputIDs:            inputIDs,
+		attentionMask:       attentionMask,
+		tokenTypeIDs:        tokenTypeIDs,
+		inputIDsTensor:      inputIDsTensor,
+		attentionMaskTensor: attentionMaskTensor,
+		tokenTypeIDsTensor:  tokenTypeIDsTensor,
+		outputTensor:        outputTensor,
+		session:             session,
+	}, nil
+}
 
-	if err := session.Run(); err != nil {
-		return nil, fmt.Errorf("embedding inference failed: %w", err)
+func (s *embeddingSession) Destroy() error {
+	if s == nil {
+		return nil
 	}
 
-	embeddings, err := meanPoolAndNormalize(
-		outputTensor.GetData(),
-		attentionMask,
-		len(documents),
-		e.sequenceLength,
-		OutputEmbeddingDimension,
+	err := destroyAll(
+		s.session,
+		s.outputTensor,
+		s.tokenTypeIDsTensor,
+		s.attentionMaskTensor,
+		s.inputIDsTensor,
 	)
-	if err != nil {
-		return nil, err
-	}
 
-	return embeddings, nil
+	s.inputIDs = nil
+	s.attentionMask = nil
+	s.tokenTypeIDs = nil
+	s.session = nil
+	s.outputTensor = nil
+	s.tokenTypeIDsTensor = nil
+	s.attentionMaskTensor = nil
+	s.inputIDsTensor = nil
+	return err
 }
 
 // EmbedQuery embeds a single query string.
@@ -283,14 +370,24 @@ func (e *Embedder) EmbedQuery(query string) ([]float32, error) {
 	return embeddings[0], nil
 }
 
-func (e *Embedder) tokenize(documents []string) ([]int64, []int64, []int64, error) {
+func (e *Embedder) tokenizeInto(documents []string, inputIDs []int64, attentionMask []int64, tokenTypeIDs []int64) error {
 	sequenceLength := e.sequenceLength
 	batchSize := len(documents)
 	totalTokens := batchSize * sequenceLength
 
-	inputIDs := make([]int64, totalTokens)
-	attentionMask := make([]int64, totalTokens)
-	tokenTypeIDs := make([]int64, totalTokens)
+	if len(inputIDs) != totalTokens || len(attentionMask) != totalTokens || len(tokenTypeIDs) != totalTokens {
+		return fmt.Errorf(
+			"token buffer length mismatch: got input_ids=%d attention_mask=%d token_type_ids=%d, want %d",
+			len(inputIDs),
+			len(attentionMask),
+			len(tokenTypeIDs),
+			totalTokens,
+		)
+	}
+
+	clear(inputIDs)
+	clear(attentionMask)
+	clear(tokenTypeIDs)
 
 	for i, document := range documents {
 		encoding, err := e.tokenizer.Encode(
@@ -300,10 +397,10 @@ func (e *Embedder) tokenize(documents []string) ([]int64, []int64, []int64, erro
 			tokenizers.WithReturnTypeIDs(),
 		)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to tokenize document %d: %w", i, err)
+			return fmt.Errorf("failed to tokenize document %d: %w", i, err)
 		}
 		if encoding == nil {
-			return nil, nil, nil, fmt.Errorf("failed to tokenize document %d: empty tokenizer result", i)
+			return fmt.Errorf("failed to tokenize document %d: empty tokenizer result", i)
 		}
 
 		rowStart := i * sequenceLength
@@ -321,7 +418,7 @@ func (e *Embedder) tokenize(documents []string) ([]int64, []int64, []int64, erro
 		}
 	}
 
-	return inputIDs, attentionMask, tokenTypeIDs, nil
+	return nil
 }
 
 func fillUint32AsInt64(dst []int64, src []uint32) {
@@ -421,7 +518,7 @@ type destroyer interface {
 func destroyAll(resources ...destroyer) error {
 	var err error
 	for _, resource := range resources {
-		if resource == nil {
+		if isNilDestroyer(resource) {
 			continue
 		}
 		if destroyErr := resource.Destroy(); destroyErr != nil {
@@ -429,4 +526,17 @@ func destroyAll(resources ...destroyer) error {
 		}
 	}
 	return err
+}
+
+func isNilDestroyer(resource destroyer) bool {
+	if resource == nil {
+		return true
+	}
+	value := reflect.ValueOf(resource)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }

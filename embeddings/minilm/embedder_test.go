@@ -94,6 +94,19 @@ func TestEmbedQueryValidation(t *testing.T) {
 	}
 }
 
+type nilSafeDestroyer struct{}
+
+func (d *nilSafeDestroyer) Destroy() error {
+	return nil
+}
+
+func TestDestroyAllIgnoresTypedNil(t *testing.T) {
+	var typedNil *nilSafeDestroyer
+	if err := destroyAll(typedNil); err != nil {
+		t.Fatalf("destroyAll should ignore typed nil destroyers, got: %v", err)
+	}
+}
+
 func float32Near(got float32, want float32, tolerance float64) bool {
 	return math.Abs(float64(got-want)) <= tolerance
 }

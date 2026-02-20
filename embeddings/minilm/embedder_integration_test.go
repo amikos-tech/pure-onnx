@@ -79,6 +79,13 @@ func TestEmbedDocumentsWithAllMiniLML6V2(t *testing.T) {
 	if len(embeddings) != len(documents) {
 		t.Fatalf("unexpected embedding row count: got %d, want %d", len(embeddings), len(documents))
 	}
+	if len(embedder.sessionsByBatch) != 1 {
+		t.Fatalf("expected exactly one cached session after first batch run, got %d", len(embedder.sessionsByBatch))
+	}
+	batchTwoSession := embedder.sessionsByBatch[len(documents)]
+	if batchTwoSession == nil {
+		t.Fatalf("missing cached session for batch size %d", len(documents))
+	}
 
 	for i, embedding := range embeddings {
 		if len(embedding) != int(OutputEmbeddingDimension) {
@@ -95,6 +102,13 @@ func TestEmbedDocumentsWithAllMiniLML6V2(t *testing.T) {
 	if len(queryEmbedding) != int(OutputEmbeddingDimension) {
 		t.Fatalf("unexpected query embedding width: got %d, want %d", len(queryEmbedding), OutputEmbeddingDimension)
 	}
+	if len(embedder.sessionsByBatch) != 2 {
+		t.Fatalf("expected two cached sessions after single-query run, got %d", len(embedder.sessionsByBatch))
+	}
+	batchOneSession := embedder.sessionsByBatch[1]
+	if batchOneSession == nil {
+		t.Fatalf("missing cached session for batch size 1")
+	}
 	assertPrefixNear(
 		t,
 		"EmbedQuery golden prefix (this is a test)",
@@ -109,6 +123,15 @@ func TestEmbedDocumentsWithAllMiniLML6V2(t *testing.T) {
 	}
 	if len(singleDocEmbeddings) != 1 {
 		t.Fatalf("unexpected single-doc row count: got %d, want 1", len(singleDocEmbeddings))
+	}
+	if len(embedder.sessionsByBatch) != 2 {
+		t.Fatalf("expected session cache size to remain 2 after repeated single-doc call, got %d", len(embedder.sessionsByBatch))
+	}
+	if embedder.sessionsByBatch[1] != batchOneSession {
+		t.Fatalf("expected batch size 1 session to be reused")
+	}
+	if embedder.sessionsByBatch[len(documents)] != batchTwoSession {
+		t.Fatalf("expected batch size %d session to remain cached", len(documents))
 	}
 
 	assertVectorNear(t, "EmbedQuery parity", queryEmbedding, singleDocEmbeddings[0], 1e-6)
@@ -207,7 +230,11 @@ func downloadFile(destinationPath string, assetURL string) error {
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if attempt > 1 {
-			time.Sleep(time.Duration(attempt) * time.Second)
+			backoff := time.Second * time.Duration(1<<(attempt-1))
+			if backoff > 8*time.Second {
+				backoff = 8 * time.Second
+			}
+			time.Sleep(backoff)
 		}
 
 		err := downloadFileOnce(destinationPath, assetURL)
