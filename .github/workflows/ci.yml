@@ -9,6 +9,9 @@ on:
 
 env:
   GO_VERSION_STABLE: '1.24.x'
+  # Keep vulncheck on a patched baseline to avoid stdlib CVE false-fails from older patch toolchains.
+  GO_VERSION_VULNCHECK: '1.24.13'
+  GO_VULNCHECK_TOOLCHAIN: 'go1.24.13+auto'
 
 jobs:
   lint:
@@ -241,14 +244,11 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION_STABLE }}
+          go-version: ${{ env.GO_VERSION_VULNCHECK }}
           cache: true
 
-      - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
-
       - name: Run govulncheck
-        run: govulncheck ./...
+        run: make vulncheck GO_VULNCHECK_TOOLCHAIN=${{ env.GO_VULNCHECK_TOOLCHAIN }}
 
   onnx-runtime-compatibility:
     name: ONNX Runtime Compatibility Check

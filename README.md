@@ -145,6 +145,26 @@ This project is under active development. See our [GitHub Issues](https://github
 
 We're focusing on providing a drop-in replacement for common ONNX Runtime use cases, particularly for embeddings and inference tasks.
 
+## Local CI Guardrails
+
+Install repository-managed git hooks once per clone:
+
+```bash
+make install-hooks
+```
+
+The pre-commit hook runs:
+- `make fmt-check`
+- `go test ./...`
+- `make check-mod-tidy`
+- `make vulncheck` (with patched Go toolchain baseline `go1.24.13+auto`)
+
+You can run the same sequence manually:
+
+```bash
+make precommit
+```
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.

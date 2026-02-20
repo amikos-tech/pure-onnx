@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "${REPO_ROOT}"
+
+if [[ "${SKIP_PRECOMMIT:-0}" == "1" ]]; then
+  echo "[pre-commit] SKIP_PRECOMMIT=1 set; skipping checks."
+  exit 0
+fi
+
+echo "[pre-commit] Running make precommit"
+make precommit

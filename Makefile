@@ -7,6 +7,8 @@ GOOS := $(shell go env GOOS)
 GOARCH := $(shell go env GOARCH)
 PROJECT_NAME := pure-onnx
 PKG := github.com/amikos-tech/$(PROJECT_NAME)
+GO_VULNCHECK_TOOLCHAIN ?= go1.24.13+auto
+GOVULNCHECK := $(shell $(GO) env GOPATH)/bin/govulncheck
 
 # ONNX Runtime version (supports API v22)
 ORT_VERSION := 1.23.1
@@ -44,7 +46,7 @@ GREEN := \033[0;32m
 YELLOW := \033[1;33m
 NC := \033[0m # No Color
 
-.PHONY: all build test test-race clean fmt vet lint verify help install-tools download-ort list-ort-versions
+.PHONY: all build test test-race clean fmt fmt-check vet lint verify help install-tools download-ort list-ort-versions check-mod-tidy vulncheck precommit install-hooks
 
 ## help: Show this help message
 help:
@@ -98,6 +100,18 @@ fmt:
 	$(GO) fmt ./...
 	@echo "$(GREEN)✓ Formatting complete$(NC)"
 
+## fmt-check: Check formatting without modifying files
+fmt-check:
+	@echo "$(YELLOW)Checking formatting...$(NC)"
+	@UNFORMATTED=$$(gofmt -l . | grep -v '^vendor/' || true); \
+	if [ -n "$$UNFORMATTED" ]; then \
+		echo "$(RED)✗ The following files need formatting:$(NC)"; \
+		echo "$$UNFORMATTED"; \
+		echo "$(YELLOW)Run 'make fmt' to fix.$(NC)"; \
+		exit 1; \
+	fi
+	@echo "$(GREEN)✓ Formatting check complete$(NC)"
+
 ## vet: Run go vet
 vet:
 	@echo "$(YELLOW)Running go vet...$(NC)"
@@ -137,11 +151,32 @@ mod-tidy:
 	$(GO) mod tidy
 	@echo "$(GREEN)✓ Module tidy complete$(NC)"
 
+## check-mod-tidy: Verify go.mod/go.sum are tidy
+check-mod-tidy:
+	@echo "$(YELLOW)Checking module tidiness...$(NC)"
+	$(GO) mod tidy
+	@if ! git diff --quiet -- go.mod go.sum; then \
+		echo "$(RED)✗ go.mod/go.sum are not tidy. Run 'go mod tidy' and commit the result.$(NC)"; \
+		git --no-pager diff -- go.mod go.sum; \
+		exit 1; \
+	fi
+	@echo "$(GREEN)✓ Module tidiness check complete$(NC)"
+
 ## mod-verify: Verify go modules
 mod-verify:
 	@echo "$(YELLOW)Verifying modules...$(NC)"
 	$(GO) mod verify
 	@echo "$(GREEN)✓ Module verification complete$(NC)"
+
+## vulncheck: Run govulncheck with a minimum patched Go toolchain baseline
+vulncheck:
+	@echo "$(YELLOW)Running govulncheck with GOTOOLCHAIN=$(GO_VULNCHECK_TOOLCHAIN)...$(NC)"
+	@if [ ! -x "$(GOVULNCHECK)" ]; then \
+		echo "$(YELLOW)Installing govulncheck...$(NC)"; \
+		$(GO) install golang.org/x/vuln/cmd/govulncheck@latest; \
+	fi
+	GOTOOLCHAIN=$(GO_VULNCHECK_TOOLCHAIN) $(GOVULNCHECK) ./...
+	@echo "$(GREEN)✓ govulncheck complete$(NC)"
 
 ## install-tools: Install development tools
 install-tools:
@@ -235,6 +270,24 @@ dev: verify build test
 ## ci: Run continuous integration checks
 ci: mod-verify verify build test
 	@echo "$(GREEN)✓ CI checks complete$(NC)"
+
+## precommit: Run pre-commit checks mirrored from CI blockers
+precommit: fmt-check
+	@echo "$(YELLOW)Running pre-commit checks...$(NC)"
+	$(GO) test ./...
+	@$(MAKE) check-mod-tidy
+	@if [ "$${SKIP_VULNCHECK:-0}" = "1" ]; then \
+		echo "$(YELLOW)Skipping vulncheck (SKIP_VULNCHECK=1).$(NC)"; \
+	else \
+		$(MAKE) vulncheck; \
+	fi
+	@echo "$(GREEN)✓ Pre-commit checks complete$(NC)"
+
+## install-hooks: Configure git to use repository-managed hooks
+install-hooks:
+	@echo "$(YELLOW)Installing repository hooks...$(NC)"
+	git config core.hooksPath .githooks
+	@echo "$(GREEN)✓ Hooks installed (core.hooksPath=.githooks)$(NC)"
 
 ## watch: Watch for changes and rebuild (requires entr)
 watch:
