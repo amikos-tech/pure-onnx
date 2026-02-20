@@ -9,6 +9,7 @@ PROJECT_NAME := pure-onnx
 PKG := github.com/amikos-tech/$(PROJECT_NAME)
 GO_VULNCHECK_TOOLCHAIN ?= go1.24.13+auto
 GOVULNCHECK := $(shell $(GO) env GOPATH)/bin/govulncheck
+GOLANGCI_LINT_VERSION ?= v2.8.0
 
 # ONNX Runtime version (supports API v22)
 ORT_VERSION := 1.23.1
@@ -115,9 +116,9 @@ fmt-check:
 ## vet: Run go vet
 vet:
 	@echo "$(YELLOW)Running go vet...$(NC)"
-	@$(GO) vet ./ort/... || true
-	@$(GO) vet ./examples/basic/... || true
-	@$(GO) vet ./embeddings/... || true
+	@$(GO) vet -unsafeptr=false ./ort/...
+	@$(GO) vet -unsafeptr=false ./examples/basic/...
+	@$(GO) vet ./embeddings/...
 	@echo "$(GREEN)✓ Vet complete$(NC)"
 
 ## lint: Run golangci-lint (requires golangci-lint to be installed)
@@ -183,7 +184,7 @@ install-tools:
 	@echo "$(YELLOW)Installing development tools...$(NC)"
 	@echo "Installing golangci-lint..."
 	@if ! command -v golangci-lint &> /dev/null; then \
-		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell go env GOPATH)/bin; \
+		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/$(GOLANGCI_LINT_VERSION)/install.sh | sh -s -- -b $(shell go env GOPATH)/bin $(GOLANGCI_LINT_VERSION); \
 	fi
 	@echo "Installing goimports..."
 	$(GO) install golang.org/x/tools/cmd/goimports@latest
@@ -274,6 +275,7 @@ ci: mod-verify verify build test
 ## precommit: Run pre-commit checks mirrored from CI blockers
 precommit: fmt-check
 	@echo "$(YELLOW)Running pre-commit checks...$(NC)"
+	@$(MAKE) vet
 	$(GO) test ./...
 	@$(MAKE) check-mod-tidy
 	@if [ "$${SKIP_VULNCHECK:-0}" = "1" ]; then \

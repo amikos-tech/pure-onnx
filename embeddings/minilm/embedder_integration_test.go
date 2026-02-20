@@ -35,11 +35,10 @@ var expectedThisIsATestEmbeddingPrefix = []float32{
 	0.03728743,
 }
 
-func TestEmbedDocumentsWithAllMiniLML6V2(t *testing.T) {
-	cleanup := setupORTTestEnvironment(t)
-	defer cleanup()
+func resolveMiniLMAssets(t *testing.T) (modelPath string, tokenizerPath string) {
+	t.Helper()
 
-	modelPath := resolveAssetPath(
+	modelPath = resolveAssetPath(
 		t,
 		"ONNXRUNTIME_TEST_ALL_MINILM_MODEL_PATH",
 		"ONNXRUNTIME_TEST_ALL_MINILM_MODEL_URL",
@@ -50,7 +49,7 @@ func TestEmbedDocumentsWithAllMiniLML6V2(t *testing.T) {
 		"all-MiniLM-L6-v2.onnx",
 	)
 
-	tokenizerPath := resolveAssetPath(
+	tokenizerPath = resolveAssetPath(
 		t,
 		"ONNXRUNTIME_TEST_ALL_MINILM_TOKENIZER_PATH",
 		"ONNXRUNTIME_TEST_ALL_MINILM_TOKENIZER_URL",
@@ -60,6 +59,15 @@ func TestEmbedDocumentsWithAllMiniLML6V2(t *testing.T) {
 		"tokenizers",
 		"all-MiniLM-L6-v2-tokenizer.json",
 	)
+
+	return modelPath, tokenizerPath
+}
+
+func TestEmbedDocumentsWithAllMiniLML6V2(t *testing.T) {
+	cleanup := setupORTTestEnvironment(t)
+	defer cleanup()
+
+	modelPath, tokenizerPath := resolveMiniLMAssets(t)
 
 	embedder, err := NewEmbedder(modelPath, tokenizerPath)
 	if err != nil {
@@ -135,6 +143,59 @@ func TestEmbedDocumentsWithAllMiniLML6V2(t *testing.T) {
 	}
 
 	assertVectorNear(t, "EmbedQuery parity", queryEmbedding, singleDocEmbeddings[0], 1e-6)
+}
+
+func TestEmbedderSessionCacheRespectsLRUBound(t *testing.T) {
+	cleanup := setupORTTestEnvironment(t)
+	defer cleanup()
+
+	modelPath, tokenizerPath := resolveMiniLMAssets(t)
+
+	embedder, err := NewEmbedder(modelPath, tokenizerPath, WithMaxCachedBatchSessions(2))
+	if err != nil {
+		t.Fatalf("failed to create embedder: %v", err)
+	}
+	defer func() {
+		if err := embedder.Close(); err != nil {
+			t.Errorf("failed to close embedder: %v", err)
+		}
+	}()
+
+	if _, err := embedder.EmbedDocuments([]string{"doc-1"}); err != nil {
+		t.Fatalf("first batch run failed: %v", err)
+	}
+	if _, err := embedder.EmbedDocuments([]string{"doc-1", "doc-2"}); err != nil {
+		t.Fatalf("second batch run failed: %v", err)
+	}
+	if len(embedder.sessionsByBatch) != 2 {
+		t.Fatalf("expected two cached sessions after warm-up, got %d", len(embedder.sessionsByBatch))
+	}
+	sessionBatchOne := embedder.sessionsByBatch[1]
+	if sessionBatchOne == nil {
+		t.Fatalf("missing cached session for batch size 1")
+	}
+
+	// Touch batch size 1 so batch size 2 becomes least recently used.
+	if _, err := embedder.EmbedDocuments([]string{"doc-3"}); err != nil {
+		t.Fatalf("third batch run failed: %v", err)
+	}
+
+	// Insert batch size 3 and verify LRU eviction removed batch size 2.
+	if _, err := embedder.EmbedDocuments([]string{"doc-4", "doc-5", "doc-6"}); err != nil {
+		t.Fatalf("fourth batch run failed: %v", err)
+	}
+	if len(embedder.sessionsByBatch) != 2 {
+		t.Fatalf("expected cache size to remain 2 after eviction, got %d", len(embedder.sessionsByBatch))
+	}
+	if embedder.sessionsByBatch[1] != sessionBatchOne {
+		t.Fatalf("expected batch size 1 session to remain cached as recently used")
+	}
+	if _, ok := embedder.sessionsByBatch[2]; ok {
+		t.Fatalf("expected batch size 2 session to be evicted")
+	}
+	if embedder.sessionsByBatch[3] == nil {
+		t.Fatalf("expected batch size 3 session to be cached")
+	}
 }
 
 func setupORTTestEnvironment(tb testing.TB) func() {

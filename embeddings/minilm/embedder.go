@@ -1,6 +1,7 @@
 package minilm
 
 import (
+	"container/list"
 	"errors"
 	"fmt"
 	"math"
@@ -17,6 +18,8 @@ const (
 	DefaultSequenceLength = 256
 	// OutputEmbeddingDimension is the all-MiniLM-L6-v2 embedding width.
 	OutputEmbeddingDimension = 384
+	// DefaultMaxCachedBatchSessions bounds in-memory ONNX session cache growth.
+	DefaultMaxCachedBatchSessions = 8
 
 	poolingDenominatorEpsilon = float32(1e-9)
 	l2NormEpsilon             = float32(1e-12)
@@ -35,6 +38,7 @@ type Option func(*config) error
 
 type config struct {
 	sequenceLength       int
+	maxCachedBatchCount  int
 	tokenizerLibraryPath string
 	inputIDsName         string
 	attentionMaskName    string
@@ -44,11 +48,12 @@ type config struct {
 
 func defaultConfig() config {
 	return config{
-		sequenceLength:    DefaultSequenceLength,
-		inputIDsName:      defaultInputIDsName,
-		attentionMaskName: defaultAttentionMaskName,
-		tokenTypeIDsName:  defaultTokenTypeIDsName,
-		outputName:        defaultOutputName,
+		sequenceLength:      DefaultSequenceLength,
+		maxCachedBatchCount: DefaultMaxCachedBatchSessions,
+		inputIDsName:        defaultInputIDsName,
+		attentionMaskName:   defaultAttentionMaskName,
+		tokenTypeIDsName:    defaultTokenTypeIDsName,
+		outputName:          defaultOutputName,
 	}
 }
 
@@ -59,6 +64,17 @@ func WithSequenceLength(length int) Option {
 			return fmt.Errorf("sequence length must be > 0, got %d", length)
 		}
 		cfg.sequenceLength = length
+		return nil
+	}
+}
+
+// WithMaxCachedBatchSessions bounds how many batch-size-specific sessions are cached.
+func WithMaxCachedBatchSessions(limit int) Option {
+	return func(cfg *config) error {
+		if limit <= 0 {
+			return fmt.Errorf("max cached batch sessions must be > 0, got %d", limit)
+		}
+		cfg.maxCachedBatchCount = limit
 		return nil
 	}
 }
@@ -93,13 +109,18 @@ func WithInputOutputNames(inputIDsName, attentionMaskName, tokenTypeIDsName, out
 // The caller must initialize ONNX Runtime via ort.SetSharedLibraryPath and
 // ort.InitializeEnvironment before calling EmbedDocuments/EmbedQuery.
 type Embedder struct {
-	modelPath       string
-	sequenceLength  int
-	tokenizer       *tokenizers.Tokenizer
-	inputNames      []string
-	outputNames     []string
-	sessionsByBatch map[int]*embeddingSession
-	runMu           sync.Mutex
+	modelPath      string
+	sequenceLength int
+	tokenizer      *tokenizers.Tokenizer
+	inputNames     []string
+	outputNames    []string
+	// sessionsByBatch caches one session per unique batch size and is LRU-bounded
+	// by maxCachedBatchCount to avoid unbounded memory growth.
+	sessionsByBatch     map[int]*embeddingSession
+	sessionLRU          *list.List
+	sessionLRUIndex     map[int]*list.Element
+	maxCachedBatchCount int
+	runMu               sync.Mutex
 }
 
 type embeddingSession struct {
@@ -168,8 +189,11 @@ func NewEmbedder(modelPath string, tokenizerPath string, opts ...Option) (*Embed
 			cfg.attentionMaskName,
 			cfg.tokenTypeIDsName,
 		},
-		outputNames:     []string{cfg.outputName},
-		sessionsByBatch: make(map[int]*embeddingSession),
+		outputNames:         []string{cfg.outputName},
+		sessionsByBatch:     make(map[int]*embeddingSession),
+		sessionLRU:          list.New(),
+		sessionLRUIndex:     make(map[int]*list.Element),
+		maxCachedBatchCount: cfg.maxCachedBatchCount,
 	}, nil
 }
 
@@ -190,6 +214,8 @@ func (e *Embedder) Close() error {
 		}
 	}
 	e.sessionsByBatch = nil
+	e.sessionLRU = nil
+	e.sessionLRUIndex = nil
 
 	if e.tokenizer != nil {
 		if closeErr := e.tokenizer.Close(); closeErr != nil {
@@ -258,7 +284,13 @@ func (e *Embedder) sessionForBatchLocked(batchSize int) (_ *embeddingSession, er
 	}
 
 	if session, ok := e.sessionsByBatch[batchSize]; ok {
+		e.touchBatchSizeLocked(batchSize)
 		return session, nil
+	}
+	if e.maxCachedBatchCount > 0 && len(e.sessionsByBatch) >= e.maxCachedBatchCount {
+		if err := e.evictLeastRecentlyUsedSessionLocked(); err != nil {
+			return nil, err
+		}
 	}
 
 	session, err := newEmbeddingSession(
@@ -272,7 +304,41 @@ func (e *Embedder) sessionForBatchLocked(batchSize int) (_ *embeddingSession, er
 		return nil, err
 	}
 	e.sessionsByBatch[batchSize] = session
+	e.touchBatchSizeLocked(batchSize)
 	return session, nil
+}
+
+func (e *Embedder) touchBatchSizeLocked(batchSize int) {
+	if existing := e.sessionLRUIndex[batchSize]; existing != nil {
+		e.sessionLRU.MoveToBack(existing)
+		return
+	}
+	e.sessionLRUIndex[batchSize] = e.sessionLRU.PushBack(batchSize)
+}
+
+func (e *Embedder) evictLeastRecentlyUsedSessionLocked() error {
+	if e.sessionLRU == nil {
+		return nil
+	}
+	oldest := e.sessionLRU.Front()
+	if oldest == nil {
+		return nil
+	}
+	batchSize, ok := oldest.Value.(int)
+	if !ok {
+		return fmt.Errorf("invalid cache bookkeeping value: %T", oldest.Value)
+	}
+	session := e.sessionsByBatch[batchSize]
+	delete(e.sessionsByBatch, batchSize)
+	delete(e.sessionLRUIndex, batchSize)
+	e.sessionLRU.Remove(oldest)
+	if session == nil {
+		return nil
+	}
+	if err := session.Destroy(); err != nil {
+		return fmt.Errorf("failed to evict batch-%d embedding resources: %w", batchSize, err)
+	}
+	return nil
 }
 
 func newEmbeddingSession(modelPath string, inputNames []string, outputNames []string, sequenceLength int, batchSize int) (_ *embeddingSession, err error) {

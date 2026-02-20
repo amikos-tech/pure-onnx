@@ -94,6 +94,19 @@ func TestEmbedQueryValidation(t *testing.T) {
 	}
 }
 
+func TestWithMaxCachedBatchSessionsValidation(t *testing.T) {
+	cfg := defaultConfig()
+	if err := WithMaxCachedBatchSessions(0)(&cfg); err == nil {
+		t.Fatalf("expected validation error for zero max cached sessions")
+	}
+	if err := WithMaxCachedBatchSessions(2)(&cfg); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+	if cfg.maxCachedBatchCount != 2 {
+		t.Fatalf("unexpected maxCachedBatchCount: got %d, want 2", cfg.maxCachedBatchCount)
+	}
+}
+
 type nilSafeDestroyer struct{}
 
 func (d *nilSafeDestroyer) Destroy() error {

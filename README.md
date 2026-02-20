@@ -99,6 +99,7 @@ It adds:
 - truncation/padding to `256`
 - ONNX multi-input assembly (`input_ids`, `attention_mask`, `token_type_ids`)
 - mean pooling + L2 normalization
+- LRU-bounded per-batch session cache (default `8`, override with `WithMaxCachedBatchSessions`)
 
 ```go
 package main
@@ -155,6 +156,7 @@ make install-hooks
 
 The pre-commit hook runs:
 - `make fmt-check`
+- `make vet`
 - `go test ./...`
 - `make check-mod-tidy`
 - `make vulncheck` (with patched Go toolchain baseline `go1.24.13+auto`)

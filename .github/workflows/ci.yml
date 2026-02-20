@@ -43,14 +43,23 @@ jobs:
           go vet -unsafeptr=false ./examples/basic/...
           go vet ./embeddings/...
 
-      - name: Run golangci-lint
+      - name: Run golangci-lint (PR new issues)
+        if: github.event_name == 'pull_request'
         uses: golangci/golangci-lint-action@v8
         with:
           # Pin v2 because .golangci.yml uses v2 formatters config.
           version: v2.8.0
           args: --concurrency=8
-        # Allow lint failures to not block CI while we iteratively improve code quality.
-        # Keep this non-blocking for now while lint debt is reduced incrementally.
+          only-new-issues: true
+
+      - name: Run golangci-lint (push informational)
+        if: github.event_name != 'pull_request'
+        uses: golangci/golangci-lint-action@v8
+        with:
+          # Pin v2 because .golangci.yml uses v2 formatters config.
+          version: v2.8.0
+          args: --concurrency=8
+        # Main/develop pushes keep lint informational until historical lint debt is cleared.
         continue-on-error: true
 
   test:

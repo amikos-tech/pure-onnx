@@ -134,6 +134,8 @@ Run the same checks on demand:
 make precommit
 ```
 
+`make precommit` runs formatting, vet, unit tests, module tidiness check, and vulncheck.
+
 ### Local CI Simulation
 
 To test all platforms locally using Docker:
