@@ -25,8 +25,9 @@ const (
 const (
 	defaultInputIDsName      = "input_ids"
 	defaultAttentionMaskName = "attention_mask"
-	defaultTokenTypeIDsName  = "token_type_ids"
-	defaultOutputName        = "last_hidden_state"
+	// #nosec G101 -- ONNX input identifier string, not credential material.
+	defaultTokenTypeIDsName = "token_type_ids"
+	defaultOutputName       = "last_hidden_state"
 )
 
 // Option customizes embedder initialization.
