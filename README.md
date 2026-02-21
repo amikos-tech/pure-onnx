@@ -89,6 +89,55 @@ Run it with:
 go run ./examples/inference
 ```
 
+### Optional all-MiniLM Embeddings Layer
+
+For local embedding workflows, use the optional high-level package:
+`github.com/amikos-tech/pure-onnx/embeddings/minilm`.
+
+It adds:
+- tokenizer loading (`tokenizer.json`)
+- truncation/padding to `256`
+- ONNX multi-input assembly (`input_ids`, `attention_mask`, `token_type_ids`)
+- mean pooling + L2 normalization
+- LRU-bounded per-batch session cache (default `8`, override with `WithMaxCachedBatchSessions`)
+
+```go
+package main
+
+import (
+    "log"
+
+    "github.com/amikos-tech/pure-onnx/embeddings/minilm"
+    "github.com/amikos-tech/pure-onnx/ort"
+)
+
+func main() {
+    if err := ort.SetSharedLibraryPath("/path/to/libonnxruntime.so"); err != nil {
+        log.Fatal(err)
+    }
+    if err := ort.InitializeEnvironment(); err != nil {
+        log.Fatal(err)
+    }
+    defer ort.DestroyEnvironment()
+
+    embedder, err := minilm.NewEmbedder(
+        "/path/to/all-MiniLM-L6-v2.onnx",
+        "/path/to/tokenizer.json",
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer embedder.Close()
+
+    vectors, err := embedder.EmbedDocuments([]string{"hello world", "local inference only"})
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    _ = vectors // [][]float32, shape N x 384
+}
+```
+
 ## Project Status
 
 This project is under active development. See our [GitHub Issues](https://github.com/amikos-tech/pure-onnx/issues) for the development roadmap.
@@ -96,6 +145,27 @@ This project is under active development. See our [GitHub Issues](https://github
 ### Current Focus
 
 We're focusing on providing a drop-in replacement for common ONNX Runtime use cases, particularly for embeddings and inference tasks.
+
+## Local CI Guardrails
+
+Install repository-managed git hooks once per clone:
+
+```bash
+make install-hooks
+```
+
+The pre-commit hook runs:
+- `make fmt-check`
+- `make vet`
+- `go test ./...`
+- `make check-mod-tidy`
+- `make vulncheck` (with patched Go toolchain baseline `go1.24.13+auto`)
+
+You can run the same sequence manually:
+
+```bash
+make precommit
+```
 
 ## Contributing
 

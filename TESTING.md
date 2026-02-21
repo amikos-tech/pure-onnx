@@ -55,13 +55,18 @@ Integration tests verify actual FFI interactions with the ONNX Runtime library.
    # Use a pre-downloaded all-MiniLM model (skips network download)
    export ONNXRUNTIME_TEST_ALL_MINILM_MODEL_PATH=/path/to/all-MiniLM-L6-v2.onnx
 
-   # Override sequence length (default: 8, minimum: 6)
+   # Override sequence length for ./ort real-model tests only
+   # (CI uses 8; minimum is 6 in ort/minilm helper tests)
    export ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH=8
 
    # Optional integrity check for custom model path/URL.
    # When unset, the default HuggingFace URL is verified against a built-in SHA-256.
    export ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256=<expected_sha256>
    ```
+
+   Note: `embeddings/minilm` integration tests do not read
+   `ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH`; they use the embedder default
+   sequence length (`256`) unless `WithSequenceLength(...)` is set in code.
 
 5. Run tests:
    ```bash
@@ -114,10 +119,27 @@ go test -run '^$' \
 ### GitHub Actions
 
 The CI pipeline runs tests in multiple configurations:
-- **Unit Tests**: Run on all platforms (Linux, macOS, Windows) with Go 1.23.x and 1.24.x
+- **Unit Tests**: Run on all platforms (Linux, macOS, Windows) with Go 1.24.x
 - **Integration Tests (matrix job)**: Skipped in the cross-platform matrix (no ONNX Runtime library preinstalled)
 - **Real-model Integration Job**: Linux job downloads ONNX Runtime, runs all-MiniLM integration + memory stability tests, and runs all-MiniLM benchmarks
 - **Race Detection**: Partially disabled due to checkptr incompatibility with purego FFI
+- **Vulnerability Check**: Runs `make vulncheck` with a patched Go baseline (`go1.24.13+auto`)
+
+### Local Pre-commit Checks
+
+Install repo-managed hooks once:
+
+```bash
+make install-hooks
+```
+
+Run the same checks on demand:
+
+```bash
+make precommit
+```
+
+`make precommit` runs formatting, vet, unit tests, module tidiness check, and vulncheck.
 
 ### Local CI Simulation
 

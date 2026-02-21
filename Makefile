@@ -7,6 +7,9 @@ GOOS := $(shell go env GOOS)
 GOARCH := $(shell go env GOARCH)
 PROJECT_NAME := pure-onnx
 PKG := github.com/amikos-tech/$(PROJECT_NAME)
+GO_VULNCHECK_TOOLCHAIN ?= go1.24.13+auto
+GOVULNCHECK := $(shell $(GO) env GOPATH)/bin/govulncheck
+GOLANGCI_LINT_VERSION ?= v2.8.0
 
 # ONNX Runtime version (supports API v22)
 ORT_VERSION := 1.23.1
@@ -44,7 +47,7 @@ GREEN := \033[0;32m
 YELLOW := \033[1;33m
 NC := \033[0m # No Color
 
-.PHONY: all build test clean fmt vet lint verify help install-tools download-ort list-ort-versions
+.PHONY: all build test test-race clean fmt fmt-check vet lint verify help install-tools download-ort list-ort-versions check-mod-tidy vulncheck precommit install-hooks
 
 ## help: Show this help message
 help:
@@ -70,13 +73,19 @@ build:
 ## test: Run tests
 test:
 	@echo "$(YELLOW)Running tests...$(NC)"
-	$(GO) test -v -race -cover ./ort/...
+	$(GO) test -v -cover ./...
 	@echo "$(GREEN)✓ Tests complete$(NC)"
+
+## test-race: Run race-enabled tests for core ort package
+test-race:
+	@echo "$(YELLOW)Running race-enabled tests (ort)...$(NC)"
+	$(GO) test -v -race ./ort/...
+	@echo "$(GREEN)✓ Race tests complete$(NC)"
 
 ## test-coverage: Run tests with coverage report
 test-coverage:
 	@echo "$(YELLOW)Running tests with coverage...$(NC)"
-	$(GO) test -v -race -coverprofile=coverage.out ./ort/...
+	$(GO) test -v -coverprofile=coverage.out ./...
 	$(GO) tool cover -html=coverage.out -o coverage.html
 	@echo "$(GREEN)✓ Coverage report generated: coverage.html$(NC)"
 
@@ -92,14 +101,27 @@ fmt:
 	$(GO) fmt ./...
 	@echo "$(GREEN)✓ Formatting complete$(NC)"
 
+## fmt-check: Check formatting without modifying files
+fmt-check:
+	@echo "$(YELLOW)Checking formatting...$(NC)"
+	@UNFORMATTED=$$(gofmt -l . | grep -v '^vendor/' || true); \
+	if [ -n "$$UNFORMATTED" ]; then \
+		echo "$(RED)✗ The following files need formatting:$(NC)"; \
+		echo "$$UNFORMATTED"; \
+		echo "$(YELLOW)Run 'make fmt' to fix.$(NC)"; \
+		exit 1; \
+	fi
+	@echo "$(GREEN)✓ Formatting check complete$(NC)"
+
 ## vet: Run go vet
 vet:
 	@echo "$(YELLOW)Running go vet...$(NC)"
-	@$(GO) vet ./ort/... || true
-	@$(GO) vet ./examples/basic/... || true
+	@$(GO) vet -unsafeptr=false ./ort/...
+	@$(GO) vet -unsafeptr=false ./examples/basic/...
+	@$(GO) vet ./embeddings/...
 	@echo "$(GREEN)✓ Vet complete$(NC)"
 
-## lint: Run golangci-lint (requires golangci-lint to be installed)
+## lint: Run golangci-lint --fix (requires golangci-lint; may modify files)
 lint:
 	@echo "$(YELLOW)Running linter...$(NC)"
 	@if command -v golangci-lint &> /dev/null; then \
@@ -130,18 +152,39 @@ mod-tidy:
 	$(GO) mod tidy
 	@echo "$(GREEN)✓ Module tidy complete$(NC)"
 
+## check-mod-tidy: Verify go.mod/go.sum are tidy
+check-mod-tidy:
+	@echo "$(YELLOW)Checking module tidiness...$(NC)"
+	$(GO) mod tidy
+	@if ! git diff --quiet -- go.mod go.sum; then \
+		echo "$(RED)✗ go.mod/go.sum are not tidy. Run 'go mod tidy' and commit the result.$(NC)"; \
+		git --no-pager diff -- go.mod go.sum; \
+		exit 1; \
+	fi
+	@echo "$(GREEN)✓ Module tidiness check complete$(NC)"
+
 ## mod-verify: Verify go modules
 mod-verify:
 	@echo "$(YELLOW)Verifying modules...$(NC)"
 	$(GO) mod verify
 	@echo "$(GREEN)✓ Module verification complete$(NC)"
 
+## vulncheck: Run govulncheck with a minimum patched Go toolchain baseline
+vulncheck:
+	@echo "$(YELLOW)Running govulncheck with GOTOOLCHAIN=$(GO_VULNCHECK_TOOLCHAIN)...$(NC)"
+	@if [ ! -x "$(GOVULNCHECK)" ]; then \
+		echo "$(YELLOW)Installing govulncheck...$(NC)"; \
+		$(GO) install golang.org/x/vuln/cmd/govulncheck@latest; \
+	fi
+	GOTOOLCHAIN=$(GO_VULNCHECK_TOOLCHAIN) $(GOVULNCHECK) ./...
+	@echo "$(GREEN)✓ govulncheck complete$(NC)"
+
 ## install-tools: Install development tools
 install-tools:
 	@echo "$(YELLOW)Installing development tools...$(NC)"
 	@echo "Installing golangci-lint..."
 	@if ! command -v golangci-lint &> /dev/null; then \
-		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell go env GOPATH)/bin; \
+		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/$(GOLANGCI_LINT_VERSION)/install.sh | sh -s -- -b $(shell go env GOPATH)/bin $(GOLANGCI_LINT_VERSION); \
 	fi
 	@echo "Installing goimports..."
 	$(GO) install golang.org/x/tools/cmd/goimports@latest
@@ -228,6 +271,25 @@ dev: verify build test
 ## ci: Run continuous integration checks
 ci: mod-verify verify build test
 	@echo "$(GREEN)✓ CI checks complete$(NC)"
+
+## precommit: Run pre-commit checks mirrored from CI blockers
+precommit: fmt-check
+	@echo "$(YELLOW)Running pre-commit checks...$(NC)"
+	@$(MAKE) vet
+	$(GO) test ./...
+	@$(MAKE) check-mod-tidy
+	@if [ "$${SKIP_VULNCHECK:-0}" = "1" ]; then \
+		echo "$(YELLOW)Skipping vulncheck (SKIP_VULNCHECK=1).$(NC)"; \
+	else \
+		$(MAKE) vulncheck; \
+	fi
+	@echo "$(GREEN)✓ Pre-commit checks complete$(NC)"
+
+## install-hooks: Configure git to use repository-managed hooks
+install-hooks:
+	@echo "$(YELLOW)Installing repository hooks...$(NC)"
+	git config core.hooksPath .githooks
+	@echo "$(GREEN)✓ Hooks installed (core.hooksPath=.githooks)$(NC)"
 
 ## watch: Watch for changes and rebuild (requires entr)
 watch:
