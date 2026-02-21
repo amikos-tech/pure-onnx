@@ -10,6 +10,8 @@ PKG := github.com/amikos-tech/$(PROJECT_NAME)
 GO_VULNCHECK_TOOLCHAIN ?= go1.24.13+auto
 GOVULNCHECK := $(shell $(GO) env GOPATH)/bin/govulncheck
 GOLANGCI_LINT_VERSION ?= v2.8.0
+GOSEC_VERSION ?= v2.23.0
+PRECOMMIT_BASE_REF ?= origin/main
 
 # ONNX Runtime version (supports API v22)
 ORT_VERSION := 1.23.1
@@ -47,7 +49,7 @@ GREEN := \033[0;32m
 YELLOW := \033[1;33m
 NC := \033[0m # No Color
 
-.PHONY: all build test test-race clean fmt fmt-check vet lint verify help install-tools download-ort list-ort-versions check-mod-tidy vulncheck precommit install-hooks
+.PHONY: all build test test-race clean fmt fmt-check vet lint precommit-lint-new gosec verify help install-tools download-ort list-ort-versions check-mod-tidy vulncheck precommit install-hooks
 
 ## help: Show this help message
 help:
@@ -132,6 +134,42 @@ lint:
 		exit 1; \
 	fi
 
+## precommit-lint-new: Run golangci-lint for issues introduced since merge-base with PRECOMMIT_BASE_REF
+precommit-lint-new:
+	@if ! command -v golangci-lint &> /dev/null; then \
+		echo "$(RED)✗ golangci-lint not installed. Run 'make install-tools' first$(NC)"; \
+		exit 1; \
+	fi
+	@BASE_REF="$${PRECOMMIT_BASE_REF:-$(PRECOMMIT_BASE_REF)}"; \
+	if ! git rev-parse --verify "$$BASE_REF" >/dev/null 2>&1; then \
+		if git rev-parse --verify main >/dev/null 2>&1; then \
+			BASE_REF=main; \
+		elif git rev-parse --verify origin/develop >/dev/null 2>&1; then \
+			BASE_REF=origin/develop; \
+		else \
+			echo "$(RED)✗ Could not resolve base ref '$$BASE_REF'. Set PRECOMMIT_BASE_REF to an existing ref.$(NC)"; \
+			exit 1; \
+		fi; \
+	fi; \
+	MERGE_BASE=$$(git merge-base HEAD "$$BASE_REF" 2>/dev/null || true); \
+	if [ -z "$$MERGE_BASE" ]; then \
+		echo "$(RED)✗ Could not determine merge-base with '$$BASE_REF'.$(NC)"; \
+		exit 1; \
+	fi; \
+	echo "$(YELLOW)Running golangci-lint (new issues since $$MERGE_BASE against $$BASE_REF)...$(NC)"; \
+	golangci-lint run --concurrency=8 --new-from-rev "$$MERGE_BASE"
+
+## gosec: Run gosec security scanner (blocking)
+gosec:
+	@echo "$(YELLOW)Running gosec...$(NC)"
+	@if command -v gosec &> /dev/null; then \
+		gosec -exclude-dir=examples/experimental ./...; \
+		echo "$(GREEN)✓ gosec complete$(NC)"; \
+	else \
+		echo "$(RED)✗ gosec not installed. Run 'make install-tools' first$(NC)"; \
+		exit 1; \
+	fi
+
 ## verify: Run all verification steps (fmt, vet, lint)
 verify: fmt vet
 	@echo "$(GREEN)✓ All verification steps complete$(NC)"
@@ -185,6 +223,10 @@ install-tools:
 	@echo "Installing golangci-lint..."
 	@if ! command -v golangci-lint &> /dev/null; then \
 		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/$(GOLANGCI_LINT_VERSION)/install.sh | sh -s -- -b $(shell go env GOPATH)/bin $(GOLANGCI_LINT_VERSION); \
+	fi
+	@echo "Installing gosec..."
+	@if ! command -v gosec &> /dev/null; then \
+		$(GO) install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION); \
 	fi
 	@echo "Installing goimports..."
 	$(GO) install golang.org/x/tools/cmd/goimports@latest
@@ -276,6 +318,16 @@ ci: mod-verify verify build test
 precommit: fmt-check
 	@echo "$(YELLOW)Running pre-commit checks...$(NC)"
 	@$(MAKE) vet
+	@if [ "$${SKIP_LINT_NEW:-0}" = "1" ]; then \
+		echo "$(YELLOW)Skipping precommit-lint-new (SKIP_LINT_NEW=1).$(NC)"; \
+	else \
+		$(MAKE) precommit-lint-new; \
+	fi
+	@if [ "$${SKIP_GOSEC:-0}" = "1" ]; then \
+		echo "$(YELLOW)Skipping gosec (SKIP_GOSEC=1).$(NC)"; \
+	else \
+		$(MAKE) gosec; \
+	fi
 	$(GO) test ./...
 	@$(MAKE) check-mod-tidy
 	@if [ "$${SKIP_VULNCHECK:-0}" = "1" ]; then \

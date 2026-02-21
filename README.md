@@ -22,13 +22,11 @@ This library provides Go bindings for [ONNX Runtime](https://onnxruntime.ai/) wi
 go get github.com/amikos-tech/pure-onnx
 ```
 
-## Prerequisites
+## Runtime Setup
 
-You need to have ONNX Runtime installed on your system. Download the appropriate version for your platform:
+You can initialize ONNX Runtime in two modes.
 
-- [ONNX Runtime Releases](https://github.com/microsoft/onnxruntime/releases)
-
-Set the library path before running your application:
+### 1. Explicit library path (existing behavior)
 
 ```go
 import "github.com/amikos-tech/pure-onnx/ort"
@@ -51,6 +49,27 @@ func main() {
     // Your code here...
 }
 ```
+
+### 2. Bootstrap mode (pure-Go auto-download + cache)
+
+```go
+import "github.com/amikos-tech/pure-onnx/ort"
+
+func main() {
+    if err := ort.InitializeEnvironmentWithBootstrap(); err != nil {
+        log.Fatal(err)
+    }
+    defer ort.DestroyEnvironment()
+}
+```
+
+Bootstrap downloads official Microsoft ONNX Runtime artifacts and caches them locally.
+
+Optional bootstrap environment variables:
+- `ONNXRUNTIME_VERSION` (default: `1.23.1`)
+- `ONNXRUNTIME_CACHE_DIR` (default: user cache dir under `onnx-purego/onnxruntime`)
+- `ONNXRUNTIME_DISABLE_DOWNLOAD=1` (fail if library is not already cached)
+- `ONNXRUNTIME_LIB_PATH` (if set, explicit path mode is used)
 
 ## Usage Example
 
@@ -157,9 +176,16 @@ make install-hooks
 The pre-commit hook runs:
 - `make fmt-check`
 - `make vet`
+- `make precommit-lint-new` (golangci-lint new issues vs `PRECOMMIT_BASE_REF`, default `origin/main`)
+- `make gosec`
 - `go test ./...`
 - `make check-mod-tidy`
 - `make vulncheck` (with patched Go toolchain baseline `go1.24.13+auto`)
+
+Optional skip knobs:
+- `SKIP_LINT_NEW=1` (skip new-issues lint check)
+- `SKIP_GOSEC=1` (skip gosec)
+- `SKIP_VULNCHECK=1` (skip govulncheck)
 
 You can run the same sequence manually:
 

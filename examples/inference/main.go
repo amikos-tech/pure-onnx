@@ -11,11 +11,6 @@ import (
 )
 
 func main() {
-	libPath := os.Getenv("ONNXRUNTIME_LIB_PATH")
-	if libPath == "" {
-		log.Fatal("set ONNXRUNTIME_LIB_PATH to your ONNX Runtime shared library path")
-	}
-
 	modelPath := os.Getenv("ONNX_MODEL_PATH")
 	if modelPath == "" {
 		log.Fatal("set ONNX_MODEL_PATH to your .onnx file")
@@ -43,10 +38,7 @@ func main() {
 		log.Fatalf("invalid ONNX_INPUT_DATA: %v", err)
 	}
 
-	if err := ort.SetSharedLibraryPath(libPath); err != nil {
-		log.Fatalf("failed to set ONNX Runtime library path: %v", err)
-	}
-	if err := ort.InitializeEnvironment(); err != nil {
+	if err := initializeOrtEnvironment(); err != nil {
 		log.Fatalf("failed to initialize ONNX Runtime: %v", err)
 	}
 	defer func() {
@@ -160,4 +152,26 @@ func printPreview(values []float32, max int) {
 	}
 
 	fmt.Printf("output preview (%d/%d): %v\n", end, len(values), values[:end])
+}
+
+func initializeOrtEnvironment() error {
+	libPath := os.Getenv("ONNXRUNTIME_LIB_PATH")
+	if libPath != "" {
+		if err := ort.SetSharedLibraryPath(libPath); err != nil {
+			return fmt.Errorf("failed to set explicit ONNX Runtime library path: %w", err)
+		}
+		return ort.InitializeEnvironment()
+	}
+
+	bootstrappedPath, err := ort.EnsureOnnxRuntimeSharedLibrary()
+	if err != nil {
+		return fmt.Errorf("failed to bootstrap ONNX Runtime shared library: %w", err)
+	}
+
+	log.Printf("ONNXRUNTIME_LIB_PATH not set; using bootstrapped library at %s", bootstrappedPath)
+	if err := ort.SetSharedLibraryPath(bootstrappedPath); err != nil {
+		return fmt.Errorf("failed to set bootstrapped ONNX Runtime library path: %w", err)
+	}
+
+	return ort.InitializeEnvironment()
 }

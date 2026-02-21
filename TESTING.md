@@ -139,7 +139,19 @@ Run the same checks on demand:
 make precommit
 ```
 
-`make precommit` runs formatting, vet, unit tests, module tidiness check, and vulncheck.
+`make precommit` runs:
+- `make fmt-check`
+- `make vet`
+- `make precommit-lint-new` (golangci-lint only for issues introduced since merge-base with `PRECOMMIT_BASE_REF`, default `origin/main`)
+- `make gosec` (blocking security scan, excludes `examples/experimental`)
+- `go test ./...`
+- `make check-mod-tidy`
+- `make vulncheck`
+
+Optional environment flags:
+- `SKIP_LINT_NEW=1`
+- `SKIP_GOSEC=1`
+- `SKIP_VULNCHECK=1`
 
 ### Local CI Simulation
 

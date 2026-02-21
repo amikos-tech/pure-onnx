@@ -93,8 +93,9 @@ func newTensorFromData[T any](shape Shape, data []T, elementType TensorElementDa
 	var pinner *runtime.Pinner
 	if len(data) > 0 {
 		pinner = &runtime.Pinner{}
-		pinner.Pin(unsafe.SliceData(data))
 		// #nosec G103 -- Required for CGO-free FFI; backing array is pinned for OrtValue lifetime via runtime.Pinner.
+		pinner.Pin(unsafe.SliceData(data))
+		// #nosec G103 -- Pointer conversion is required to pass the pinned slice buffer to ORT.
 		dataPtr = uintptr(unsafe.Pointer(unsafe.SliceData(data)))
 	} else {
 		// For zero-element tensors, ORT receives a nil data pointer with byte length 0.
@@ -253,6 +254,7 @@ func shapePtr(shape Shape) *int64 {
 	}
 	// The returned pointer aliases shape's backing array.
 	// Callers must KeepAlive(shape) until ORT returns.
+	// #nosec G103 -- Safe here because ORT reads shape synchronously in the same call.
 	return unsafe.SliceData(shape)
 }
 
