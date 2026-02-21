@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -27,6 +28,12 @@ const (
 	DefaultOnnxRuntimeVersion = "1.23.1"
 
 	defaultBootstrapBaseURL = "https://github.com/microsoft/onnxruntime/releases/download"
+
+	secureDirectoryPermission = 0o750
+	secureLockFilePermission  = 0o600
+
+	maxExtractedFileBytes  int64 = 1 << 30 // 1 GiB
+	maxExtractedTotalBytes int64 = 4 << 30 // 4 GiB
 )
 
 var errSharedLibraryNotFound = errors.New("ONNX Runtime shared library not found")
@@ -169,7 +176,7 @@ func EnsureOnnxRuntimeSharedLibrary(opts ...BootstrapOption) (string, error) {
 		return "", fmt.Errorf("ONNX Runtime library not found in cache and download is disabled: %s", installDir)
 	}
 
-	if err := os.MkdirAll(cfg.cacheDir, 0o755); err != nil {
+	if err := os.MkdirAll(cfg.cacheDir, secureDirectoryPermission); err != nil {
 		return "", fmt.Errorf("failed to create bootstrap cache directory %q: %w", cfg.cacheDir, err)
 	}
 
@@ -224,7 +231,7 @@ func InitializeEnvironmentWithBootstrap(opts ...BootstrapOption) error {
 			alreadyInitialized = refCount > 0
 			currentPath = libPath
 			mu.Unlock()
-			if !(alreadyInitialized && currentPath == path) {
+			if !alreadyInitialized || currentPath != path {
 				return err
 			}
 		}
@@ -379,7 +386,7 @@ func downloadAndInstallRuntime(cfg bootstrapConfig, artifact runtimeArtifact, in
 	if err := os.RemoveAll(stagingRoot); err != nil {
 		return fmt.Errorf("failed to clean bootstrap staging directory %q: %w", stagingRoot, err)
 	}
-	if err := os.MkdirAll(stagingRoot, 0o755); err != nil {
+	if err := os.MkdirAll(stagingRoot, secureDirectoryPermission); err != nil {
 		return fmt.Errorf("failed to create bootstrap staging directory %q: %w", stagingRoot, err)
 	}
 	defer func() {
@@ -448,7 +455,7 @@ func downloadRuntimeArchive(cfg bootstrapConfig, url string) (archivePath string
 		return "", "", fmt.Errorf("failed to download ONNX Runtime archive from %q: HTTP %d", url, resp.StatusCode)
 	}
 
-	if err := os.MkdirAll(cfg.cacheDir, 0o755); err != nil {
+	if err := os.MkdirAll(cfg.cacheDir, secureDirectoryPermission); err != nil {
 		return "", "", fmt.Errorf("failed to create cache directory %q: %w", cfg.cacheDir, err)
 	}
 
@@ -497,6 +504,7 @@ func extractArchiveFile(archivePath, destinationDir, extension string) error {
 }
 
 func extractTGZArchive(archivePath, destinationDir string) error {
+	// #nosec G304 -- archivePath is generated internally (downloadRuntimeArchive) and not user-controlled input.
 	archiveFile, err := os.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("failed to open archive %q: %w", archivePath, err)
@@ -515,6 +523,7 @@ func extractTGZArchive(archivePath, destinationDir string) error {
 
 	tarReader := tar.NewReader(gzipReader)
 	regularFiles := 0
+	var totalExtracted int64
 
 	for {
 		header, err := tarReader.Next()
@@ -532,26 +541,31 @@ func extractTGZArchive(archivePath, destinationDir string) error {
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(targetPath, 0o755); err != nil {
+			if err := os.MkdirAll(targetPath, secureDirectoryPermission); err != nil {
 				return fmt.Errorf("failed to create directory %q: %w", targetPath, err)
 			}
-		case tar.TypeReg, tar.TypeRegA:
-			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(targetPath), secureDirectoryPermission); err != nil {
 				return fmt.Errorf("failed to create parent directory for %q: %w", targetPath, err)
+			}
+
+			if header.Size < 0 {
+				return fmt.Errorf("invalid negative tar entry size for %q", header.Name)
 			}
 
 			mode := header.FileInfo().Mode().Perm()
 			if mode == 0 {
 				mode = 0o644
 			}
+			// #nosec G304 -- targetPath is constrained by secureArchiveJoin to stay under destinationDir.
 			outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 			if err != nil {
 				return fmt.Errorf("failed to create extracted file %q: %w", targetPath, err)
 			}
 
-			if _, err := io.Copy(outFile, tarReader); err != nil {
+			if err := copyExtractedFile(outFile, tarReader, header.Size, &totalExtracted, targetPath); err != nil {
 				_ = outFile.Close()
-				return fmt.Errorf("failed to extract file %q: %w", targetPath, err)
+				return err
 			}
 			if err := outFile.Close(); err != nil {
 				return fmt.Errorf("failed to close extracted file %q: %w", targetPath, err)
@@ -582,6 +596,7 @@ func extractZIPArchive(archivePath, destinationDir string) error {
 	}()
 
 	regularFiles := 0
+	var totalExtracted int64
 	for _, entry := range reader.File {
 		targetPath, err := secureArchiveJoin(destinationDir, entry.Name)
 		if err != nil {
@@ -589,13 +604,13 @@ func extractZIPArchive(archivePath, destinationDir string) error {
 		}
 
 		if entry.FileInfo().IsDir() {
-			if err := os.MkdirAll(targetPath, 0o755); err != nil {
+			if err := os.MkdirAll(targetPath, secureDirectoryPermission); err != nil {
 				return fmt.Errorf("failed to create directory %q: %w", targetPath, err)
 			}
 			continue
 		}
 
-		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(targetPath), secureDirectoryPermission); err != nil {
 			return fmt.Errorf("failed to create parent directory for %q: %w", targetPath, err)
 		}
 
@@ -608,16 +623,24 @@ func extractZIPArchive(archivePath, destinationDir string) error {
 		if mode == 0 {
 			mode = 0o644
 		}
+		// #nosec G304 -- targetPath is constrained by secureArchiveJoin to stay under destinationDir.
 		outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 		if err != nil {
 			_ = rc.Close()
 			return fmt.Errorf("failed to create extracted file %q: %w", targetPath, err)
 		}
 
-		if _, err := io.Copy(outFile, rc); err != nil {
+		if entry.UncompressedSize64 > math.MaxInt64 {
 			_ = outFile.Close()
 			_ = rc.Close()
-			return fmt.Errorf("failed to extract ZIP entry %q: %w", entry.Name, err)
+			return fmt.Errorf("ZIP entry %q size exceeds supported range", entry.Name)
+		}
+		// #nosec G115 -- upper-bound checked against math.MaxInt64 immediately above.
+		entrySize := int64(entry.UncompressedSize64)
+		if err := copyExtractedFile(outFile, rc, entrySize, &totalExtracted, targetPath); err != nil {
+			_ = outFile.Close()
+			_ = rc.Close()
+			return err
 		}
 
 		if err := outFile.Close(); err != nil {
@@ -705,11 +728,12 @@ func validateLibraryFile(path string) (string, error) {
 }
 
 func withProcessFileLock(lockPath string, fn func() error) (err error) {
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(lockPath), secureDirectoryPermission); err != nil {
 		return fmt.Errorf("failed to create lock directory for %q: %w", lockPath, err)
 	}
 
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	// #nosec G304 -- lockPath is constructed from configured cache directory and fixed internal suffix.
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, secureLockFilePermission)
 	if err != nil {
 		return fmt.Errorf("failed to open lock file %q: %w", lockPath, err)
 	}
@@ -825,4 +849,31 @@ func parseBootstrapBoolEnv(name string) (bool, error) {
 	default:
 		return false, fmt.Errorf("invalid boolean value for %s: %q (expected true/false, 1/0, yes/no, on/off)", name, value)
 	}
+}
+
+func copyExtractedFile(dst io.Writer, src io.Reader, expectedSize int64, totalExtracted *int64, targetPath string) error {
+	if expectedSize < 0 {
+		return fmt.Errorf("invalid negative size while extracting %q", targetPath)
+	}
+	if expectedSize > maxExtractedFileBytes {
+		return fmt.Errorf("refusing to extract %q: entry size %d exceeds limit %d", targetPath, expectedSize, maxExtractedFileBytes)
+	}
+	if totalExtracted != nil && *totalExtracted+expectedSize > maxExtractedTotalBytes {
+		return fmt.Errorf("refusing to extract %q: total extracted size would exceed limit %d", targetPath, maxExtractedTotalBytes)
+	}
+
+	limitedSrc := io.LimitReader(src, expectedSize+1)
+	// #nosec G110 -- extraction is bounded by per-file and cumulative size checks above.
+	written, err := io.Copy(dst, limitedSrc)
+	if err != nil {
+		return fmt.Errorf("failed to extract file %q: %w", targetPath, err)
+	}
+	if written != expectedSize {
+		return fmt.Errorf("unexpected extracted size for %q: expected %d bytes, got %d", targetPath, expectedSize, written)
+	}
+
+	if totalExtracted != nil {
+		*totalExtracted += written
+	}
+	return nil
 }
