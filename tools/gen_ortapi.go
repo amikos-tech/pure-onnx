@@ -24,6 +24,7 @@ func main() {
 	}
 
 	headerPath := os.Args[1]
+	// #nosec G304 -- Generator intentionally opens a caller-specified local header path.
 	file, err := os.Open(headerPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open header file: %v\n", err)
