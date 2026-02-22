@@ -105,7 +105,7 @@ jobs:
           fail_ci_if_error: false
 
   integration-real-model:
-    name: Integration (ONNX Runtime + all-MiniLM)
+    name: Integration (ONNX Runtime + all-MiniLM + SPLADE)
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
@@ -117,6 +117,11 @@ jobs:
       ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256: '6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452'
       ONNXRUNTIME_TEST_ALL_MINILM_TOKENIZER_URL: 'https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json'
       ONNXRUNTIME_TEST_ALL_MINILM_TOKENIZER_SHA256: 'be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037'
+      ONNXRUNTIME_TEST_SPLADE_MODEL_URL: 'https://huggingface.co/prithivida/Splade_PP_en_v1/resolve/762be6a7206e2f299182705972a65e5c46e62be2/onnx/model.onnx'
+      ONNXRUNTIME_TEST_SPLADE_MODEL_SHA256: '0934583a27a031a66b2e847cbc260fbbef29689e969f500436460ef5146a43f2'
+      ONNXRUNTIME_TEST_SPLADE_TOKENIZER_URL: 'https://huggingface.co/prithivida/Splade_PP_en_v1/resolve/762be6a7206e2f299182705972a65e5c46e62be2/tokenizer.json'
+      ONNXRUNTIME_TEST_SPLADE_TOKENIZER_SHA256: '2fc687b11de0bc1b3d8348f92e3b49ef1089a621506c7661fbf3248fcd54947e'
+      HF_DATASET_REPO: 'tazarov/pure-onnx'
     steps:
       - name: Checkout code
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -134,7 +139,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ env.ONNXRUNTIME_TEST_MODEL_CACHE_DIR }}
-          key: all-minilm-l6-v2-assets-v5-${{ runner.os }}-${{ env.ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256 }}-${{ env.ONNXRUNTIME_TEST_ALL_MINILM_TOKENIZER_SHA256 }}
+          key: embedding-assets-v1-${{ runner.os }}-${{ env.ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256 }}-${{ env.ONNXRUNTIME_TEST_ALL_MINILM_TOKENIZER_SHA256 }}-${{ env.ONNXRUNTIME_TEST_SPLADE_MODEL_SHA256 }}-${{ env.ONNXRUNTIME_TEST_SPLADE_TOKENIZER_SHA256 }}
 
       - name: Download ONNX Runtime shared library
         timeout-minutes: 10
@@ -159,6 +164,14 @@ jobs:
       - name: Run embeddings real-model integration tests
         run: |
           go test -v ./embeddings/minilm -run TestEmbedDocumentsWithAllMiniLML6V2
+
+      - name: Run SPLADE real-model integration tests
+        run: |
+          go test -v ./embeddings/splade -run 'TestEmbedDocumentsWithSPLADEModel|TestSPLADEGoldenRegressionTopK16WithLabels|TestSPLADERepeatabilityTopK16'
+
+      - name: Run SPLADE public golden parity test
+        run: |
+          go test -v ./embeddings/splade -run TestSPLADEGoldenDatasetParity -count=1
 
       - name: Run real-model benchmarks
         env:

@@ -68,9 +68,32 @@ Integration tests verify actual FFI interactions with the ONNX Runtime library.
    `ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH`; they use the embedder default
    sequence length (`256`) unless `WithSequenceLength(...)` is set in code.
 
-5. Run tests:
+5. Optional: configure SPLADE integration test settings:
+   ```bash
+   # Optional local overrides (if unset, test defaults to:
+   # prithivida/Splade_PP_en_v1@762be6a... with cached download)
+   export ONNXRUNTIME_TEST_SPLADE_MODEL_PATH=/path/to/splade.onnx
+   export ONNXRUNTIME_TEST_SPLADE_TOKENIZER_PATH=/path/to/tokenizer.json
+
+   # Optional overrides:
+   # export ONNXRUNTIME_TEST_SPLADE_MODEL_URL=https://...
+   # export ONNXRUNTIME_TEST_SPLADE_MODEL_SHA256=<expected_sha256>
+   # export ONNXRUNTIME_TEST_SPLADE_TOKENIZER_URL=https://...
+   # export ONNXRUNTIME_TEST_SPLADE_TOKENIZER_SHA256=<expected_sha256>
+   # export ONNXRUNTIME_TEST_SPLADE_OUTPUT_NAME=output
+   # export ONNXRUNTIME_TEST_SPLADE_OUTPUT_LAYOUT=token_logits   # or document_logits
+   # export ONNXRUNTIME_TEST_SPLADE_VOCAB_SIZE=30522
+   # export ONNXRUNTIME_TEST_SPLADE_DISABLE_TOKEN_TYPE_IDS=1
+   # export ONNXRUNTIME_TEST_SPLADE_INPUT_IDS_NAME=input_ids
+   # export ONNXRUNTIME_TEST_SPLADE_ATTENTION_MASK_NAME=input_mask
+   # export ONNXRUNTIME_TEST_SPLADE_TOKEN_TYPE_IDS_NAME=segment_ids
+   ```
+
+6. Run tests:
    ```bash
    go test -v ./ort/...
+   go test -v ./embeddings/minilm
+   go test -v ./embeddings/splade
    ```
 
 #### Integration Test Coverage
@@ -78,6 +101,10 @@ Integration tests verify actual FFI interactions with the ONNX Runtime library.
 When `ONNXRUNTIME_LIB_PATH` is set, the following additional tests run:
 - `TestInitializeWithActualLibrary`: Tests actual library loading, environment creation, version retrieval, and proper cleanup
 - `TestAdvancedSessionRunWithAllMiniLML6V2`: Downloads (or reuses cached) `all-MiniLM-L6-v2` ONNX model and runs end-to-end multi-input inference
+- `TestEmbedDocumentsWithAllMiniLML6V2`: Runs dense embedding end-to-end through `embeddings/minilm`
+- `TestEmbedDocumentsWithSPLADEModel`: Runs sparse embedding end-to-end through `embeddings/splade` when SPLADE env vars are set
+- `TestSPLADEGoldenRegressionTopK16WithLabels`: Verifies pinned `prithivida/Splade_PP_en_v1` outputs against a golden sparse vector set (indices/values/labels)
+- `TestSPLADERepeatabilityTopK16`: Re-runs SPLADE inference and asserts stable outputs across repeated calls
 - Tests all FFI interactions including:
   - Dynamic library loading
   - Symbol resolution
@@ -114,6 +141,45 @@ go test -run '^$' \
   ./ort/...
 ```
 
+Run SPLADE benchmarks (requires ONNX Runtime library path):
+```bash
+export ONNXRUNTIME_LIB_PATH=/path/to/onnxruntime/lib/libonnxruntime.so
+
+go test -run '^$' \
+  -bench 'BenchmarkSPLADEEmbedDocumentsWarmTopK128|BenchmarkSPLADEEmbedDocumentsWarmTopK128WithLabels|BenchmarkSPLADECreateRunDestroyTopK128' \
+  -benchmem \
+  ./embeddings/splade
+```
+
+Run SPLADE golden-dataset parity check (optional):
+```bash
+export ONNXRUNTIME_LIB_PATH=/path/to/onnxruntime/lib/libonnxruntime.so
+export HF_DATASET_REPO=tazarov/pure-onnx
+# Optional for private/gated dataset access only:
+# export HF_TOKEN=<hf_token_with_dataset_read_access>
+# Optional direct override:
+# export ONNXRUNTIME_TEST_SPLADE_GOLDEN_JSONL_URL=https://huggingface.co/datasets/tazarov/pure-onnx/resolve/main/splade_endpoint_golden/v1/splade_pp_en_v1_endpoint_topk24_labels_v1.jsonl
+# Compatibility alias still supported:
+# export ONNXRUNTIME_TEST_SPLADE_PRIVATE_GOLDEN_JSONL_URL=https://huggingface.co/datasets/tazarov/pure-onnx/resolve/main/splade_endpoint_golden/v1/splade_pp_en_v1_endpoint_topk24_labels_v1.jsonl
+# Optional tolerance override (default 1e-4):
+# export ONNXRUNTIME_TEST_SPLADE_GOLDEN_TOLERANCE=0.0001
+# Compatibility alias still supported:
+# export ONNXRUNTIME_TEST_SPLADE_PRIVATE_GOLDEN_TOLERANCE=0.0001
+
+go test -v ./embeddings/splade -run TestSPLADEGoldenDatasetParity -count=1
+```
+
+Generate a SPLADE golden dataset locally (no hosted endpoint required):
+```bash
+# texts.txt: one input document per line
+python3 ./tools/splade_generate_golden.py \
+  --texts-file ./texts.txt \
+  --output-jsonl ./splade_endpoint_golden/v1/splade_pp_en_v1_local_topk24_v1.jsonl \
+  --metadata-path ./splade_endpoint_golden/v1/metadata.json \
+  --model-name prithivida/Splade_PP_en_v1 \
+  --top-k 24
+```
+
 ## Continuous Integration
 
 ### GitHub Actions
@@ -121,7 +187,7 @@ go test -run '^$' \
 The CI pipeline runs tests in multiple configurations:
 - **Unit Tests**: Run on all platforms (Linux, macOS, Windows) with Go 1.24.x
 - **Integration Tests (matrix job)**: Skipped in the cross-platform matrix (no ONNX Runtime library preinstalled)
-- **Real-model Integration Job**: Linux job downloads ONNX Runtime, runs all-MiniLM integration + memory stability tests, and runs all-MiniLM benchmarks
+- **Real-model Integration Job**: Linux job downloads ONNX Runtime, runs all-MiniLM integration + memory stability tests, runs SPLADE integration (`prithivida/Splade_PP_en_v1` defaults), and runs all-MiniLM benchmarks
 - **Race Detection**: Partially disabled due to checkptr incompatibility with purego FFI
 - **Vulnerability Check**: Runs `make vulncheck` with a patched Go baseline (`go1.24.13+auto`)
 

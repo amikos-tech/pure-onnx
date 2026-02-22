@@ -11,8 +11,11 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -34,10 +37,18 @@ const (
 
 	maxExtractedFileBytes  int64 = 1 << 30 // 1 GiB
 	maxExtractedTotalBytes int64 = 4 << 30 // 4 GiB
+	maxDownloadBytes       int64 = 1 << 30 // 1 GiB
 )
 
 var errSharedLibraryNotFound = errors.New("ONNX Runtime shared library not found")
 var bootstrapCacheFallbackWarnOnce sync.Once
+var bootstrapInitMu sync.Mutex
+
+var (
+	bootstrapLockAcquireTimeout = 2 * time.Minute
+	bootstrapLockRetryInterval  = 200 * time.Millisecond
+	bootstrapLockLogInterval    = 5 * time.Second
+)
 
 // BootstrapOption configures EnsureOnnxRuntimeSharedLibrary.
 type BootstrapOption func(*bootstrapConfig) error
@@ -50,6 +61,7 @@ type bootstrapConfig struct {
 	expectedSHA256  string
 	baseURL         string
 	httpClient      *http.Client
+	maxDownloadSize int64
 	goos            string
 	goarch          string
 }
@@ -61,7 +73,14 @@ type runtimeArtifact struct {
 	libraryGlob      string
 }
 
-// WithBootstrapLibraryPath forces bootstrap to use an existing ONNX Runtime shared library path.
+type archiveExtractionReport struct {
+	skippedLinkEntries         int
+	skippedLibraryLinkEntries  int
+	skippedLibraryLinkExamples []string
+}
+
+// WithBootstrapLibraryPath sets an explicit ONNX Runtime shared library path.
+// When set, bootstrap download and cache resolution are bypassed.
 func WithBootstrapLibraryPath(path string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
 		path = strings.TrimSpace(path)
@@ -117,7 +136,7 @@ func WithBootstrapExpectedSHA256(checksum string) BootstrapOption {
 		}
 		for _, r := range checksum {
 			if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
-				return fmt.Errorf("expected SHA256 checksum must be lowercase hex")
+				return fmt.Errorf("expected SHA256 checksum must be hex characters (0-9, a-f)")
 			}
 		}
 		cfg.expectedSHA256 = checksum
@@ -130,6 +149,9 @@ func withBootstrapBaseURL(baseURL string) BootstrapOption {
 		baseURL = strings.TrimSpace(baseURL)
 		if baseURL == "" {
 			return fmt.Errorf("bootstrap base URL cannot be empty")
+		}
+		if err := validateBootstrapBaseURL(baseURL); err != nil {
+			return err
 		}
 		cfg.baseURL = baseURL
 		return nil
@@ -215,25 +237,17 @@ func InitializeEnvironmentWithBootstrap(opts ...BootstrapOption) error {
 		return err
 	}
 
-	mu.Lock()
-	alreadyInitialized := refCount > 0
-	currentPath := libPath
-	mu.Unlock()
+	bootstrapInitMu.Lock()
+	defer bootstrapInitMu.Unlock()
 
-	if alreadyInitialized && currentPath != path {
-		return fmt.Errorf("cannot change library path after environment is initialized")
-	}
-
-	if !alreadyInitialized {
-		if err := SetSharedLibraryPath(path); err != nil {
-			// Another goroutine may have initialized after we checked state.
-			mu.Lock()
-			alreadyInitialized = refCount > 0
-			currentPath = libPath
-			mu.Unlock()
-			if !alreadyInitialized || currentPath != path {
-				return err
-			}
+	if err := SetSharedLibraryPath(path); err != nil {
+		// Another goroutine may have initialized after path resolution.
+		mu.Lock()
+		alreadyInitialized := refCount > 0
+		currentPath := libPath
+		mu.Unlock()
+		if !alreadyInitialized || currentPath != path {
+			return err
 		}
 	}
 
@@ -255,8 +269,9 @@ func resolveBootstrapConfig(opts ...BootstrapOption) (bootstrapConfig, error) {
 		httpClient: &http.Client{
 			Timeout: 2 * time.Minute,
 		},
-		goos:   runtime.GOOS,
-		goarch: runtime.GOARCH,
+		maxDownloadSize: maxDownloadBytes,
+		goos:            runtime.GOOS,
+		goarch:          runtime.GOARCH,
 	}
 
 	if cfg.version == "" {
@@ -290,12 +305,55 @@ func resolveBootstrapConfig(opts ...BootstrapOption) (bootstrapConfig, error) {
 		return bootstrapConfig{}, fmt.Errorf("bootstrap base URL is empty")
 	}
 	cfg.baseURL = strings.TrimRight(strings.TrimSpace(cfg.baseURL), "/")
+	if err := validateBootstrapBaseURL(cfg.baseURL); err != nil {
+		return bootstrapConfig{}, err
+	}
 
 	if cfg.httpClient == nil {
 		return bootstrapConfig{}, fmt.Errorf("bootstrap HTTP client cannot be nil")
 	}
+	if cfg.maxDownloadSize <= 0 {
+		return bootstrapConfig{}, fmt.Errorf("bootstrap max download bytes must be > 0, got %d", cfg.maxDownloadSize)
+	}
 
 	return cfg, nil
+}
+
+func validateBootstrapBaseURL(baseURL string) error {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("invalid bootstrap base URL %q: %w", baseURL, err)
+	}
+	if parsed.Scheme == "" {
+		return fmt.Errorf("bootstrap base URL %q must include a scheme", baseURL)
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("bootstrap base URL %q must include a host", baseURL)
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme == "https" {
+		return nil
+	}
+	if scheme != "http" {
+		return fmt.Errorf("bootstrap base URL %q uses unsupported scheme %q", baseURL, parsed.Scheme)
+	}
+	if !isLoopbackBootstrapHost(parsed.Hostname()) {
+		return fmt.Errorf("bootstrap base URL %q must use https (http is allowed only for loopback hosts)", baseURL)
+	}
+	return nil
+}
+
+func isLoopbackBootstrapHost(host string) bool {
+	host = strings.TrimSpace(strings.ToLower(host))
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func resolveRuntimeArtifact(goos, goarch string) (runtimeArtifact, error) {
@@ -375,7 +433,9 @@ func downloadAndInstallRuntime(cfg bootstrapConfig, artifact runtimeArtifact, in
 		return err
 	}
 	defer func() {
-		_ = os.Remove(archivePath)
+		if removeErr := os.Remove(archivePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			log.Printf("WARNING: failed to remove temporary ONNX Runtime archive %q: %v", archivePath, removeErr)
+		}
 	}()
 
 	if cfg.expectedSHA256 != "" && checksum != cfg.expectedSHA256 {
@@ -390,10 +450,13 @@ func downloadAndInstallRuntime(cfg bootstrapConfig, artifact runtimeArtifact, in
 		return fmt.Errorf("failed to create bootstrap staging directory %q: %w", stagingRoot, err)
 	}
 	defer func() {
-		_ = os.RemoveAll(stagingRoot)
+		if removeErr := os.RemoveAll(stagingRoot); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			log.Printf("WARNING: failed to remove bootstrap staging directory %q: %v", stagingRoot, removeErr)
+		}
 	}()
 
-	if err := extractArchiveFile(archivePath, stagingRoot, artifact.archiveExtension); err != nil {
+	extractReport, err := extractArchiveFile(archivePath, stagingRoot, artifact.archiveExtension, artifact.libraryGlob)
+	if err != nil {
 		return err
 	}
 
@@ -410,7 +473,29 @@ func downloadAndInstallRuntime(cfg bootstrapConfig, artifact runtimeArtifact, in
 
 	if _, err := resolveExtractedLibraryPath(extractedInstallDir, artifact); err != nil {
 		if errors.Is(err, errSharedLibraryNotFound) {
-			return fmt.Errorf("downloaded archive did not contain expected shared library in %q", filepath.Join(extractedInstallDir, "lib"))
+			errMessage := fmt.Sprintf("downloaded archive did not contain expected shared library in %q", filepath.Join(extractedInstallDir, "lib"))
+			switch {
+			case extractReport.skippedLibraryLinkEntries > 0:
+				if len(extractReport.skippedLibraryLinkExamples) > 0 {
+					errMessage = fmt.Sprintf(
+						"%s (extraction skipped %d link entries matching %q; examples: %q)",
+						errMessage,
+						extractReport.skippedLibraryLinkEntries,
+						artifact.libraryGlob,
+						strings.Join(extractReport.skippedLibraryLinkExamples, "\", \""),
+					)
+				} else {
+					errMessage = fmt.Sprintf(
+						"%s (extraction skipped %d link entries matching %q)",
+						errMessage,
+						extractReport.skippedLibraryLinkEntries,
+						artifact.libraryGlob,
+					)
+				}
+			case extractReport.skippedLinkEntries > 0:
+				errMessage = fmt.Sprintf("%s (extraction skipped %d link entries)", errMessage, extractReport.skippedLinkEntries)
+			}
+			return errors.New(errMessage)
 		}
 		return err
 	}
@@ -472,14 +557,31 @@ func downloadRuntimeArchive(cfg bootstrapConfig, url string) (archivePath string
 			err = closeErr
 		}
 		if !success {
-			_ = os.Remove(tmpPath)
+			if removeErr := os.Remove(tmpPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				err = errors.Join(err, fmt.Errorf("failed to remove temporary archive %q: %w", tmpPath, removeErr))
+			}
 		}
 	}()
 
+	downloadLimit := cfg.maxDownloadSize
+	if downloadLimit <= 0 {
+		downloadLimit = maxDownloadBytes
+	}
+
+	if resp.ContentLength > downloadLimit {
+		err = fmt.Errorf("downloaded ONNX Runtime archive exceeds maximum size limit: content-length=%d limit=%d", resp.ContentLength, downloadLimit)
+		return "", "", err
+	}
+
 	hasher := sha256.New()
-	written, copyErr := io.Copy(io.MultiWriter(tmpFile, hasher), resp.Body)
+	limitedBody := io.LimitReader(resp.Body, downloadLimit+1)
+	written, copyErr := io.Copy(io.MultiWriter(tmpFile, hasher), limitedBody)
 	if copyErr != nil {
 		err = fmt.Errorf("failed to write ONNX Runtime archive to %q: %w", archivePath, copyErr)
+		return "", "", err
+	}
+	if written > downloadLimit {
+		err = fmt.Errorf("downloaded ONNX Runtime archive exceeds maximum size limit: bytes=%d limit=%d", written, downloadLimit)
 		return "", "", err
 	}
 	if written == 0 {
@@ -492,22 +594,22 @@ func downloadRuntimeArchive(cfg bootstrapConfig, url string) (archivePath string
 	return archivePath, checksum, nil
 }
 
-func extractArchiveFile(archivePath, destinationDir, extension string) error {
+func extractArchiveFile(archivePath, destinationDir, extension, libraryGlob string) (archiveExtractionReport, error) {
 	switch extension {
 	case "tgz":
-		return extractTGZArchive(archivePath, destinationDir)
+		return extractTGZArchive(archivePath, destinationDir, libraryGlob)
 	case "zip":
-		return extractZIPArchive(archivePath, destinationDir)
+		return extractZIPArchive(archivePath, destinationDir, libraryGlob)
 	default:
-		return fmt.Errorf("unsupported archive extension %q", extension)
+		return archiveExtractionReport{}, fmt.Errorf("unsupported archive extension %q", extension)
 	}
 }
 
-func extractTGZArchive(archivePath, destinationDir string) error {
+func extractTGZArchive(archivePath, destinationDir, libraryGlob string) (archiveExtractionReport, error) {
 	// #nosec G304 -- archivePath is generated internally (downloadRuntimeArchive) and not user-controlled input.
 	archiveFile, err := os.Open(archivePath)
 	if err != nil {
-		return fmt.Errorf("failed to open archive %q: %w", archivePath, err)
+		return archiveExtractionReport{}, fmt.Errorf("failed to open archive %q: %w", archivePath, err)
 	}
 	defer func() {
 		_ = archiveFile.Close()
@@ -515,7 +617,7 @@ func extractTGZArchive(archivePath, destinationDir string) error {
 
 	gzipReader, err := gzip.NewReader(archiveFile)
 	if err != nil {
-		return fmt.Errorf("failed to read gzip archive %q: %w", archivePath, err)
+		return archiveExtractionReport{}, fmt.Errorf("failed to read gzip archive %q: %w", archivePath, err)
 	}
 	defer func() {
 		_ = gzipReader.Close()
@@ -524,6 +626,7 @@ func extractTGZArchive(archivePath, destinationDir string) error {
 	tarReader := tar.NewReader(gzipReader)
 	regularFiles := 0
 	var totalExtracted int64
+	report := archiveExtractionReport{}
 
 	for {
 		header, err := tarReader.Next()
@@ -531,26 +634,26 @@ func extractTGZArchive(archivePath, destinationDir string) error {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("failed to read tar entry from %q: %w", archivePath, err)
+			return archiveExtractionReport{}, fmt.Errorf("failed to read tar entry from %q: %w", archivePath, err)
 		}
 
 		targetPath, err := secureArchiveJoin(destinationDir, header.Name)
 		if err != nil {
-			return err
+			return archiveExtractionReport{}, err
 		}
 
 		switch header.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(targetPath, secureDirectoryPermission); err != nil {
-				return fmt.Errorf("failed to create directory %q: %w", targetPath, err)
+				return archiveExtractionReport{}, fmt.Errorf("failed to create directory %q: %w", targetPath, err)
 			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(targetPath), secureDirectoryPermission); err != nil {
-				return fmt.Errorf("failed to create parent directory for %q: %w", targetPath, err)
+				return archiveExtractionReport{}, fmt.Errorf("failed to create parent directory for %q: %w", targetPath, err)
 			}
 
 			if header.Size < 0 {
-				return fmt.Errorf("invalid negative tar entry size for %q", header.Name)
+				return archiveExtractionReport{}, fmt.Errorf("invalid negative tar entry size for %q", header.Name)
 			}
 
 			mode := header.FileInfo().Mode().Perm()
@@ -560,36 +663,53 @@ func extractTGZArchive(archivePath, destinationDir string) error {
 			// #nosec G304 -- targetPath is constrained by secureArchiveJoin to stay under destinationDir.
 			outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 			if err != nil {
-				return fmt.Errorf("failed to create extracted file %q: %w", targetPath, err)
+				return archiveExtractionReport{}, fmt.Errorf("failed to create extracted file %q: %w", targetPath, err)
 			}
 
 			if err := copyExtractedFile(outFile, tarReader, header.Size, &totalExtracted, targetPath); err != nil {
 				_ = outFile.Close()
-				return err
+				return archiveExtractionReport{}, err
 			}
 			if err := outFile.Close(); err != nil {
-				return fmt.Errorf("failed to close extracted file %q: %w", targetPath, err)
+				return archiveExtractionReport{}, fmt.Errorf("failed to close extracted file %q: %w", targetPath, err)
 			}
 			regularFiles++
 		case tar.TypeXHeader, tar.TypeXGlobalHeader:
 			continue
+		case tar.TypeSymlink, tar.TypeLink:
+			report.skippedLinkEntries++
+			if libraryGlob != "" {
+				baseName := path.Base(header.Name)
+				matched, matchErr := path.Match(libraryGlob, baseName)
+				if matchErr != nil {
+					log.Printf("WARNING: failed to match library glob %q against tar entry %q: %v", libraryGlob, baseName, matchErr)
+				} else if matched {
+					report.skippedLibraryLinkEntries++
+					if len(report.skippedLibraryLinkExamples) < 3 {
+						report.skippedLibraryLinkExamples = append(report.skippedLibraryLinkExamples, header.Name)
+					}
+				}
+			}
+			log.Printf("WARNING: skipping link archive entry %q (type=%d) during ONNX Runtime bootstrap extraction", header.Name, header.Typeflag)
+			continue
 		default:
-			// Skip links/device files for safety. ORT shared libraries are regular files.
+			// Skip non-regular archive entries (device files, FIFOs, etc.) for safety.
+			log.Printf("WARNING: skipping unsupported archive entry %q (type=%d) during ONNX Runtime bootstrap extraction", header.Name, header.Typeflag)
 			continue
 		}
 	}
 
 	if regularFiles == 0 {
-		return fmt.Errorf("archive %q did not contain regular files", archivePath)
+		return archiveExtractionReport{}, fmt.Errorf("archive %q did not contain regular files", archivePath)
 	}
 
-	return nil
+	return report, nil
 }
 
-func extractZIPArchive(archivePath, destinationDir string) error {
+func extractZIPArchive(archivePath, destinationDir, libraryGlob string) (archiveExtractionReport, error) {
 	reader, err := zip.OpenReader(archivePath)
 	if err != nil {
-		return fmt.Errorf("failed to open ZIP archive %q: %w", archivePath, err)
+		return archiveExtractionReport{}, fmt.Errorf("failed to open ZIP archive %q: %w", archivePath, err)
 	}
 	defer func() {
 		_ = reader.Close()
@@ -597,68 +717,87 @@ func extractZIPArchive(archivePath, destinationDir string) error {
 
 	regularFiles := 0
 	var totalExtracted int64
+	report := archiveExtractionReport{}
 	for _, entry := range reader.File {
 		targetPath, err := secureArchiveJoin(destinationDir, entry.Name)
 		if err != nil {
-			return err
+			return archiveExtractionReport{}, err
 		}
 
-		if entry.FileInfo().IsDir() {
+		mode := entry.Mode()
+		if mode.IsDir() {
 			if err := os.MkdirAll(targetPath, secureDirectoryPermission); err != nil {
-				return fmt.Errorf("failed to create directory %q: %w", targetPath, err)
+				return archiveExtractionReport{}, fmt.Errorf("failed to create directory %q: %w", targetPath, err)
 			}
+			continue
+		}
+		if mode&os.ModeSymlink != 0 {
+			report.skippedLinkEntries++
+			if libraryGlob != "" {
+				baseName := path.Base(entry.Name)
+				matched, matchErr := path.Match(libraryGlob, baseName)
+				if matchErr != nil {
+					log.Printf("WARNING: failed to match library glob %q against zip entry %q: %v", libraryGlob, baseName, matchErr)
+				} else if matched {
+					report.skippedLibraryLinkEntries++
+					if len(report.skippedLibraryLinkExamples) < 3 {
+						report.skippedLibraryLinkExamples = append(report.skippedLibraryLinkExamples, entry.Name)
+					}
+				}
+			}
+			log.Printf("WARNING: skipping symlink ZIP entry %q during ONNX Runtime bootstrap extraction", entry.Name)
 			continue
 		}
 
 		if err := os.MkdirAll(filepath.Dir(targetPath), secureDirectoryPermission); err != nil {
-			return fmt.Errorf("failed to create parent directory for %q: %w", targetPath, err)
+			return archiveExtractionReport{}, fmt.Errorf("failed to create parent directory for %q: %w", targetPath, err)
 		}
 
 		rc, err := entry.Open()
 		if err != nil {
-			return fmt.Errorf("failed to open ZIP entry %q: %w", entry.Name, err)
+			return archiveExtractionReport{}, fmt.Errorf("failed to open ZIP entry %q: %w", entry.Name, err)
 		}
 
-		mode := entry.Mode().Perm()
-		if mode == 0 {
-			mode = 0o644
+		filePerm := mode.Perm()
+		if filePerm == 0 {
+			filePerm = 0o644
 		}
 		// #nosec G304 -- targetPath is constrained by secureArchiveJoin to stay under destinationDir.
-		outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+		outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, filePerm)
 		if err != nil {
 			_ = rc.Close()
-			return fmt.Errorf("failed to create extracted file %q: %w", targetPath, err)
+			return archiveExtractionReport{}, fmt.Errorf("failed to create extracted file %q: %w", targetPath, err)
 		}
 
 		if entry.UncompressedSize64 > math.MaxInt64 {
 			_ = outFile.Close()
 			_ = rc.Close()
-			return fmt.Errorf("ZIP entry %q size exceeds supported range", entry.Name)
+			return archiveExtractionReport{}, fmt.Errorf("ZIP entry %q size exceeds supported range", entry.Name)
 		}
 		// #nosec G115 -- upper-bound checked against math.MaxInt64 immediately above.
 		entrySize := int64(entry.UncompressedSize64)
 		if err := copyExtractedFile(outFile, rc, entrySize, &totalExtracted, targetPath); err != nil {
 			_ = outFile.Close()
 			_ = rc.Close()
-			return err
+			return archiveExtractionReport{}, err
 		}
 
 		if err := outFile.Close(); err != nil {
 			_ = rc.Close()
-			return fmt.Errorf("failed to close extracted file %q: %w", targetPath, err)
+			return archiveExtractionReport{}, fmt.Errorf("failed to close extracted file %q: %w", targetPath, err)
 		}
 		if err := rc.Close(); err != nil {
-			return fmt.Errorf("failed to close ZIP entry %q: %w", entry.Name, err)
+			return archiveExtractionReport{}, fmt.Errorf("failed to close ZIP entry %q: %w", entry.Name, err)
 		}
 
 		regularFiles++
 	}
 
 	if regularFiles == 0 {
-		return fmt.Errorf("archive %q did not contain regular files", archivePath)
+		return archiveExtractionReport{}, fmt.Errorf("archive %q did not contain regular files", archivePath)
 	}
 
-	return nil
+	return report, nil
 }
 
 func resolveExtractedLibraryPath(installDir string, artifact runtimeArtifact) (string, error) {
@@ -728,6 +867,10 @@ func validateLibraryFile(path string) (string, error) {
 }
 
 func withProcessFileLock(lockPath string, fn func() error) (err error) {
+	if fn == nil {
+		return fmt.Errorf("lock callback is nil")
+	}
+
 	if err := os.MkdirAll(filepath.Dir(lockPath), secureDirectoryPermission); err != nil {
 		return fmt.Errorf("failed to create lock directory for %q: %w", lockPath, err)
 	}
@@ -738,9 +881,33 @@ func withProcessFileLock(lockPath string, fn func() error) (err error) {
 		return fmt.Errorf("failed to open lock file %q: %w", lockPath, err)
 	}
 
-	if err := lockFile(file); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("failed to acquire lock %q: %w", lockPath, err)
+	start := time.Now()
+	nextLogAt := start.Add(bootstrapLockLogInterval)
+	for {
+		lockErr := lockFile(file)
+		if lockErr == nil {
+			break
+		}
+		if !isLockWouldBlock(lockErr) {
+			acquireErr := fmt.Errorf("failed to acquire lock %q: %w", lockPath, lockErr)
+			if closeErr := file.Close(); closeErr != nil {
+				return errors.Join(acquireErr, fmt.Errorf("failed to close lock file %q: %w", lockPath, closeErr))
+			}
+			return acquireErr
+		}
+		waited := time.Since(start)
+		if waited >= bootstrapLockAcquireTimeout {
+			timeoutErr := fmt.Errorf("timed out acquiring lock %q after %s", lockPath, bootstrapLockAcquireTimeout)
+			if closeErr := file.Close(); closeErr != nil {
+				return errors.Join(timeoutErr, fmt.Errorf("failed to close lock file %q: %w", lockPath, closeErr))
+			}
+			return timeoutErr
+		}
+		if time.Now().After(nextLogAt) {
+			log.Printf("INFO: waiting for ONNX Runtime bootstrap lock %q (%s elapsed)", lockPath, waited.Round(time.Second))
+			nextLogAt = time.Now().Add(bootstrapLockLogInterval)
+		}
+		time.Sleep(bootstrapLockRetryInterval)
 	}
 
 	defer func() {
@@ -749,9 +916,6 @@ func withProcessFileLock(lockPath string, fn func() error) (err error) {
 		err = errors.Join(err, unlockErr, closeErr)
 	}()
 
-	if fn == nil {
-		return nil
-	}
 	return fn()
 }
 
@@ -842,12 +1006,12 @@ func parseBootstrapBoolEnv(name string) (bool, error) {
 	}
 
 	switch strings.ToLower(value) {
-	case "1", "yes", "y", "on":
+	case "yes", "y", "on":
 		return true, nil
-	case "0", "no", "n", "off":
+	case "no", "n", "off":
 		return false, nil
 	default:
-		return false, fmt.Errorf("invalid boolean value for %s: %q (expected true/false, 1/0, yes/no, on/off)", name, value)
+		return false, fmt.Errorf("invalid boolean value for %s: %q (expected true/false, 1/0, yes/no, y/n, on/off)", name, value)
 	}
 }
 

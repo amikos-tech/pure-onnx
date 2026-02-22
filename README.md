@@ -108,16 +108,21 @@ Run it with:
 go run ./examples/inference
 ```
 
-### Optional all-MiniLM Embeddings Layer
+### Optional Dense Embeddings Layer (`embeddings/minilm`)
 
-For local embedding workflows, use the optional high-level package:
+For local dense embedding workflows, use:
 `github.com/amikos-tech/pure-onnx/embeddings/minilm`.
 
 It adds:
 - tokenizer loading (`tokenizer.json`)
-- truncation/padding to `256`
-- ONNX multi-input assembly (`input_ids`, `attention_mask`, `token_type_ids`)
-- mean pooling + L2 normalization
+- truncation/padding to `256` (configurable)
+- ONNX multi-input assembly (`input_ids`, `attention_mask`, optional `token_type_ids`)
+- configurable post-processing:
+  - `WithMeanPooling()` (default)
+  - `WithCLSPooling()`
+  - `WithNoPooling()`
+  - `WithL2Normalization()` / `WithoutL2Normalization()`
+- configurable embedding width via `WithEmbeddingDimension(...)`
 - LRU-bounded per-batch session cache (default `8`, override with `WithMaxCachedBatchSessions`)
 
 ```go
@@ -142,6 +147,8 @@ func main() {
     embedder, err := minilm.NewEmbedder(
         "/path/to/all-MiniLM-L6-v2.onnx",
         "/path/to/tokenizer.json",
+        minilm.WithMeanPooling(),
+        minilm.WithL2Normalization(),
     )
     if err != nil {
         log.Fatal(err)
@@ -153,7 +160,60 @@ func main() {
         log.Fatal(err)
     }
 
-    _ = vectors // [][]float32, shape N x 384
+    _ = vectors // [][]float32
+}
+```
+
+### Optional Sparse Embeddings Layer (`embeddings/splade`)
+
+For sparse embedding workflows (e.g. SPLADE-like models), use:
+`github.com/amikos-tech/pure-onnx/embeddings/splade`.
+
+Current defaults are aligned with `prithivida/Splade_PP_en_v1`
+(`input_ids`, `input_mask`, `segment_ids`, output `output`).
+For other ONNX exports, override names with `splade.WithInputOutputNames(...)`.
+
+```go
+package main
+
+import (
+    "log"
+
+    "github.com/amikos-tech/pure-onnx/embeddings/splade"
+    "github.com/amikos-tech/pure-onnx/ort"
+)
+
+func main() {
+    if err := ort.SetSharedLibraryPath("/path/to/libonnxruntime.so"); err != nil {
+        log.Fatal(err)
+    }
+    if err := ort.InitializeEnvironment(); err != nil {
+        log.Fatal(err)
+    }
+    defer ort.DestroyEnvironment()
+
+    embedder, err := splade.NewEmbedder(
+        "/path/to/splade-model.onnx",
+        "/path/to/tokenizer.json",
+        splade.WithTopK(128),
+        splade.WithPruneThreshold(0.0),
+        splade.WithPreProcessor(func(input string) string {
+            // Optional: normalize/strip noisy structured content before tokenization.
+            return input
+        }),
+        splade.WithReturnLabels(), // Optional: decode token labels for each index
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer embedder.Close()
+
+    sparseVectors, err := embedder.EmbedDocuments([]string{"hello world"})
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    _ = sparseVectors // []splade.SparseVector{Indices, Values, Labels}
 }
 ```
 
