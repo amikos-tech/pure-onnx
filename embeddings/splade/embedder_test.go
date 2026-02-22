@@ -309,9 +309,7 @@ func TestWithPreProcessorValidation(t *testing.T) {
 		t.Fatalf("expected validation error for nil pre-processor")
 	}
 
-	trimSpace := func(input string) string {
-		return strings.TrimSpace(input)
-	}
+	trimSpace := strings.TrimSpace
 	if err := WithPreProcessor(trimSpace)(&cfg); err != nil {
 		t.Fatalf("unexpected WithPreProcessor error: %v", err)
 	}

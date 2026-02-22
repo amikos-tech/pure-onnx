@@ -822,20 +822,19 @@ func (e *Embedder) attachLabels(vectors []SparseVector) error {
 		e.labelCache = make(map[int]string)
 	}
 
-	const maxUint32 = ^uint32(0)
-
 	for row := range vectors {
 		if len(vectors[row].Indices) == 0 {
 			continue
 		}
 		labels := make([]string, len(vectors[row].Indices))
 		for i, idx := range vectors[row].Indices {
-			if idx < 0 || uint64(idx) > uint64(maxUint32) {
-				return fmt.Errorf("sparse index %d is out of uint32 range", idx)
+			tokenID, convErr := intToUint32Checked(idx)
+			if convErr != nil {
+				return convErr
 			}
 			label, ok := e.labelCache[idx]
 			if !ok {
-				decoded, err := e.tokenizer.Decode([]uint32{uint32(idx)}, false)
+				decoded, err := e.tokenizer.Decode([]uint32{tokenID}, false)
 				if err != nil {
 					return fmt.Errorf("failed to decode sparse index %d: %w", idx, err)
 				}
@@ -847,6 +846,15 @@ func (e *Embedder) attachLabels(vectors []SparseVector) error {
 		vectors[row].Labels = labels
 	}
 	return nil
+}
+
+func intToUint32Checked(value int) (uint32, error) {
+	const maxUint32 = ^uint32(0)
+	if value < 0 || uint64(value) > uint64(maxUint32) {
+		return 0, fmt.Errorf("sparse index %d is out of uint32 range", value)
+	}
+	// #nosec G115 -- value is explicitly validated against uint32 bounds above.
+	return uint32(value), nil
 }
 
 func (e *Embedder) tokenizeInto(documents []string, inputIDs []int64, attentionMask []int64, tokenTypeIDs []int64) error {
