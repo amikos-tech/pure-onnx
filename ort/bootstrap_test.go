@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -317,6 +318,39 @@ func TestEnsureOnnxRuntimeSharedLibraryInvalidArchive(t *testing.T) {
 	}
 }
 
+func TestEnsureOnnxRuntimeSharedLibraryInvalidArchiveMentionsSkippedLibraryLinks(t *testing.T) {
+	clearBootstrapEnv(t)
+
+	artifact, err := resolveRuntimeArtifact(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		t.Skipf("unsupported runtime for bootstrap test: %v", err)
+	}
+	if artifact.archiveExtension != "tgz" {
+		t.Skipf("symlink extraction behavior only applies to tgz archives, got %q", artifact.archiveExtension)
+	}
+
+	cacheDir := t.TempDir()
+	version := "1.99.51"
+	archiveBytes := buildORTArchiveWithLibrarySymlinkOnly(t, artifact, version)
+	server, _ := newArchiveServer(t, artifact, version, archiveBytes)
+
+	_, err = EnsureOnnxRuntimeSharedLibrary(
+		WithBootstrapCacheDir(cacheDir),
+		WithBootstrapVersion(version),
+		withBootstrapBaseURL(server.URL),
+		withBootstrapHTTPClient(server.Client()),
+	)
+	if err == nil {
+		t.Fatalf("expected invalid archive error")
+	}
+	if !strings.Contains(err.Error(), "did not contain expected shared library") {
+		t.Fatalf("expected shared library missing error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "skipped") || !strings.Contains(err.Error(), artifact.libraryGlob) {
+		t.Fatalf("expected skipped-library-link context in error, got: %v", err)
+	}
+}
+
 func TestEnsureOnnxRuntimeSharedLibraryChecksumMatch(t *testing.T) {
 	clearBootstrapEnv(t)
 
@@ -375,6 +409,98 @@ func TestDownloadRuntimeArchiveCleansTempFileOnError(t *testing.T) {
 	}
 }
 
+func TestDownloadRuntimeArchiveHTTPStatusError(t *testing.T) {
+	clearBootstrapEnv(t)
+
+	cacheDir := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("service unavailable"))
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := bootstrapConfig{
+		cacheDir:        cacheDir,
+		httpClient:      server.Client(),
+		maxDownloadSize: 1024,
+	}
+
+	_, _, err := downloadRuntimeArchive(cfg, server.URL+"/archive")
+	if err == nil {
+		t.Fatalf("expected HTTP status download error")
+	}
+	if !strings.Contains(err.Error(), "HTTP 503") {
+		t.Fatalf("expected HTTP status in error, got: %v", err)
+	}
+}
+
+func TestDownloadRuntimeArchiveRejectsOversize(t *testing.T) {
+	clearBootstrapEnv(t)
+
+	cacheDir := t.TempDir()
+	payload := bytes.Repeat([]byte("a"), 64)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := bootstrapConfig{
+		cacheDir:        cacheDir,
+		httpClient:      server.Client(),
+		maxDownloadSize: 16,
+	}
+
+	_, _, err := downloadRuntimeArchive(cfg, server.URL+"/archive")
+	if err == nil {
+		t.Fatalf("expected oversize archive error")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum size limit") {
+		t.Fatalf("unexpected oversize error: %v", err)
+	}
+
+	matches, globErr := filepath.Glob(filepath.Join(cacheDir, "onnxruntime-*.archive"))
+	if globErr != nil {
+		t.Fatalf("unexpected glob error: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected no temp archives after oversize rejection, found %v", matches)
+	}
+}
+
+func TestDownloadRuntimeArchiveRejectsOversizeByContentLengthHeader(t *testing.T) {
+	clearBootstrapEnv(t)
+
+	cacheDir := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "64")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := bootstrapConfig{
+		cacheDir:        cacheDir,
+		httpClient:      server.Client(),
+		maxDownloadSize: 16,
+	}
+
+	_, _, err := downloadRuntimeArchive(cfg, server.URL+"/archive")
+	if err == nil {
+		t.Fatalf("expected oversize archive error")
+	}
+	if !strings.Contains(err.Error(), "content-length=64") {
+		t.Fatalf("expected content-length oversize error, got: %v", err)
+	}
+
+	matches, globErr := filepath.Glob(filepath.Join(cacheDir, "onnxruntime-*.archive"))
+	if globErr != nil {
+		t.Fatalf("unexpected glob error: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected no temp archives after content-length rejection, found %v", matches)
+	}
+}
+
 func TestResolveExtractedLibraryPathDistinguishesInvalidCandidates(t *testing.T) {
 	installDir := t.TempDir()
 	libDir := filepath.Join(installDir, "lib")
@@ -428,6 +554,105 @@ func TestWithBootstrapVersionRejectsEmpty(t *testing.T) {
 	}
 }
 
+func TestWithBootstrapLibraryPathAndCacheDirRejectEmpty(t *testing.T) {
+	var cfg bootstrapConfig
+
+	if err := WithBootstrapLibraryPath("   ")(&cfg); err == nil {
+		t.Fatalf("expected empty library path validation error")
+	}
+	if err := WithBootstrapCacheDir("   ")(&cfg); err == nil {
+		t.Fatalf("expected empty cache directory validation error")
+	}
+}
+
+func TestWithBootstrapExpectedSHA256Validation(t *testing.T) {
+	tests := []struct {
+		name     string
+		checksum string
+		wantErr  bool
+		want     string
+	}{
+		{name: "empty", checksum: "", wantErr: true},
+		{name: "short", checksum: strings.Repeat("a", 63), wantErr: true},
+		{name: "long", checksum: strings.Repeat("a", 65), wantErr: true},
+		{name: "uppercase", checksum: strings.Repeat("A", 64), wantErr: false, want: strings.Repeat("a", 64)},
+		{name: "non-hex", checksum: strings.Repeat("g", 64), wantErr: true},
+		{name: "valid", checksum: strings.Repeat("a", 64), wantErr: false, want: strings.Repeat("a", 64)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg bootstrapConfig
+			err := WithBootstrapExpectedSHA256(tc.checksum)(&cfg)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected validation error for checksum %q", tc.checksum)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected checksum validation error: %v", err)
+			}
+			if cfg.expectedSHA256 != tc.want {
+				t.Fatalf("unexpected stored checksum: got %q, want %q", cfg.expectedSHA256, tc.want)
+			}
+		})
+	}
+}
+
+func TestWithBootstrapBaseURLValidation(t *testing.T) {
+	var cfg bootstrapConfig
+
+	tests := []struct {
+		name    string
+		baseURL string
+		wantErr bool
+	}{
+		{name: "reject non-loopback http", baseURL: "http://example.com", wantErr: true},
+		{name: "accept https", baseURL: "https://example.com", wantErr: false},
+		{name: "accept loopback ipv4 http", baseURL: "http://127.0.0.1:8080", wantErr: false},
+		{name: "accept localhost http", baseURL: "http://localhost:8080", wantErr: false},
+		{name: "accept loopback ipv6 http", baseURL: "http://[::1]:8080", wantErr: false},
+		{name: "reject ftp", baseURL: "ftp://example.com", wantErr: true},
+		{name: "reject schemeless URL", baseURL: "example.com/path", wantErr: true},
+		{name: "reject hostless https", baseURL: "https://", wantErr: true},
+		{name: "reject bare path", baseURL: "/tmp/archive-root", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := withBootstrapBaseURL(tc.baseURL)(&cfg)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected validation error for %q", tc.baseURL)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected validation error for %q: %v", tc.baseURL, err)
+			}
+		})
+	}
+}
+
+func TestResolveBootstrapConfigRespectsEnvOverrides(t *testing.T) {
+	clearBootstrapEnv(t)
+	t.Setenv("ONNXRUNTIME_LIB_PATH", " ./libonnxruntime.so ")
+	t.Setenv("ONNXRUNTIME_CACHE_DIR", " ./cache-dir ")
+	t.Setenv("ONNXRUNTIME_VERSION", " v1.2.3 ")
+
+	cfg, err := resolveBootstrapConfig()
+	if err != nil {
+		t.Fatalf("unexpected resolveBootstrapConfig error: %v", err)
+	}
+	if cfg.libraryPath != "./libonnxruntime.so" {
+		t.Fatalf("unexpected library path: got %q", cfg.libraryPath)
+	}
+	if cfg.cacheDir != filepath.Clean("./cache-dir") {
+		t.Fatalf("unexpected cache dir: got %q, want %q", cfg.cacheDir, filepath.Clean("./cache-dir"))
+	}
+	if cfg.version != "1.2.3" {
+		t.Fatalf("unexpected normalized version: got %q, want 1.2.3", cfg.version)
+	}
+}
+
 func TestParseBootstrapBoolEnv(t *testing.T) {
 	t.Setenv("ONNXRUNTIME_DISABLE_DOWNLOAD", "")
 	parsed, err := parseBootstrapBoolEnv("ONNXRUNTIME_DISABLE_DOWNLOAD")
@@ -442,6 +667,8 @@ func TestParseBootstrapBoolEnv(t *testing.T) {
 	}{
 		{value: "true", want: true},
 		{value: "false", want: false},
+		{value: "1", want: true},
+		{value: "0", want: false},
 		{value: "yes", want: true},
 		{value: "no", want: false},
 		{value: "on", want: true},
@@ -479,6 +706,116 @@ func TestResolveBootstrapConfigRejectsInvalidDisableDownloadEnv(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ONNXRUNTIME_DISABLE_DOWNLOAD") {
 		t.Fatalf("expected variable name in error, got: %v", err)
+	}
+}
+
+func TestValidateLibraryFile(t *testing.T) {
+	if _, err := validateLibraryFile("   "); err == nil {
+		t.Fatalf("expected empty library path error")
+	}
+
+	dir := t.TempDir()
+	if _, err := validateLibraryFile(dir); err == nil {
+		t.Fatalf("expected directory library path error")
+	}
+
+	zeroPath := filepath.Join(dir, "libonnxruntime-empty.so")
+	if err := os.WriteFile(zeroPath, nil, 0o644); err != nil {
+		t.Fatalf("failed to create zero-size library file: %v", err)
+	}
+	if _, err := validateLibraryFile(zeroPath); err == nil {
+		t.Fatalf("expected zero-size library file error")
+	}
+
+	validPath := filepath.Join(dir, "libonnxruntime.so")
+	if err := os.WriteFile(validPath, []byte("onnxruntime"), 0o644); err != nil {
+		t.Fatalf("failed to create valid library file: %v", err)
+	}
+	resolved, err := validateLibraryFile(validPath)
+	if err != nil {
+		t.Fatalf("unexpected valid library file error: %v", err)
+	}
+	want, _ := filepath.Abs(validPath)
+	if resolved != want {
+		t.Fatalf("unexpected resolved path: got %q, want %q", resolved, want)
+	}
+}
+
+func TestCopyExtractedFileLimits(t *testing.T) {
+	if err := copyExtractedFile(io.Discard, strings.NewReader(""), maxExtractedFileBytes+1, nil, "big.bin"); err == nil {
+		t.Fatalf("expected per-file extraction limit error")
+	}
+
+	total := maxExtractedTotalBytes - 2
+	if err := copyExtractedFile(io.Discard, strings.NewReader("1234"), 4, &total, "cumulative.bin"); err == nil {
+		t.Fatalf("expected cumulative extraction limit error")
+	}
+
+	var totalWritten int64
+	if err := copyExtractedFile(io.Discard, strings.NewReader("abc"), 5, &totalWritten, "short.bin"); err == nil {
+		t.Fatalf("expected size mismatch extraction error")
+	}
+
+	var okTotal int64
+	if err := copyExtractedFile(io.Discard, strings.NewReader("hello"), 5, &okTotal, "ok.bin"); err != nil {
+		t.Fatalf("unexpected extraction error for valid sizes: %v", err)
+	}
+	if okTotal != 5 {
+		t.Fatalf("unexpected total extracted bytes: got %d, want 5", okTotal)
+	}
+}
+
+func TestWithProcessFileLockTimesOut(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "bootstrap.lock")
+
+	oldTimeout := bootstrapLockAcquireTimeout
+	oldRetry := bootstrapLockRetryInterval
+	oldLogInterval := bootstrapLockLogInterval
+	bootstrapLockAcquireTimeout = 80 * time.Millisecond
+	bootstrapLockRetryInterval = 5 * time.Millisecond
+	bootstrapLockLogInterval = 15 * time.Millisecond
+	t.Cleanup(func() {
+		bootstrapLockAcquireTimeout = oldTimeout
+		bootstrapLockRetryInterval = oldRetry
+		bootstrapLockLogInterval = oldLogInterval
+	})
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	holderErrCh := make(chan error, 1)
+	go func() {
+		holderErrCh <- withProcessFileLock(lockPath, func() error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+
+	select {
+	case <-locked:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for lock holder to acquire lock")
+	}
+
+	err := withProcessFileLock(lockPath, func() error { return nil })
+	if err == nil {
+		t.Fatalf("expected timeout while waiting for lock")
+	}
+	if !strings.Contains(err.Error(), "timed out acquiring lock") {
+		t.Fatalf("unexpected lock timeout error: %v", err)
+	}
+
+	close(release)
+	if holderErr := <-holderErrCh; holderErr != nil {
+		t.Fatalf("unexpected lock holder error: %v", holderErr)
+	}
+}
+
+func TestWithProcessFileLockRejectsNilCallback(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "bootstrap.lock")
+	err := withProcessFileLock(lockPath, nil)
+	if err == nil || !strings.Contains(err.Error(), "lock callback is nil") {
+		t.Fatalf("expected nil callback error, got: %v", err)
 	}
 }
 
@@ -571,7 +908,7 @@ func TestExtractArchiveFileCrossFormat(t *testing.T) {
 			}
 
 			destDir := t.TempDir()
-			if err := extractArchiveFile(archivePath, destDir, tc.extension); err != nil {
+			if _, err := extractArchiveFile(archivePath, destDir, tc.extension, ""); err != nil {
 				t.Fatalf("unexpected extraction error: %v", err)
 			}
 
@@ -580,6 +917,129 @@ func TestExtractArchiveFileCrossFormat(t *testing.T) {
 				t.Fatalf("expected extracted library file at %q: %v", extractedLib, err)
 			}
 		})
+	}
+}
+
+func TestExtractTGZArchiveSkipsSymlinkEntries(t *testing.T) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+
+	const regularPath = "onnxruntime-sample/lib/libonnxruntime-real.so"
+	regularContent := []byte("regular-library")
+	if err := tw.WriteHeader(&tar.Header{
+		Name: regularPath,
+		Mode: 0o644,
+		Size: int64(len(regularContent)),
+	}); err != nil {
+		t.Fatalf("failed to write regular tar header: %v", err)
+	}
+	if _, err := tw.Write(regularContent); err != nil {
+		t.Fatalf("failed to write regular tar payload: %v", err)
+	}
+
+	const symlinkPath = "onnxruntime-sample/lib/libonnxruntime.so"
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     symlinkPath,
+		Mode:     0o777,
+		Typeflag: tar.TypeSymlink,
+		Linkname: "libonnxruntime-real.so",
+	}); err != nil {
+		t.Fatalf("failed to write symlink tar header: %v", err)
+	}
+
+	if err := tw.Close(); err != nil {
+		t.Fatalf("failed to close tar writer: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("failed to close gzip writer: %v", err)
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "archive.tgz")
+	if err := os.WriteFile(archivePath, buf.Bytes(), 0o644); err != nil {
+		t.Fatalf("failed to write tgz archive: %v", err)
+	}
+
+	destDir := t.TempDir()
+	report, err := extractArchiveFile(archivePath, destDir, "tgz", "libonnxruntime*.so")
+	if err != nil {
+		t.Fatalf("unexpected extraction error: %v", err)
+	}
+
+	extractedRegular := filepath.Join(destDir, filepath.FromSlash(regularPath))
+	if _, err := os.Stat(extractedRegular); err != nil {
+		t.Fatalf("expected regular file to be extracted: %v", err)
+	}
+
+	extractedSymlink := filepath.Join(destDir, filepath.FromSlash(symlinkPath))
+	if _, err := os.Lstat(extractedSymlink); err == nil {
+		t.Fatalf("expected symlink entry to be skipped, but found %q", extractedSymlink)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected symlink lstat error: %v", err)
+	}
+	if report.skippedLinkEntries == 0 {
+		t.Fatalf("expected skipped link entries in extraction report")
+	}
+	if report.skippedLibraryLinkEntries == 0 {
+		t.Fatalf("expected skipped library link entries in extraction report")
+	}
+}
+
+func TestExtractZIPArchiveSkipsSymlinkEntries(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	const regularPath = "onnxruntime-sample/lib/onnxruntime-real.dll"
+	regularEntry, err := zw.Create(regularPath)
+	if err != nil {
+		t.Fatalf("failed to create regular zip entry: %v", err)
+	}
+	if _, err := regularEntry.Write([]byte("regular-library")); err != nil {
+		t.Fatalf("failed to write regular zip entry: %v", err)
+	}
+
+	const symlinkPath = "onnxruntime-sample/lib/onnxruntime.dll"
+	symlinkHeader := &zip.FileHeader{Name: symlinkPath, Method: zip.Deflate}
+	symlinkHeader.SetMode(os.ModeSymlink | 0o777)
+	symlinkEntry, err := zw.CreateHeader(symlinkHeader)
+	if err != nil {
+		t.Fatalf("failed to create symlink zip entry: %v", err)
+	}
+	if _, err := symlinkEntry.Write([]byte("onnxruntime-real.dll")); err != nil {
+		t.Fatalf("failed to write symlink zip payload: %v", err)
+	}
+
+	if err := zw.Close(); err != nil {
+		t.Fatalf("failed to close zip writer: %v", err)
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "archive.zip")
+	if err := os.WriteFile(archivePath, buf.Bytes(), 0o644); err != nil {
+		t.Fatalf("failed to write zip archive: %v", err)
+	}
+
+	destDir := t.TempDir()
+	report, err := extractArchiveFile(archivePath, destDir, "zip", "onnxruntime*.dll")
+	if err != nil {
+		t.Fatalf("unexpected extraction error: %v", err)
+	}
+
+	extractedRegular := filepath.Join(destDir, filepath.FromSlash(regularPath))
+	if _, err := os.Stat(extractedRegular); err != nil {
+		t.Fatalf("expected regular file to be extracted: %v", err)
+	}
+
+	extractedSymlink := filepath.Join(destDir, filepath.FromSlash(symlinkPath))
+	if _, err := os.Lstat(extractedSymlink); err == nil {
+		t.Fatalf("expected symlink entry to be skipped, but found %q", extractedSymlink)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected symlink lstat error: %v", err)
+	}
+	if report.skippedLinkEntries == 0 {
+		t.Fatalf("expected skipped link entries in extraction report")
+	}
+	if report.skippedLibraryLinkEntries == 0 {
+		t.Fatalf("expected skipped library link entries in extraction report")
 	}
 }
 
@@ -665,6 +1125,47 @@ func buildORTArchive(t *testing.T, artifact runtimeArtifact, version string, inc
 		t.Fatalf("unsupported archive extension in test: %s", artifact.archiveExtension)
 		return nil
 	}
+}
+
+func buildORTArchiveWithLibrarySymlinkOnly(t *testing.T, artifact runtimeArtifact, version string) []byte {
+	t.Helper()
+
+	archiveRoot := artifact.archiveName(version)
+	if artifact.archiveExtension != "tgz" {
+		t.Fatalf("symlink-only archive helper only supports tgz, got %q", artifact.archiveExtension)
+	}
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+
+	headerPath := filepath.ToSlash(fmt.Sprintf("%s/include/onnxruntime_c_api.h", archiveRoot))
+	headerContent := []byte("header")
+	if err := tw.WriteHeader(&tar.Header{Name: headerPath, Mode: 0o644, Size: int64(len(headerContent))}); err != nil {
+		t.Fatalf("failed to write header file entry: %v", err)
+	}
+	if _, err := tw.Write(headerContent); err != nil {
+		t.Fatalf("failed to write header file payload: %v", err)
+	}
+
+	linkPath := filepath.ToSlash(fmt.Sprintf("%s/lib/%s", archiveRoot, artifact.primaryLibrary))
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     linkPath,
+		Mode:     0o777,
+		Typeflag: tar.TypeSymlink,
+		Linkname: "libonnxruntime-real.so",
+	}); err != nil {
+		t.Fatalf("failed to write library symlink entry: %v", err)
+	}
+
+	if err := tw.Close(); err != nil {
+		t.Fatalf("failed to close tar writer: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("failed to close gzip writer: %v", err)
+	}
+
+	return buf.Bytes()
 }
 
 func buildTGZArchive(t *testing.T, files map[string]string) []byte {
