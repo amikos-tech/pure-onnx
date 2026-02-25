@@ -22,6 +22,124 @@ type unsupportedValue struct{}
 func (u *unsupportedValue) Destroy() error  { return nil }
 func (u *unsupportedValue) Type() ValueType { return ValueTypeTensor }
 
+type blockingLeaseValue struct {
+	handle uintptr
+	runMu  sync.RWMutex
+
+	firstLeaseAcquired    chan struct{}
+	allowFirstLeaseReturn chan struct{}
+	firstLeaseOnce        sync.Once
+}
+
+func newBlockingLeaseValue(handle uintptr) *blockingLeaseValue {
+	return &blockingLeaseValue{
+		handle:                handle,
+		firstLeaseAcquired:    make(chan struct{}),
+		allowFirstLeaseReturn: make(chan struct{}),
+	}
+}
+
+func (v *blockingLeaseValue) Destroy() error {
+	v.runMu.Lock()
+	v.handle = 0
+	v.runMu.Unlock()
+	return nil
+}
+
+func (v *blockingLeaseValue) Type() ValueType { return ValueTypeTensor }
+
+func (v *blockingLeaseValue) ortValueHandle() uintptr {
+	v.runMu.RLock()
+	handle := v.handle
+	v.runMu.RUnlock()
+	return handle
+}
+
+func (v *blockingLeaseValue) lockForRun() (uintptr, error) {
+	v.runMu.RLock()
+	handle := v.handle
+	if handle == 0 {
+		v.runMu.RUnlock()
+		return 0, errValueDestroyed
+	}
+
+	blockFirstLease := false
+	v.firstLeaseOnce.Do(func() {
+		blockFirstLease = true
+		close(v.firstLeaseAcquired)
+	})
+	if blockFirstLease {
+		<-v.allowFirstLeaseReturn
+	}
+
+	return handle, nil
+}
+
+func (v *blockingLeaseValue) unlockForRun() {
+	v.runMu.RUnlock()
+}
+
+func TestValuesToHandlesDeduplicatesRepeatedLockableValue(t *testing.T) {
+	value := newBlockingLeaseValue(42)
+
+	type valuesToHandlesResult struct {
+		handles []uintptr
+		release func()
+		err     error
+	}
+
+	resultCh := make(chan valuesToHandlesResult, 1)
+	go func() {
+		handles, release, err := valuesToHandles([]Value{value, value}, "input")
+		resultCh <- valuesToHandlesResult{
+			handles: handles,
+			release: release,
+			err:     err,
+		}
+	}()
+
+	<-value.firstLeaseAcquired
+
+	destroyDone := make(chan struct{})
+	go func() {
+		_ = value.Destroy()
+		close(destroyDone)
+	}()
+
+	close(value.allowFirstLeaseReturn)
+
+	var result valuesToHandlesResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("valuesToHandles blocked while acquiring repeated lockable value")
+	}
+
+	if result.err != nil {
+		t.Fatalf("valuesToHandles failed: %v", result.err)
+	}
+	if got := len(result.handles); got != 2 {
+		t.Fatalf("expected two handles, got %d", got)
+	}
+	if result.handles[0] != 42 || result.handles[1] != 42 {
+		t.Fatalf("expected both handles to reuse 42, got %v", result.handles)
+	}
+
+	select {
+	case <-destroyDone:
+		t.Fatalf("destroy should block until release() unlocks leases")
+	default:
+	}
+
+	result.release()
+
+	select {
+	case <-destroyDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("destroy did not complete after release()")
+	}
+}
+
 func TestNewAdvancedSessionValidation(t *testing.T) {
 	validValue := &fakeValue{handle: 1}
 
@@ -306,6 +424,29 @@ func TestAdvancedSessionDestroy(t *testing.T) {
 	resetEnvironmentState()
 }
 
+func TestAdvancedSessionDestroyReleaseUnavailable(t *testing.T) {
+	resetEnvironmentState()
+
+	session := &AdvancedSession{
+		handle:       123,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{&fakeValue{handle: 1}},
+		outputValues: []Value{&fakeValue{handle: 2}},
+	}
+
+	err := session.Destroy()
+	if err == nil || !strings.Contains(err.Error(), "release function unavailable") {
+		t.Fatalf("expected release-unavailable destroy error, got: %v", err)
+	}
+	if session.handle != 0 {
+		t.Fatalf("expected handle to be reset even on release failure")
+	}
+	if session.inputNames != nil || session.outputNames != nil || session.inputValues != nil || session.outputValues != nil {
+		t.Fatalf("expected session fields to be cleared even on release failure")
+	}
+}
+
 func TestAdvancedSessionRunConcurrent(t *testing.T) {
 	resetEnvironmentState()
 	defer resetEnvironmentState()
@@ -584,6 +725,74 @@ func TestTensorDestroyWaitsForInFlightRun(t *testing.T) {
 	}
 }
 
+func TestTensorDestroyDoesNotBlockUnrelatedRun(t *testing.T) {
+	resetEnvironmentState()
+	defer resetEnvironmentState()
+
+	runStarted := make(chan struct{})
+	allowRunReturn := make(chan struct{})
+	var closeRunStarted sync.Once
+
+	releasedTensor := int32(0)
+	var releasedHandle atomic.Uintptr
+
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	runSessionFunc = func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr {
+		closeRunStarted.Do(func() { close(runStarted) })
+		<-allowRunReturn
+		return 0
+	}
+	releaseValueFunc = func(handle uintptr) {
+		atomic.AddInt32(&releasedTensor, 1)
+		releasedHandle.Store(handle)
+	}
+	mu.Unlock()
+
+	runningInputTensor := &Tensor[float32]{handle: 1}
+	unrelatedTensor := &Tensor[float32]{handle: 99}
+	session := &AdvancedSession{
+		handle:       333,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{runningInputTensor},
+		outputValues: []Value{&fakeValue{handle: 2}},
+	}
+
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- session.Run()
+	}()
+
+	<-runStarted
+
+	tensorDestroyErrCh := make(chan error, 1)
+	go func() {
+		tensorDestroyErrCh <- unrelatedTensor.Destroy()
+	}()
+
+	select {
+	case err := <-tensorDestroyErrCh:
+		if err != nil {
+			t.Fatalf("unrelated tensor destroy failed: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("destroy should not block on unrelated in-flight Run")
+	}
+
+	if got := atomic.LoadInt32(&releasedTensor); got != 1 {
+		t.Fatalf("expected unrelated tensor release callback once, got %d", got)
+	}
+	if got := releasedHandle.Load(); got != 99 {
+		t.Fatalf("expected release callback handle 99, got %d", got)
+	}
+
+	close(allowRunReturn)
+	if err := <-runErrCh; err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+}
+
 func TestAdvancedSessionRunDestroyedInputValue(t *testing.T) {
 	resetEnvironmentState()
 
@@ -610,6 +819,37 @@ func TestAdvancedSessionRunDestroyedInputValue(t *testing.T) {
 	}
 	if runCalled {
 		t.Fatalf("expected runSessionFunc not to be called when input value is destroyed")
+	}
+
+	resetEnvironmentState()
+}
+
+func TestAdvancedSessionRunDestroyedInputTensor(t *testing.T) {
+	resetEnvironmentState()
+
+	runCalled := false
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	runSessionFunc = func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr {
+		runCalled = true
+		return 0
+	}
+	mu.Unlock()
+
+	session := &AdvancedSession{
+		handle:       123,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{&Tensor[float32]{handle: 0}},
+		outputValues: []Value{&fakeValue{handle: 2}},
+	}
+
+	err := session.Run()
+	if err == nil || !strings.Contains(err.Error(), "input value at index 0 has been destroyed") {
+		t.Fatalf("expected destroyed input tensor error, got: %v", err)
+	}
+	if runCalled {
+		t.Fatalf("expected runSessionFunc not to be called when input tensor is destroyed")
 	}
 
 	resetEnvironmentState()
