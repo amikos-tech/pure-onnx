@@ -3,6 +3,7 @@ package ort
 import (
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"unsafe"
 )
@@ -201,8 +202,9 @@ func TestTensorDestroyDoubleWithoutORT(t *testing.T) {
 		shape:  Shape{3},
 	}
 
-	if err := tensor.Destroy(); err != nil {
-		t.Fatalf("first destroy failed: %v", err)
+	err := tensor.Destroy()
+	if err == nil || !strings.Contains(err.Error(), "release function unavailable") {
+		t.Fatalf("expected first destroy to fail with release-unavailable error, got: %v", err)
 	}
 	if tensor.handle != 0 {
 		t.Fatalf("expected handle to be reset")
@@ -214,6 +216,34 @@ func TestTensorDestroyDoubleWithoutORT(t *testing.T) {
 	// With ORT funcs unset, second destroy should remain a safe no-op.
 	if err := tensor.Destroy(); err != nil {
 		t.Fatalf("second destroy should be no-op, got: %v", err)
+	}
+}
+
+func TestTensorDestroyDoubleCallsReleaseOnce(t *testing.T) {
+	resetEnvironmentState()
+	defer resetEnvironmentState()
+
+	var releases int32
+	mu.Lock()
+	releaseValueFunc = func(handle uintptr) {
+		atomic.AddInt32(&releases, 1)
+	}
+	mu.Unlock()
+
+	tensor := &Tensor[float32]{
+		handle: 321,
+		data:   []float32{1, 2, 3},
+		shape:  Shape{3},
+	}
+
+	if err := tensor.Destroy(); err != nil {
+		t.Fatalf("first destroy failed: %v", err)
+	}
+	if err := tensor.Destroy(); err != nil {
+		t.Fatalf("second destroy should be no-op, got: %v", err)
+	}
+	if got := atomic.LoadInt32(&releases); got != 1 {
+		t.Fatalf("expected one native release, got %d", got)
 	}
 }
 

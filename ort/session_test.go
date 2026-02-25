@@ -424,6 +424,29 @@ func TestAdvancedSessionDestroy(t *testing.T) {
 	resetEnvironmentState()
 }
 
+func TestAdvancedSessionDestroyReleaseUnavailable(t *testing.T) {
+	resetEnvironmentState()
+
+	session := &AdvancedSession{
+		handle:       123,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{&fakeValue{handle: 1}},
+		outputValues: []Value{&fakeValue{handle: 2}},
+	}
+
+	err := session.Destroy()
+	if err == nil || !strings.Contains(err.Error(), "release function unavailable") {
+		t.Fatalf("expected release-unavailable destroy error, got: %v", err)
+	}
+	if session.handle != 0 {
+		t.Fatalf("expected handle to be reset even on release failure")
+	}
+	if session.inputNames != nil || session.outputNames != nil || session.inputValues != nil || session.outputValues != nil {
+		t.Fatalf("expected session fields to be cleared even on release failure")
+	}
+}
+
 func TestAdvancedSessionRunConcurrent(t *testing.T) {
 	resetEnvironmentState()
 	defer resetEnvironmentState()
@@ -796,6 +819,37 @@ func TestAdvancedSessionRunDestroyedInputValue(t *testing.T) {
 	}
 	if runCalled {
 		t.Fatalf("expected runSessionFunc not to be called when input value is destroyed")
+	}
+
+	resetEnvironmentState()
+}
+
+func TestAdvancedSessionRunDestroyedInputTensor(t *testing.T) {
+	resetEnvironmentState()
+
+	runCalled := false
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	runSessionFunc = func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr {
+		runCalled = true
+		return 0
+	}
+	mu.Unlock()
+
+	session := &AdvancedSession{
+		handle:       123,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{&Tensor[float32]{handle: 0}},
+		outputValues: []Value{&fakeValue{handle: 2}},
+	}
+
+	err := session.Run()
+	if err == nil || !strings.Contains(err.Error(), "input value at index 0 has been destroyed") {
+		t.Fatalf("expected destroyed input tensor error, got: %v", err)
+	}
+	if runCalled {
+		t.Fatalf("expected runSessionFunc not to be called when input tensor is destroyed")
 	}
 
 	resetEnvironmentState()
