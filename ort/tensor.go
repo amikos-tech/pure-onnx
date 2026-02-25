@@ -3,6 +3,7 @@ package ort
 import (
 	"fmt"
 	"runtime"
+	"sync"
 	"unsafe"
 )
 
@@ -12,13 +13,17 @@ type Tensor[T any] struct {
 	data   []T
 	handle uintptr         // Pointer to OrtValue
 	pinner *runtime.Pinner // Pins data backing array while OrtValue may access it.
+	runMu  sync.RWMutex    // Coordinates Run() handle leases with Destroy().
 }
 
 func (t *Tensor[T]) ortValueHandle() uintptr {
 	if t == nil {
 		return 0
 	}
-	return t.handle
+	t.runMu.RLock()
+	handle := t.handle
+	t.runMu.RUnlock()
+	return handle
 }
 
 // NewTensor creates a new tensor with the given shape and data
@@ -137,7 +142,10 @@ func (t *Tensor[T]) GetData() []T {
 	if t == nil {
 		return nil
 	}
-	return t.data
+	t.runMu.RLock()
+	data := t.data
+	t.runMu.RUnlock()
+	return data
 }
 
 // Shape returns the tensor shape
@@ -145,42 +153,45 @@ func (t *Tensor[T]) Shape() Shape {
 	if t == nil {
 		return nil
 	}
-	return t.shape
+	t.runMu.RLock()
+	shape := t.shape
+	t.runMu.RUnlock()
+	return shape
 }
 
 // Destroy releases the tensor resources.
 //
-// Concurrency note: Destroy acquires a global ORT call write-lock so value release
-// cannot overlap any in-flight ORT call that may still read this OrtValue handle.
-// As a result, tensor destruction may block while inference is running, and can
-// temporarily pause new inference calls across sessions.
+// Concurrency note: Destroy takes a per-tensor write lock to wait for in-flight
+// Run() calls using this specific tensor handle, then releases the ORT value under
+// ortCallMu.RLock so environment teardown cannot race the release call.
 func (t *Tensor[T]) Destroy() error {
 	if t == nil {
 		return nil
 	}
 
-	// Lock order here is ortCallMu -> mu.
-	// We intentionally use ortCallMu.Lock (not RLock) so handle release cannot overlap
-	// with in-flight ORT calls that may still read this OrtValue.
-	// TODO: replace this global write lock with finer-grained lifetime tracking so
-	// destroying one tensor does not stall unrelated in-flight inference.
-	ortCallMu.Lock()
-	defer ortCallMu.Unlock()
-
 	var handle uintptr
-	var releaseValue func(uintptr)
 	var pinner *runtime.Pinner
 
+	// Lock order here is ortCallMu -> mu and ortCallMu -> tensor.runMu.
+	// Keep ortCallMu held while releasing the native handle so environment teardown
+	// cannot invalidate ORT function pointers mid-call.
+	ortCallMu.RLock()
+	defer ortCallMu.RUnlock()
+
+	var releaseValue func(uintptr)
 	mu.Lock()
-	handle = t.handle
 	releaseValue = releaseValueFunc
+	mu.Unlock()
+
+	t.runMu.Lock()
+	handle = t.handle
 	pinner = t.pinner
 	t.handle = 0
 	t.data = nil
 	t.shape = nil
 	t.pinner = nil
 	runtime.SetFinalizer(t, nil)
-	mu.Unlock()
+	t.runMu.Unlock()
 
 	if handle != 0 && releaseValue != nil {
 		releaseValue(handle)
@@ -190,6 +201,28 @@ func (t *Tensor[T]) Destroy() error {
 	}
 
 	return nil
+}
+
+func (t *Tensor[T]) lockForRun() (uintptr, error) {
+	if t == nil {
+		return 0, errValueNil
+	}
+
+	t.runMu.RLock()
+	handle := t.handle
+	if handle == 0 {
+		t.runMu.RUnlock()
+		return 0, errValueDestroyed
+	}
+
+	return handle, nil
+}
+
+func (t *Tensor[T]) unlockForRun() {
+	if t == nil {
+		return
+	}
+	t.runMu.RUnlock()
 }
 
 // Type returns the value type (always ValueTypeTensor for tensors)
