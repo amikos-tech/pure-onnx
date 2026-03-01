@@ -64,12 +64,14 @@ func main() {
 ```
 
 Bootstrap downloads official Microsoft ONNX Runtime artifacts and caches them locally.
+For official upstream downloads, bootstrap resolves the release asset SHA256 from GitHub release metadata and verifies the archive checksum before extraction.
 
 Optional bootstrap environment variables:
 - `ONNXRUNTIME_VERSION` (default: `1.23.1`)
 - `ONNXRUNTIME_CACHE_DIR` (default: user cache dir under `onnx-purego/onnxruntime`)
 - `ONNXRUNTIME_DISABLE_DOWNLOAD=1` (fail if library is not already cached)
 - `ONNXRUNTIME_LIB_PATH` (if set, explicit path mode is used)
+- `GITHUB_TOKEN` / `GH_TOKEN` (optional; helps avoid GitHub API rate limits during checksum metadata lookup)
 
 ## Usage Example
 

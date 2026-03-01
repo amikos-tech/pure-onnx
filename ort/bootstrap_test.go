@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -378,6 +379,323 @@ func TestEnsureOnnxRuntimeSharedLibraryChecksumMatch(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("expected resolved library path to exist: %v", err)
+	}
+}
+
+func TestResolveRuntimeArchiveChecksumFromReleaseMetadata(t *testing.T) {
+	artifact, err := resolveRuntimeArtifact("linux", "amd64")
+	if err != nil {
+		t.Fatalf("unexpected artifact resolution error: %v", err)
+	}
+
+	const version = "1.99.8"
+	expectedChecksum := strings.Repeat("a", 64)
+	archiveName := artifact.archiveFilename(version)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v"+version {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"assets":[{"name":"%s","digest":"sha256:%s"}]}`, archiveName, expectedChecksum)
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := bootstrapConfig{
+		version:            version,
+		releaseMetadataURL: server.URL,
+		httpClient:         server.Client(),
+	}
+
+	checksum, err := resolveRuntimeArchiveChecksumFromReleaseMetadata(cfg, artifact)
+	if err != nil {
+		t.Fatalf("unexpected checksum resolution error: %v", err)
+	}
+	if checksum != expectedChecksum {
+		t.Fatalf("unexpected checksum from release metadata: got %q, want %q", checksum, expectedChecksum)
+	}
+}
+
+func TestResolveRuntimeArchiveChecksumFallsBackToPinnedChecksumWhenMetadataFails(t *testing.T) {
+	setBootstrapRetryCountForTest(t, 1)
+
+	artifact, err := resolveRuntimeArtifact("linux", "amd64")
+	if err != nil {
+		t.Fatalf("unexpected artifact resolution error: %v", err)
+	}
+
+	const version = "1.99.9"
+	pinnedChecksum := strings.Repeat("b", 64)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte("rate limited"))
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := bootstrapConfig{
+		version:            version,
+		baseURL:            defaultBootstrapBaseURL,
+		releaseMetadataURL: server.URL,
+		expectedSHA256:     pinnedChecksum,
+		httpClient:         server.Client(),
+	}
+
+	checksum, err := resolveRuntimeArchiveChecksum(cfg, artifact)
+	if err != nil {
+		t.Fatalf("unexpected fallback error: %v", err)
+	}
+	if checksum != pinnedChecksum {
+		t.Fatalf("unexpected fallback checksum: got %q, want %q", checksum, pinnedChecksum)
+	}
+}
+
+func TestResolveRuntimeArchiveChecksumFailsWhenMetadataUnavailableAndNoPinnedChecksum(t *testing.T) {
+	setBootstrapRetryCountForTest(t, 1)
+
+	artifact, err := resolveRuntimeArtifact("linux", "amd64")
+	if err != nil {
+		t.Fatalf("unexpected artifact resolution error: %v", err)
+	}
+
+	const version = "1.99.91"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("metadata unavailable"))
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := bootstrapConfig{
+		version:            version,
+		baseURL:            defaultBootstrapBaseURL,
+		releaseMetadataURL: server.URL,
+		httpClient:         server.Client(),
+	}
+
+	_, err = resolveRuntimeArchiveChecksum(cfg, artifact)
+	if err == nil {
+		t.Fatalf("expected metadata resolution error")
+	}
+	if !strings.Contains(err.Error(), "failed to resolve ONNX Runtime checksum") {
+		t.Fatalf("unexpected metadata resolution error: %v", err)
+	}
+}
+
+func TestResolveRuntimeArchiveChecksumRejectsPinnedMismatch(t *testing.T) {
+	artifact, err := resolveRuntimeArtifact("linux", "amd64")
+	if err != nil {
+		t.Fatalf("unexpected artifact resolution error: %v", err)
+	}
+
+	const version = "1.99.10"
+	officialChecksum := strings.Repeat("c", 64)
+	pinnedChecksum := strings.Repeat("d", 64)
+	archiveName := artifact.archiveFilename(version)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v"+version {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"assets":[{"name":"%s","digest":"sha256:%s"}]}`, archiveName, officialChecksum)
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := bootstrapConfig{
+		version:            version,
+		baseURL:            defaultBootstrapBaseURL,
+		releaseMetadataURL: server.URL,
+		expectedSHA256:     pinnedChecksum,
+		httpClient:         server.Client(),
+	}
+
+	_, err = resolveRuntimeArchiveChecksum(cfg, artifact)
+	if err == nil {
+		t.Fatalf("expected mismatch error")
+	}
+	if !strings.Contains(err.Error(), "does not match ONNX Runtime release metadata checksum") {
+		t.Fatalf("unexpected mismatch error: %v", err)
+	}
+}
+
+func TestResolveRuntimeArchiveChecksumOfficialSourceHappyPath(t *testing.T) {
+	artifact, err := resolveRuntimeArtifact("linux", "amd64")
+	if err != nil {
+		t.Fatalf("unexpected artifact resolution error: %v", err)
+	}
+
+	const version = "1.99.11"
+	officialChecksum := strings.Repeat("e", 64)
+	archiveName := artifact.archiveFilename(version)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v"+version {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"assets":[{"name":"%s","digest":"sha256:%s"}]}`, archiveName, officialChecksum)
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := bootstrapConfig{
+		version:            version,
+		baseURL:            defaultBootstrapBaseURL,
+		releaseMetadataURL: server.URL,
+		httpClient:         server.Client(),
+	}
+
+	checksum, err := resolveRuntimeArchiveChecksum(cfg, artifact)
+	if err != nil {
+		t.Fatalf("unexpected checksum resolution error: %v", err)
+	}
+	if checksum != officialChecksum {
+		t.Fatalf("unexpected official checksum: got %q, want %q", checksum, officialChecksum)
+	}
+}
+
+func TestParseSHA256Digest(t *testing.T) {
+	tests := []struct {
+		name    string
+		digest  string
+		want    string
+		wantErr bool
+	}{
+		{name: "valid lower", digest: "sha256:" + strings.Repeat("a", 64), want: strings.Repeat("a", 64)},
+		{name: "valid upper prefix and hex", digest: "SHA256:" + strings.Repeat("B", 64), want: strings.Repeat("b", 64)},
+		{name: "empty", digest: "", wantErr: true},
+		{name: "wrong prefix", digest: "md5:" + strings.Repeat("a", 64), wantErr: true},
+		{name: "short", digest: "sha256:" + strings.Repeat("a", 63), wantErr: true},
+		{name: "non-hex", digest: "sha256:" + strings.Repeat("z", 64), wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseSHA256Digest(tc.digest)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected parse error for %q", tc.digest)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected parse error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("unexpected digest parse result: got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLooksLikeSHA256(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect bool
+	}{
+		{name: "lowercase", input: strings.Repeat("a", 64), expect: true},
+		{name: "uppercase", input: strings.Repeat("B", 64), expect: true},
+		{name: "mixed", input: strings.Repeat("1a", 32), expect: true},
+		{name: "too short", input: strings.Repeat("a", 63), expect: false},
+		{name: "too long", input: strings.Repeat("a", 65), expect: false},
+		{name: "invalid character", input: strings.Repeat("g", 64), expect: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := looksLikeSHA256(tc.input); got != tc.expect {
+				t.Fatalf("unexpected looksLikeSHA256 result for %q: got %v, want %v", tc.input, got, tc.expect)
+			}
+		})
+	}
+}
+
+func TestRejectHTTPSDowngradeRedirect(t *testing.T) {
+	prevURL, err := url.Parse("https://example.com/a")
+	if err != nil {
+		t.Fatalf("failed to parse previous URL: %v", err)
+	}
+	nextURL, err := url.Parse("http://example.com/b")
+	if err != nil {
+		t.Fatalf("failed to parse next URL: %v", err)
+	}
+
+	err = rejectHTTPSDowngradeRedirect(
+		&http.Request{URL: nextURL},
+		[]*http.Request{{URL: prevURL}},
+	)
+	if err == nil {
+		t.Fatalf("expected redirect downgrade rejection")
+	}
+	if !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("unexpected redirect validation error: %v", err)
+	}
+}
+
+func TestRejectHTTPSDowngradeRedirectAllowsSafeCases(t *testing.T) {
+	nextURL, err := url.Parse("https://example.com/b")
+	if err != nil {
+		t.Fatalf("failed to parse next URL: %v", err)
+	}
+	if err := rejectHTTPSDowngradeRedirect(&http.Request{URL: nextURL}, nil); err != nil {
+		t.Fatalf("expected no error for first request with empty redirect chain, got: %v", err)
+	}
+
+	prevURL, err := url.Parse("https://example.com/a")
+	if err != nil {
+		t.Fatalf("failed to parse previous URL: %v", err)
+	}
+	if err := rejectHTTPSDowngradeRedirect(&http.Request{URL: nextURL}, []*http.Request{{URL: prevURL}}); err != nil {
+		t.Fatalf("expected no error for HTTPS to HTTPS redirect, got: %v", err)
+	}
+}
+
+func TestRejectHTTPSDowngradeRedirectRejectsNilURL(t *testing.T) {
+	prevURL, err := url.Parse("https://example.com/a")
+	if err != nil {
+		t.Fatalf("failed to parse previous URL: %v", err)
+	}
+	if err := rejectHTTPSDowngradeRedirect(
+		&http.Request{},
+		[]*http.Request{{URL: prevURL}},
+	); err == nil {
+		t.Fatalf("expected nil URL rejection when request URL is nil")
+	}
+
+	nextURL, err := url.Parse("https://example.com/b")
+	if err != nil {
+		t.Fatalf("failed to parse next URL: %v", err)
+	}
+	if err := rejectHTTPSDowngradeRedirect(
+		&http.Request{URL: nextURL},
+		[]*http.Request{{}},
+	); err == nil {
+		t.Fatalf("expected nil URL rejection when previous redirect URL is nil")
+	}
+}
+
+func TestRejectHTTPSDowngradeRedirectLimit(t *testing.T) {
+	nextURL, err := url.Parse("https://example.com/final")
+	if err != nil {
+		t.Fatalf("failed to parse final URL: %v", err)
+	}
+	chain := make([]*http.Request, 10)
+	for i := range chain {
+		stepURL, parseErr := url.Parse(fmt.Sprintf("https://example.com/%d", i))
+		if parseErr != nil {
+			t.Fatalf("failed to parse step URL: %v", parseErr)
+		}
+		chain[i] = &http.Request{URL: stepURL}
+	}
+
+	err = rejectHTTPSDowngradeRedirect(&http.Request{URL: nextURL}, chain)
+	if err == nil {
+		t.Fatalf("expected redirect limit rejection")
+	}
+	if !strings.Contains(err.Error(), "stopped after 10 redirects") {
+		t.Fatalf("unexpected redirect limit error: %v", err)
 	}
 }
 
@@ -1078,6 +1396,15 @@ func clearBootstrapEnv(t *testing.T) {
 	t.Setenv("ONNXRUNTIME_CACHE_DIR", "")
 	t.Setenv("ONNXRUNTIME_VERSION", "")
 	t.Setenv("ONNXRUNTIME_DISABLE_DOWNLOAD", "")
+}
+
+func setBootstrapRetryCountForTest(t *testing.T, attempts int) {
+	t.Helper()
+	previous := bootstrapDownloadRetryCount
+	bootstrapDownloadRetryCount = attempts
+	t.Cleanup(func() {
+		bootstrapDownloadRetryCount = previous
+	})
 }
 
 func newArchiveServer(t *testing.T, artifact runtimeArtifact, version string, archive []byte) (*httptest.Server, *atomic.Int32) {
