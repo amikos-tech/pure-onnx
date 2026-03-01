@@ -2,7 +2,6 @@ package ort
 
 import (
 	"fmt"
-	"log"
 	"runtime"
 )
 
@@ -40,7 +39,7 @@ func CreateMemoryInfo(name string, allocatorType AllocatorType, deviceID int, me
 	// Set finalizer to ensure cleanup even if Destroy() is not called
 	runtime.SetFinalizer(memInfo, func(m *MemoryInfo) {
 		if err := m.Destroy(); err != nil {
-			log.Printf("WARNING: memory info finalizer destroy failed: %v", err)
+			logFinalizerWarning("WARNING: memory info finalizer destroy failed: %v", err)
 		}
 	})
 
@@ -81,7 +80,7 @@ func (m *MemoryInfo) Destroy() error {
 	}
 
 	if releaseMemoryInfo == nil {
-		return fmt.Errorf("cannot destroy memory info: ONNX Runtime release function unavailable (environment may already be destroyed)")
+		return fmt.Errorf("cannot destroy memory info: ONNX Runtime release function unavailable (environment may already be destroyed); ensure all tensors, sessions, and memory infos are destroyed before calling DestroyEnvironment()")
 	}
 	releaseMemoryInfo(handle)
 	return nil

@@ -528,7 +528,14 @@ func downloadRuntimeArchive(cfg bootstrapConfig, url string) (archivePath string
 		return "", "", fmt.Errorf("failed to download ONNX Runtime archive from %q: %w", url, err)
 	}
 	defer func() {
-		_ = resp.Body.Close()
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			closeErr = fmt.Errorf("failed to close download response body for %q: %w", url, closeErr)
+			if err == nil {
+				err = closeErr
+			} else {
+				err = errors.Join(err, closeErr)
+			}
+		}
 	}()
 
 	if resp.StatusCode != http.StatusOK {
@@ -605,14 +612,21 @@ func extractArchiveFile(archivePath, destinationDir, extension, libraryGlob stri
 	}
 }
 
-func extractTGZArchive(archivePath, destinationDir, libraryGlob string) (archiveExtractionReport, error) {
+func extractTGZArchive(archivePath, destinationDir, libraryGlob string) (report archiveExtractionReport, err error) {
 	// #nosec G304 -- archivePath is generated internally (downloadRuntimeArchive) and not user-controlled input.
 	archiveFile, err := os.Open(archivePath)
 	if err != nil {
 		return archiveExtractionReport{}, fmt.Errorf("failed to open archive %q: %w", archivePath, err)
 	}
 	defer func() {
-		_ = archiveFile.Close()
+		if closeErr := archiveFile.Close(); closeErr != nil {
+			closeErr = fmt.Errorf("failed to close archive %q: %w", archivePath, closeErr)
+			if err == nil {
+				err = closeErr
+			} else {
+				err = errors.Join(err, closeErr)
+			}
+		}
 	}()
 
 	gzipReader, err := gzip.NewReader(archiveFile)
@@ -620,13 +634,20 @@ func extractTGZArchive(archivePath, destinationDir, libraryGlob string) (archive
 		return archiveExtractionReport{}, fmt.Errorf("failed to read gzip archive %q: %w", archivePath, err)
 	}
 	defer func() {
-		_ = gzipReader.Close()
+		if closeErr := gzipReader.Close(); closeErr != nil {
+			closeErr = fmt.Errorf("gzip integrity check failed for %q: %w", archivePath, closeErr)
+			if err == nil {
+				err = closeErr
+			} else {
+				err = errors.Join(err, closeErr)
+			}
+		}
 	}()
 
 	tarReader := tar.NewReader(gzipReader)
 	regularFiles := 0
 	var totalExtracted int64
-	report := archiveExtractionReport{}
+	report = archiveExtractionReport{}
 
 	for {
 		header, err := tarReader.Next()
@@ -666,9 +687,11 @@ func extractTGZArchive(archivePath, destinationDir, libraryGlob string) (archive
 				return archiveExtractionReport{}, fmt.Errorf("failed to create extracted file %q: %w", targetPath, err)
 			}
 
-			if err := copyExtractedFile(outFile, tarReader, header.Size, &totalExtracted, targetPath); err != nil {
-				_ = outFile.Close()
-				return archiveExtractionReport{}, err
+			if copyErr := copyExtractedFile(outFile, tarReader, header.Size, &totalExtracted, targetPath); copyErr != nil {
+				if closeErr := outFile.Close(); closeErr != nil {
+					return archiveExtractionReport{}, errors.Join(copyErr, fmt.Errorf("failed to close extracted file %q: %w", targetPath, closeErr))
+				}
+				return archiveExtractionReport{}, copyErr
 			}
 			if err := outFile.Close(); err != nil {
 				return archiveExtractionReport{}, fmt.Errorf("failed to close extracted file %q: %w", targetPath, err)
@@ -706,18 +729,25 @@ func extractTGZArchive(archivePath, destinationDir, libraryGlob string) (archive
 	return report, nil
 }
 
-func extractZIPArchive(archivePath, destinationDir, libraryGlob string) (archiveExtractionReport, error) {
+func extractZIPArchive(archivePath, destinationDir, libraryGlob string) (report archiveExtractionReport, err error) {
 	reader, err := zip.OpenReader(archivePath)
 	if err != nil {
 		return archiveExtractionReport{}, fmt.Errorf("failed to open ZIP archive %q: %w", archivePath, err)
 	}
 	defer func() {
-		_ = reader.Close()
+		if closeErr := reader.Close(); closeErr != nil {
+			closeErr = fmt.Errorf("failed to close ZIP archive %q: %w", archivePath, closeErr)
+			if err == nil {
+				err = closeErr
+			} else {
+				err = errors.Join(err, closeErr)
+			}
+		}
 	}()
 
 	regularFiles := 0
 	var totalExtracted int64
-	report := archiveExtractionReport{}
+	report = archiveExtractionReport{}
 	for _, entry := range reader.File {
 		targetPath, err := secureArchiveJoin(destinationDir, entry.Name)
 		if err != nil {
@@ -765,26 +795,41 @@ func extractZIPArchive(archivePath, destinationDir, libraryGlob string) (archive
 		// #nosec G304 -- targetPath is constrained by secureArchiveJoin to stay under destinationDir.
 		outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, filePerm)
 		if err != nil {
-			_ = rc.Close()
-			return archiveExtractionReport{}, fmt.Errorf("failed to create extracted file %q: %w", targetPath, err)
+			createErr := fmt.Errorf("failed to create extracted file %q: %w", targetPath, err)
+			if closeErr := rc.Close(); closeErr != nil {
+				return archiveExtractionReport{}, errors.Join(createErr, fmt.Errorf("failed to close ZIP entry %q: %w", entry.Name, closeErr))
+			}
+			return archiveExtractionReport{}, createErr
 		}
 
 		if entry.UncompressedSize64 > math.MaxInt64 {
-			_ = outFile.Close()
-			_ = rc.Close()
-			return archiveExtractionReport{}, fmt.Errorf("ZIP entry %q size exceeds supported range", entry.Name)
+			sizeErr := fmt.Errorf("ZIP entry %q size exceeds supported range", entry.Name)
+			if closeErr := outFile.Close(); closeErr != nil {
+				sizeErr = errors.Join(sizeErr, fmt.Errorf("failed to close extracted file %q: %w", targetPath, closeErr))
+			}
+			if closeErr := rc.Close(); closeErr != nil {
+				sizeErr = errors.Join(sizeErr, fmt.Errorf("failed to close ZIP entry %q: %w", entry.Name, closeErr))
+			}
+			return archiveExtractionReport{}, sizeErr
 		}
 		// #nosec G115 -- upper-bound checked against math.MaxInt64 immediately above.
 		entrySize := int64(entry.UncompressedSize64)
-		if err := copyExtractedFile(outFile, rc, entrySize, &totalExtracted, targetPath); err != nil {
-			_ = outFile.Close()
-			_ = rc.Close()
-			return archiveExtractionReport{}, err
+		if copyErr := copyExtractedFile(outFile, rc, entrySize, &totalExtracted, targetPath); copyErr != nil {
+			if closeErr := outFile.Close(); closeErr != nil {
+				copyErr = errors.Join(copyErr, fmt.Errorf("failed to close extracted file %q: %w", targetPath, closeErr))
+			}
+			if closeErr := rc.Close(); closeErr != nil {
+				copyErr = errors.Join(copyErr, fmt.Errorf("failed to close ZIP entry %q: %w", entry.Name, closeErr))
+			}
+			return archiveExtractionReport{}, copyErr
 		}
 
 		if err := outFile.Close(); err != nil {
-			_ = rc.Close()
-			return archiveExtractionReport{}, fmt.Errorf("failed to close extracted file %q: %w", targetPath, err)
+			closeErr := fmt.Errorf("failed to close extracted file %q: %w", targetPath, err)
+			if rcCloseErr := rc.Close(); rcCloseErr != nil {
+				closeErr = errors.Join(closeErr, fmt.Errorf("failed to close ZIP entry %q: %w", entry.Name, rcCloseErr))
+			}
+			return archiveExtractionReport{}, closeErr
 		}
 		if err := rc.Close(); err != nil {
 			return archiveExtractionReport{}, fmt.Errorf("failed to close ZIP entry %q: %w", entry.Name, err)

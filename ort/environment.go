@@ -1,6 +1,7 @@
 package ort
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -70,7 +71,7 @@ func releaseStatus(status uintptr) {
 }
 
 // InitializeEnvironment initializes the ONNX Runtime environment
-func InitializeEnvironment() error {
+func InitializeEnvironment() (err error) {
 	ortCallMu.Lock()
 	defer ortCallMu.Unlock()
 
@@ -91,7 +92,14 @@ func InitializeEnvironment() error {
 	defer func() {
 		if cleanupNeeded {
 			if ortLib != 0 {
-				_ = closeLibrary(ortLib)
+				if closeErr := closeLibrary(ortLib); closeErr != nil {
+					closeErr = fmt.Errorf("failed to close ONNX Runtime library during initialization cleanup: %w", closeErr)
+					if err == nil {
+						err = closeErr
+					} else {
+						err = errors.Join(err, closeErr)
+					}
+				}
 				ortLib = 0
 			}
 			ortAPI = nil
@@ -110,7 +118,6 @@ func InitializeEnvironment() error {
 		}
 	}()
 
-	var err error
 	ortLib, err = loadLibrary(libPath)
 	if err != nil {
 		return fmt.Errorf("failed to load ONNX Runtime library: %w", err)

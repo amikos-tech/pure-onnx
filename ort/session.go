@@ -3,7 +3,6 @@ package ort
 import (
 	"errors"
 	"fmt"
-	"log"
 	"reflect"
 	"runtime"
 	"sync"
@@ -116,7 +115,7 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 
 	runtime.SetFinalizer(session, func(s *AdvancedSession) {
 		if err := s.Destroy(); err != nil {
-			log.Printf("WARNING: session finalizer destroy failed: %v", err)
+			logFinalizerWarning("WARNING: session finalizer destroy failed: %v", err)
 		}
 	})
 
@@ -255,7 +254,7 @@ func (s *AdvancedSession) Destroy() error {
 	if handle != 0 && releaseSession != nil {
 		releaseSession(handle)
 	} else if handle != 0 {
-		return fmt.Errorf("cannot destroy session: ONNX Runtime release function unavailable (environment may already be destroyed)")
+		return fmt.Errorf("cannot destroy session: ONNX Runtime release function unavailable (environment may already be destroyed); ensure all tensors and sessions are destroyed before calling DestroyEnvironment()")
 	}
 
 	return nil

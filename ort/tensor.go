@@ -2,7 +2,6 @@ package ort
 
 import (
 	"fmt"
-	"log"
 	"runtime"
 	"sync"
 	"unsafe"
@@ -132,7 +131,7 @@ func newTensorFromData[T any](shape Shape, data []T, elementType TensorElementDa
 	// Finalizer is a safety net to avoid leaking OrtValue if callers forget Destroy().
 	runtime.SetFinalizer(tensor, func(t *Tensor[T]) {
 		if err := t.Destroy(); err != nil {
-			log.Printf("WARNING: tensor finalizer destroy failed: %v", err)
+			logFinalizerWarning("WARNING: tensor finalizer destroy failed: %v", err)
 		}
 	})
 
@@ -202,7 +201,7 @@ func (t *Tensor[T]) Destroy() error {
 		if pinner != nil {
 			pinner.Unpin()
 		}
-		return fmt.Errorf("cannot destroy tensor: ONNX Runtime release function unavailable (environment may already be destroyed)")
+		return fmt.Errorf("cannot destroy tensor: ONNX Runtime release function unavailable (environment may already be destroyed); ensure all tensors and sessions are destroyed before calling DestroyEnvironment()")
 	}
 	if pinner != nil {
 		pinner.Unpin()
