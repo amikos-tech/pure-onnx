@@ -50,6 +50,23 @@ var (
 	releaseSessionFunc                 func(uintptr)
 )
 
+func clearORTGlobalsLocked() {
+	ortAPI = nil
+	ortEnv = 0
+	getVersionStringFunc = nil
+	getErrorMessageFunc = nil
+	releaseStatusFunc = nil
+	createMemoryInfoFunc = nil
+	releaseMemoryInfoFunc = nil
+	createTensorWithDataAsOrtValueFunc = nil
+	releaseValueFunc = nil
+	createSessionOptionsFunc = nil
+	releaseSessionOptionsFunc = nil
+	createSessionFunc = nil
+	runSessionFunc = nil
+	releaseSessionFunc = nil
+}
+
 // getErrorMessage extracts the error message from an ORT status code.
 // Returns empty string if status is 0 (success) or if the function is not initialized.
 func getErrorMessage(status uintptr) string {
@@ -102,19 +119,7 @@ func InitializeEnvironment() (err error) {
 				}
 				ortLib = 0
 			}
-			ortAPI = nil
-			getVersionStringFunc = nil
-			getErrorMessageFunc = nil
-			releaseStatusFunc = nil
-			createMemoryInfoFunc = nil
-			releaseMemoryInfoFunc = nil
-			createTensorWithDataAsOrtValueFunc = nil
-			releaseValueFunc = nil
-			createSessionOptionsFunc = nil
-			releaseSessionOptionsFunc = nil
-			createSessionFunc = nil
-			runSessionFunc = nil
-			releaseSessionFunc = nil
+			clearORTGlobalsLocked()
 		}
 	}()
 
@@ -217,28 +222,19 @@ func DestroyEnvironment() error {
 		ortEnv = 0
 	}
 
+	var closeErr error
 	if ortLib != 0 {
 		if err := closeLibrary(ortLib); err != nil {
-			return fmt.Errorf("failed to close ONNX Runtime library: %w", err)
+			closeErr = fmt.Errorf("failed to close ONNX Runtime library: %w", err)
 		}
+		// Clear the handle even when close fails to avoid reusing stale symbols.
 		ortLib = 0
 	}
 
-	ortAPI = nil
-	getVersionStringFunc = nil
-	getErrorMessageFunc = nil
-	releaseStatusFunc = nil
-	createMemoryInfoFunc = nil
-	releaseMemoryInfoFunc = nil
-	createTensorWithDataAsOrtValueFunc = nil
-	releaseValueFunc = nil
-	createSessionOptionsFunc = nil
-	releaseSessionOptionsFunc = nil
-	createSessionFunc = nil
-	runSessionFunc = nil
-	releaseSessionFunc = nil
-
-	return nil
+	// Always clear function pointers/state after environment destruction. If
+	// closeLibrary fails, stale pointers must still be removed.
+	clearORTGlobalsLocked()
+	return closeErr
 }
 
 // IsInitialized returns true if the environment is initialized
@@ -280,19 +276,20 @@ func SetLogLevel(level LoggingLevel) error {
 // Returns "0.0.0-dev" if the environment is not initialized.
 //
 // Thread-safety: This function is safe to call concurrently from multiple goroutines.
-// It uses a mutex to protect access to the version string function pointer, ensuring
-// that the pointer remains valid throughout the call even if another goroutine calls
-// DestroyEnvironment() concurrently. The mutex guarantees that either:
-// 1. GetVersionString() completes before DestroyEnvironment() starts, or
-// 2. DestroyEnvironment() completes before GetVersionString() starts
+// It acquires ortCallMu.RLock to prevent concurrent environment teardown, snapshots
+// the function pointer under mu, then calls it after releasing mu.
 func GetVersionString() string {
-	mu.Lock()
-	defer mu.Unlock()
+	ortCallMu.RLock()
+	defer ortCallMu.RUnlock()
 
+	mu.Lock()
 	if refCount == 0 || getVersionStringFunc == nil {
+		mu.Unlock()
 		return "0.0.0-dev"
 	}
+	versionStringFunc := getVersionStringFunc
+	mu.Unlock()
 
-	versionPtr := getVersionStringFunc()
+	versionPtr := versionStringFunc()
 	return CstringToGo(versionPtr)
 }

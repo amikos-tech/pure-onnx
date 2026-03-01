@@ -422,6 +422,7 @@ func TestAdvancedSessionRunNil(t *testing.T) {
 
 func TestAdvancedSessionRunDestroyed(t *testing.T) {
 	resetEnvironmentState()
+	defer resetEnvironmentState()
 
 	mu.Lock()
 	ortAPI = &OrtApi{}
@@ -443,11 +444,11 @@ func TestAdvancedSessionRunDestroyed(t *testing.T) {
 		t.Fatalf("expected destroyed session error, got: %v", err)
 	}
 
-	resetEnvironmentState()
 }
 
 func TestAdvancedSessionDestroy(t *testing.T) {
 	resetEnvironmentState()
+	defer resetEnvironmentState()
 
 	releasedCount := 0
 	releasedHandle := uintptr(0)
@@ -489,11 +490,11 @@ func TestAdvancedSessionDestroy(t *testing.T) {
 		t.Fatalf("expected second destroy to not release again, got %d releases", releasedCount)
 	}
 
-	resetEnvironmentState()
 }
 
 func TestAdvancedSessionDestroyReleaseUnavailable(t *testing.T) {
 	resetEnvironmentState()
+	defer resetEnvironmentState()
 
 	session := &AdvancedSession{
 		handle:       123,
@@ -941,6 +942,7 @@ func TestTensorDestroyDoesNotBlockUnrelatedRun(t *testing.T) {
 
 func TestAdvancedSessionRunDestroyedInputValue(t *testing.T) {
 	resetEnvironmentState()
+	defer resetEnvironmentState()
 
 	runCalled := false
 	mu.Lock()
@@ -967,11 +969,11 @@ func TestAdvancedSessionRunDestroyedInputValue(t *testing.T) {
 		t.Fatalf("expected runSessionFunc not to be called when input value is destroyed")
 	}
 
-	resetEnvironmentState()
 }
 
 func TestAdvancedSessionRunDestroyedInputTensor(t *testing.T) {
 	resetEnvironmentState()
+	defer resetEnvironmentState()
 
 	runCalled := false
 	mu.Lock()
@@ -998,7 +1000,6 @@ func TestAdvancedSessionRunDestroyedInputTensor(t *testing.T) {
 		t.Fatalf("expected runSessionFunc not to be called when input tensor is destroyed")
 	}
 
-	resetEnvironmentState()
 }
 
 func TestMakeCStringPointerArrayEmpty(t *testing.T) {

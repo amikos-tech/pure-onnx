@@ -104,6 +104,26 @@ jobs:
           name: codecov-umbrella
           fail_ci_if_error: false
 
+  test-race-ort-concurrency:
+    name: Test Race (ORT concurrency subset)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Setup Go
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
+        with:
+          go-version: ${{ env.GO_VERSION_STABLE }}
+          cache: true
+
+      - name: Get dependencies
+        run: go mod download
+
+      - name: Run race detector on ORT concurrency tests
+        run: |
+          go test -race ./ort -run 'TestValuesToHandlesDeduplicatesRepeatedLockableValue|TestValuesToHandlesReleasesPriorLeasesOnError|TestAdvancedSessionRunConcurrent|TestAdvancedSessionRunConcurrentAcrossSessionsSharingTensor|TestAdvancedSessionRunAndDestroyConcurrent|TestTensorDestroyWaitsForInFlightRun|TestTensorDestroyDoesNotBlockUnrelatedRun|TestTensorDestroyConcurrentCallsReleaseOnce'
+
   integration-real-model:
     name: Integration (ONNX Runtime + all-MiniLM + SPLADE)
     runs-on: ubuntu-latest

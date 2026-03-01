@@ -559,9 +559,8 @@ func downloadRuntimeArchive(cfg bootstrapConfig, url string) (archivePath string
 	archivePath = tmpPath
 	success := false
 	defer func() {
-		closeErr := tmpFile.Close()
-		if err == nil && closeErr != nil {
-			err = closeErr
+		if closeErr := tmpFile.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("failed to close temporary archive file %q: %w", tmpPath, closeErr))
 		}
 		if !success {
 			if removeErr := os.Remove(tmpPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
