@@ -204,20 +204,6 @@ func withBootstrapBaseURL(baseURL string) BootstrapOption {
 	}
 }
 
-func withBootstrapReleaseMetadataURL(baseURL string) BootstrapOption {
-	return func(cfg *bootstrapConfig) error {
-		baseURL = strings.TrimSpace(baseURL)
-		if baseURL == "" {
-			return fmt.Errorf("bootstrap release metadata URL cannot be empty")
-		}
-		if err := validateBootstrapBaseURL(baseURL); err != nil {
-			return err
-		}
-		cfg.releaseMetadataURL = baseURL
-		return nil
-	}
-}
-
 func withBootstrapHTTPClient(client *http.Client) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
 		if client == nil {
