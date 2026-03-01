@@ -451,7 +451,10 @@ func newEmbeddingSession(modelPath string, inputNames []string, outputNames []st
 	}
 	attentionMaskTensor, err := ort.NewTensor[int64](shape, attentionMask)
 	if err != nil {
-		_ = inputIDsTensor.Destroy()
+		cleanupErr := ortutil.DestroyAll(inputIDsTensor)
+		if cleanupErr != nil {
+			return nil, errors.Join(fmt.Errorf("failed to create attention_mask tensor: %w", err), fmt.Errorf("failed to clean up session tensors: %w", cleanupErr))
+		}
 		return nil, fmt.Errorf("failed to create attention_mask tensor: %w", err)
 	}
 
@@ -461,8 +464,10 @@ func newEmbeddingSession(modelPath string, inputNames []string, outputNames []st
 		tokenTypeIDs = make([]int64, totalTokens)
 		tokenTypeIDsTensor, err = ort.NewTensor[int64](shape, tokenTypeIDs)
 		if err != nil {
-			_ = attentionMaskTensor.Destroy()
-			_ = inputIDsTensor.Destroy()
+			cleanupErr := ortutil.DestroyAll(attentionMaskTensor, inputIDsTensor)
+			if cleanupErr != nil {
+				return nil, errors.Join(fmt.Errorf("failed to create token_type_ids tensor: %w", err), fmt.Errorf("failed to clean up session tensors: %w", cleanupErr))
+			}
 			return nil, fmt.Errorf("failed to create token_type_ids tensor: %w", err)
 		}
 	}

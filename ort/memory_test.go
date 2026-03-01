@@ -184,6 +184,31 @@ func TestMemoryInfoDoubleDestroy(t *testing.T) {
 	}
 }
 
+func TestMemoryInfoDestroyReleaseUnavailable(t *testing.T) {
+	resetEnvironmentState()
+	defer resetEnvironmentState()
+
+	memInfo := &MemoryInfo{
+		handle:   123,
+		name:     "Cpu",
+		memType:  MemTypeCPU,
+		deviceID: 0,
+	}
+
+	err := memInfo.Destroy()
+	if err == nil || !strings.Contains(err.Error(), "release function unavailable") {
+		t.Fatalf("expected release-unavailable destroy error, got: %v", err)
+	}
+	if memInfo.handle != 0 {
+		t.Fatalf("expected handle to be reset even on release failure")
+	}
+
+	// Second destroy remains a safe no-op once handle has been cleared.
+	if err := memInfo.Destroy(); err != nil {
+		t.Fatalf("second destroy should be no-op, got: %v", err)
+	}
+}
+
 func TestMemoryInfoFinalizer(t *testing.T) {
 	cleanup := setupTestEnvironment(t)
 	defer cleanup()

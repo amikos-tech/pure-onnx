@@ -20,10 +20,11 @@ const (
 
 var (
 	// Lock hierarchy across ORT lifecycle and calls:
-	// 1) object-level locks (for example AdvancedSession.runMu)
+	// 1) AdvancedSession.runMu (session-local serialization)
 	// 2) ortCallMu (RLock for regular ORT calls; Lock for environment init/destroy
 	//    and selected object releases that must not overlap in-flight ORT use)
 	// 3) mu (global runtime pointers/function snapshots)
+	// 4) Tensor.runMu (value-local run lease lock; only acquired while ortCallMu is held)
 	//
 	// Keep this order to avoid deadlocks.
 	mu                                 sync.Mutex

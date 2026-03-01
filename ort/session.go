@@ -269,6 +269,7 @@ type valueWithORTHandle interface {
 
 // valueRunLockable values can provide a stable handle lease for the whole Run() call.
 // This lets Destroy() wait only on sessions currently using that specific value.
+// Implementations must be comparable so repeated values can be deduplicated safely.
 type valueRunLockable interface {
 	lockForRun() (uintptr, error)
 	unlockForRun()
@@ -307,8 +308,9 @@ func validateSessionValue(v Value, role string, index int) error {
 }
 
 func valuesToHandles(values []Value, role string) ([]uintptr, func(), error) {
+	noOpRelease := func() {}
 	if len(values) == 0 {
-		return nil, func() {}, nil
+		return nil, noOpRelease, nil
 	}
 	handles := make([]uintptr, len(values))
 	unlockFns := make([]func(), 0, len(values))
@@ -321,39 +323,43 @@ func valuesToHandles(values []Value, role string) ([]uintptr, func(), error) {
 
 	for i, v := range values {
 		if lockable, ok := v.(valueRunLockable); ok {
+			key, keyOk := comparableIdentityKey(lockable)
+			if !keyOk {
+				release()
+				return nil, noOpRelease, fmt.Errorf("%s value at index %d is invalid: lockable value type %T must be comparable", role, i, v)
+			}
+
 			// Lease each comparable lockable only once per Run(). This avoids a deadlock
 			// when the same value is bound multiple times and Destroy() queues on the
 			// writer side of that value's RWMutex.
-			if key, ok := comparableIdentityKey(lockable); ok {
-				if leasedIndex, exists := leasedLockables[key]; exists {
-					handles[i] = handles[leasedIndex]
-					continue
-				}
+			if leasedIndex, exists := leasedLockables[key]; exists {
+				handles[i] = handles[leasedIndex]
+				continue
 			}
 
 			handle, err := lockable.lockForRun()
 			if err != nil {
 				release()
 				if errors.Is(err, errValueDestroyed) {
-					return nil, nil, fmt.Errorf("%s value at index %d has been destroyed", role, i)
+					return nil, noOpRelease, fmt.Errorf("%s value at index %d has been destroyed", role, i)
 				}
-				return nil, nil, fmt.Errorf("%s value at index %d is invalid: %w", role, i, err)
+				return nil, noOpRelease, fmt.Errorf("%s value at index %d is invalid: %w", role, i, err)
 			}
 			handles[i] = handle
 			unlockFns = append(unlockFns, lockable.unlockForRun)
-			if key, ok := comparableIdentityKey(lockable); ok {
-				leasedLockables[key] = i
-			}
+			leasedLockables[key] = i
 			continue
 		}
 
+		// Non-lockable values are a compatibility fallback for package-local test doubles.
+		// Production Value implementations should provide valueRunLockable leases.
 		handle, err := valueHandle(v)
 		if err != nil {
 			release()
 			if errors.Is(err, errValueDestroyed) {
-				return nil, nil, fmt.Errorf("%s value at index %d has been destroyed", role, i)
+				return nil, noOpRelease, fmt.Errorf("%s value at index %d has been destroyed", role, i)
 			}
-			return nil, nil, fmt.Errorf("%s value at index %d is invalid: %w", role, i, err)
+			return nil, noOpRelease, fmt.Errorf("%s value at index %d is invalid: %w", role, i, err)
 		}
 
 		handles[i] = handle

@@ -16,6 +16,13 @@ type fakeValue struct {
 func (f *fakeValue) Destroy() error          { return nil }
 func (f *fakeValue) Type() ValueType         { return ValueTypeTensor }
 func (f *fakeValue) ortValueHandle() uintptr { return f.handle }
+func (f *fakeValue) lockForRun() (uintptr, error) {
+	if f.handle == 0 {
+		return 0, errValueDestroyed
+	}
+	return f.handle, nil
+}
+func (f *fakeValue) unlockForRun() {}
 
 type unsupportedValue struct{}
 
@@ -79,6 +86,22 @@ func (v *blockingLeaseValue) unlockForRun() {
 	v.runMu.RUnlock()
 }
 
+type nonComparableLeaseValue struct {
+	handle  uintptr
+	payload []int
+}
+
+func (v nonComparableLeaseValue) Destroy() error          { return nil }
+func (v nonComparableLeaseValue) Type() ValueType         { return ValueTypeTensor }
+func (v nonComparableLeaseValue) ortValueHandle() uintptr { return v.handle }
+func (v nonComparableLeaseValue) lockForRun() (uintptr, error) {
+	if v.handle == 0 {
+		return 0, errValueDestroyed
+	}
+	return v.handle, nil
+}
+func (v nonComparableLeaseValue) unlockForRun() {}
+
 func TestValuesToHandlesDeduplicatesRepeatedLockableValue(t *testing.T) {
 	value := newBlockingLeaseValue(42)
 
@@ -138,6 +161,48 @@ func TestValuesToHandlesDeduplicatesRepeatedLockableValue(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatalf("destroy did not complete after release()")
 	}
+}
+
+func TestValuesToHandlesReleasesPriorLeasesOnError(t *testing.T) {
+	value := newBlockingLeaseValue(42)
+	close(value.allowFirstLeaseReturn)
+
+	_, release, err := valuesToHandles([]Value{value, &fakeValue{handle: 0}}, "input")
+	if err == nil || !strings.Contains(err.Error(), "input value at index 1 has been destroyed") {
+		t.Fatalf("expected destroyed-value error at index 1, got: %v", err)
+	}
+	if release == nil {
+		t.Fatalf("expected non-nil release callback on error")
+	}
+	release()
+
+	destroyDone := make(chan struct{})
+	go func() {
+		_ = value.Destroy()
+		close(destroyDone)
+	}()
+
+	select {
+	case <-destroyDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("destroy should not block; prior leases should have been released on error")
+	}
+}
+
+func TestValuesToHandlesRejectsNonComparableLockable(t *testing.T) {
+	value := nonComparableLeaseValue{
+		handle:  7,
+		payload: []int{1, 2, 3},
+	}
+
+	_, release, err := valuesToHandles([]Value{value}, "input")
+	if err == nil || !strings.Contains(err.Error(), "must be comparable") {
+		t.Fatalf("expected non-comparable lockable error, got: %v", err)
+	}
+	if release == nil {
+		t.Fatalf("expected non-nil release callback on error")
+	}
+	release()
 }
 
 func TestNewAdvancedSessionValidation(t *testing.T) {
@@ -312,6 +377,7 @@ func TestNewAdvancedSessionWithProvidedSessionOptionsHandle(t *testing.T) {
 		}
 		return 0
 	}
+	releaseSessionFunc = func(handle uintptr) {}
 	mu.Unlock()
 
 	options := &SessionOptions{handle: 777}
@@ -327,7 +393,9 @@ func TestNewAdvancedSessionWithProvidedSessionOptionsHandle(t *testing.T) {
 		t.Fatalf("expected session creation to succeed with provided options handle, got: %v", err)
 	}
 	defer func() {
-		_ = session.Destroy()
+		if destroyErr := session.Destroy(); destroyErr != nil {
+			t.Errorf("session destroy failed: %v", destroyErr)
+		}
 	}()
 
 	if got := atomic.LoadInt32(&createSessionCalls); got != 1 {
@@ -513,6 +581,84 @@ func TestAdvancedSessionRunConcurrent(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&maxInFlight); got != 1 {
 		t.Fatalf("expected Run() calls to be serialized per session, max in-flight=%d", got)
+	}
+}
+
+func TestAdvancedSessionRunConcurrentAcrossSessionsSharingTensor(t *testing.T) {
+	resetEnvironmentState()
+	defer resetEnvironmentState()
+
+	var (
+		inFlight    int32
+		maxInFlight int32
+	)
+	enterRun := make(chan struct{}, 2)
+	allowRunReturn := make(chan struct{})
+
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	runSessionFunc = func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr {
+		current := atomic.AddInt32(&inFlight, 1)
+		for {
+			seen := atomic.LoadInt32(&maxInFlight)
+			if current <= seen {
+				break
+			}
+			if atomic.CompareAndSwapInt32(&maxInFlight, seen, current) {
+				break
+			}
+		}
+		enterRun <- struct{}{}
+		<-allowRunReturn
+		atomic.AddInt32(&inFlight, -1)
+		return 0
+	}
+	mu.Unlock()
+
+	sharedInputTensor := &Tensor[float32]{handle: 1}
+	firstSession := &AdvancedSession{
+		handle:       101,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{sharedInputTensor},
+		outputValues: []Value{&fakeValue{handle: 2}},
+	}
+	secondSession := &AdvancedSession{
+		handle:       102,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{sharedInputTensor},
+		outputValues: []Value{&fakeValue{handle: 3}},
+	}
+
+	firstRunErrCh := make(chan error, 1)
+	secondRunErrCh := make(chan error, 1)
+	go func() {
+		firstRunErrCh <- firstSession.Run()
+	}()
+	go func() {
+		secondRunErrCh <- secondSession.Run()
+	}()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-enterRun:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatalf("expected both sessions to reach runtime concurrently")
+		}
+	}
+
+	if got := atomic.LoadInt32(&maxInFlight); got < 2 {
+		t.Fatalf("expected shared-tensor runs across sessions to overlap, max in-flight=%d", got)
+	}
+
+	close(allowRunReturn)
+
+	if err := <-firstRunErrCh; err != nil {
+		t.Fatalf("first session run failed: %v", err)
+	}
+	if err := <-secondRunErrCh; err != nil {
+		t.Fatalf("second session run failed: %v", err)
 	}
 }
 
@@ -882,7 +1028,9 @@ func TestNewAdvancedSessionInvalidModelPath(t *testing.T) {
 		t.Fatalf("failed to create input tensor: %v", err)
 	}
 	defer func() {
-		_ = inputTensor.Destroy()
+		if destroyErr := inputTensor.Destroy(); destroyErr != nil {
+			t.Errorf("input tensor destroy failed: %v", destroyErr)
+		}
 	}()
 
 	outputTensor, err := NewEmptyTensor[float32](Shape{1})
@@ -890,7 +1038,9 @@ func TestNewAdvancedSessionInvalidModelPath(t *testing.T) {
 		t.Fatalf("failed to create output tensor: %v", err)
 	}
 	defer func() {
-		_ = outputTensor.Destroy()
+		if destroyErr := outputTensor.Destroy(); destroyErr != nil {
+			t.Errorf("output tensor destroy failed: %v", destroyErr)
+		}
 	}()
 
 	_, err = NewAdvancedSession(
@@ -946,7 +1096,9 @@ func TestAdvancedSessionRunWithRealModel(t *testing.T) {
 		t.Fatalf("failed to create input tensor: %v", err)
 	}
 	defer func() {
-		_ = inputTensor.Destroy()
+		if destroyErr := inputTensor.Destroy(); destroyErr != nil {
+			t.Errorf("input tensor destroy failed: %v", destroyErr)
+		}
 	}()
 
 	outputTensor, err := NewEmptyTensor[float32](outputShape)
@@ -954,7 +1106,9 @@ func TestAdvancedSessionRunWithRealModel(t *testing.T) {
 		t.Fatalf("failed to create output tensor: %v", err)
 	}
 	defer func() {
-		_ = outputTensor.Destroy()
+		if destroyErr := outputTensor.Destroy(); destroyErr != nil {
+			t.Errorf("output tensor destroy failed: %v", destroyErr)
+		}
 	}()
 
 	session, err := NewAdvancedSession(
@@ -969,7 +1123,9 @@ func TestAdvancedSessionRunWithRealModel(t *testing.T) {
 		t.Fatalf("failed to create session: %v", err)
 	}
 	defer func() {
-		_ = session.Destroy()
+		if destroyErr := session.Destroy(); destroyErr != nil {
+			t.Errorf("session destroy failed: %v", destroyErr)
+		}
 	}()
 
 	if err := session.Run(); err != nil {
