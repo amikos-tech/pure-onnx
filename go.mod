@@ -7,7 +7,7 @@ require github.com/ebitengine/purego v0.9.1
 require (
 	github.com/amikos-tech/pure-tokenizers v0.1.1
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/sys v0.40.0
+	golang.org/x/sys v0.41.0
 )
 
 require (
