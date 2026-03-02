@@ -34,7 +34,8 @@ const (
 	defaultBootstrapBaseURL            = "https://github.com/microsoft/onnxruntime/releases/download"
 	defaultBootstrapReleaseMetadataURL = "https://api.github.com/repos/microsoft/onnxruntime/releases/tags"
 	bootstrapGitHubAPIVersion          = "2022-11-28"
-	bootstrapDownloaderUserAgent       = "pure-onnx-bootstrap-downloader"
+	bootstrapDownloaderUserAgent       = "onnx-purego-bootstrap-downloader"
+	defaultBootstrapDownloadRetryCount = 3
 
 	secureDirectoryPermission = 0o750
 	secureLockFilePermission  = 0o600
@@ -46,6 +47,7 @@ const (
 )
 
 var errSharedLibraryNotFound = errors.New("ONNX Runtime shared library not found")
+var errBootstrapRedirectPolicy = errors.New("bootstrap redirect policy rejection")
 var bootstrapCacheFallbackWarnOnce sync.Once
 var bootstrapInitMu sync.Mutex
 
@@ -53,9 +55,9 @@ var (
 	bootstrapLockAcquireTimeout = 2 * time.Minute
 	bootstrapLockRetryInterval  = 200 * time.Millisecond
 	bootstrapLockLogInterval    = 5 * time.Second
-	bootstrapDownloadRetryCount = 3
 )
 
+// permanentBootstrapError marks errors that should abort retry loops immediately.
 type permanentBootstrapError struct {
 	cause error
 }
@@ -93,11 +95,11 @@ func isRetryableBootstrapHTTPStatus(statusCode int) bool {
 	return statusCode >= 500
 }
 
-func bootstrapRetryAttempts() int {
-	if bootstrapDownloadRetryCount < 1 {
+func bootstrapRetryAttempts(attempts int) int {
+	if attempts < 1 {
 		return 1
 	}
-	return bootstrapDownloadRetryCount
+	return attempts
 }
 
 // BootstrapOption configures EnsureOnnxRuntimeSharedLibrary.
@@ -113,6 +115,7 @@ type bootstrapConfig struct {
 	releaseMetadataURL string
 	httpClient         *http.Client
 	maxDownloadSize    int64
+	retryAttempts      int
 	goos               string
 	goarch             string
 }
@@ -176,6 +179,7 @@ func WithBootstrapDisableDownload(disable bool) BootstrapOption {
 }
 
 // WithBootstrapExpectedSHA256 enforces an expected SHA256 checksum for the downloaded archive.
+// For the official ONNX Runtime source, this value is cross-validated against release metadata.
 func WithBootstrapExpectedSHA256(checksum string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
 		checksum = strings.TrimSpace(strings.ToLower(checksum))
@@ -315,6 +319,7 @@ func resolveBootstrapConfig(opts ...BootstrapOption) (bootstrapConfig, error) {
 		releaseMetadataURL: defaultBootstrapReleaseMetadataURL,
 		httpClient:         newBootstrapHTTPClient(),
 		maxDownloadSize:    maxDownloadBytes,
+		retryAttempts:      defaultBootstrapDownloadRetryCount,
 		goos:               runtime.GOOS,
 		goarch:             runtime.GOARCH,
 	}
@@ -439,20 +444,24 @@ func newBootstrapHTTPClient() *http.Client {
 
 func rejectHTTPSDowngradeRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= 10 {
-		return fmt.Errorf("stopped after 10 redirects")
+		return fmt.Errorf("%w: stopped after 10 redirects", errBootstrapRedirectPolicy)
 	}
 	if len(via) == 0 {
 		return nil
 	}
 	prev := via[len(via)-1]
 	if prev.URL == nil || req.URL == nil {
-		return fmt.Errorf("redirect rejected: nil URL in redirect chain")
+		return fmt.Errorf("%w: nil URL in redirect chain", errBootstrapRedirectPolicy)
 	}
 	if strings.EqualFold(prev.URL.Scheme, "https") &&
 		strings.EqualFold(req.URL.Scheme, "http") {
-		return fmt.Errorf("redirect from HTTPS to HTTP is not allowed: %s -> %s", prev.URL.Redacted(), req.URL.Redacted())
+		return fmt.Errorf("%w: redirect from HTTPS to HTTP is not allowed: %s -> %s", errBootstrapRedirectPolicy, prev.URL.Redacted(), req.URL.Redacted())
 	}
 	return nil
+}
+
+func isBootstrapRedirectPolicyError(err error) bool {
+	return errors.Is(err, errBootstrapRedirectPolicy)
 }
 
 func resolveRuntimeArtifact(goos, goarch string) (runtimeArtifact, error) {
@@ -531,13 +540,6 @@ func downloadAndInstallRuntime(cfg bootstrapConfig, artifact runtimeArtifact, in
 	if err != nil {
 		return err
 	}
-	if expectedChecksum == "" {
-		log.Printf(
-			"WARNING: ONNX Runtime bootstrap proceeding without archive checksum verification for %q. "+
-				"Use WithBootstrapExpectedSHA256(...) when downloading from non-official mirrors.",
-			url,
-		)
-	}
 	archivePath, checksum, err := downloadRuntimeArchive(cfg, url)
 	if err != nil {
 		return err
@@ -550,6 +552,15 @@ func downloadAndInstallRuntime(cfg bootstrapConfig, artifact runtimeArtifact, in
 
 	if expectedChecksum != "" && checksum != expectedChecksum {
 		return fmt.Errorf("download checksum mismatch: expected %s, got %s", expectedChecksum, checksum)
+	}
+	if expectedChecksum == "" {
+		log.Printf(
+			"WARNING: ONNX Runtime bootstrap downloaded archive from %q without checksum verification; observed SHA256=%s. "+
+				"Pin this value with WithBootstrapExpectedSHA256(%q) when downloading from non-official mirrors.",
+			url,
+			checksum,
+			checksum,
+		)
 	}
 
 	stagingRoot := installDir + fmt.Sprintf(".staging-%d", time.Now().UnixNano())
@@ -674,7 +685,7 @@ func resolveRuntimeArchiveChecksumFromReleaseMetadata(cfg bootstrapConfig, artif
 	metadataURL := fmt.Sprintf("%s/v%s", metadataBaseURL, cfg.version)
 	archiveName := artifact.archiveFilename(cfg.version)
 
-	attempts := bootstrapRetryAttempts()
+	attempts := bootstrapRetryAttempts(cfg.retryAttempts)
 	attemptErrs := make([]error, 0, attempts)
 	for attempt := 1; attempt <= attempts; attempt++ {
 		checksum, err := fetchRuntimeArchiveChecksumFromReleaseMetadataURL(cfg, metadataURL, archiveName)
@@ -734,7 +745,11 @@ func fetchRuntimeArchiveChecksumFromReleaseMetadataURL(cfg bootstrapConfig, meta
 
 	resp, err := cfg.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch ONNX Runtime release metadata from %q: %w", metadataURL, err)
+		requestErr := fmt.Errorf("failed to fetch ONNX Runtime release metadata from %q: %w", metadataURL, err)
+		if isBootstrapRedirectPolicyError(err) {
+			return "", markPermanentBootstrapError(requestErr)
+		}
+		return "", requestErr
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
@@ -748,19 +763,22 @@ func fetchRuntimeArchiveChecksumFromReleaseMetadataURL(cfg bootstrapConfig, meta
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		snippet = []byte(strings.TrimSpace(string(snippet)))
-		tokenHint := ""
+		snippetBytes, snippetErr := io.ReadAll(io.LimitReader(resp.Body, 512))
+		snippet := strings.TrimSpace(string(snippetBytes))
+		envHint := ""
 		if usedGitHubToken && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
-			tokenHint = " (request used GITHUB_TOKEN/GH_TOKEN; verify token validity/scopes)"
+			envHint = " (request used GitHub settings from environment; verify setup and scopes)"
 		}
 		var statusErr error
-		if len(snippet) > 0 {
-			statusErr = fmt.Errorf("failed to fetch ONNX Runtime release metadata from %q: HTTP %d: %s%s", metadataURL, resp.StatusCode, string(snippet), tokenHint)
+		if snippet != "" {
+			statusErr = fmt.Errorf("failed to fetch ONNX Runtime release metadata from %q: HTTP %d: %s%s", metadataURL, resp.StatusCode, snippet, envHint)
 		} else {
-			statusErr = fmt.Errorf("failed to fetch ONNX Runtime release metadata from %q: HTTP %d%s", metadataURL, resp.StatusCode, tokenHint)
+			statusErr = fmt.Errorf("failed to fetch ONNX Runtime release metadata from %q: HTTP %d%s", metadataURL, resp.StatusCode, envHint)
 		}
-		if !isRetryableGitHubMetadataStatus(resp.StatusCode, resp.Header, string(snippet)) {
+		if snippetErr != nil {
+			statusErr = errors.Join(statusErr, fmt.Errorf("failed to read ONNX Runtime release metadata error response body snippet: %w", snippetErr))
+		}
+		if !isRetryableGitHubMetadataStatus(resp.StatusCode, resp.Header, snippet) {
 			return "", markPermanentBootstrapError(statusErr)
 		}
 		return "", statusErr
@@ -836,7 +854,7 @@ func resolveGitHubToken() string {
 }
 
 func downloadRuntimeArchive(cfg bootstrapConfig, url string) (archivePath string, checksum string, err error) {
-	attempts := bootstrapRetryAttempts()
+	attempts := bootstrapRetryAttempts(cfg.retryAttempts)
 	attemptErrs := make([]error, 0, attempts)
 	for attempt := 1; attempt <= attempts; attempt++ {
 		archivePath, checksum, err = downloadRuntimeArchiveOnce(cfg, url)
@@ -864,7 +882,11 @@ func downloadRuntimeArchiveOnce(cfg bootstrapConfig, url string) (archivePath st
 
 	resp, err := cfg.httpClient.Do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to download ONNX Runtime archive from %q: %w", url, err)
+		requestErr := fmt.Errorf("failed to download ONNX Runtime archive from %q: %w", url, err)
+		if isBootstrapRedirectPolicyError(err) {
+			return "", "", markPermanentBootstrapError(requestErr)
+		}
+		return "", "", requestErr
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
@@ -878,13 +900,16 @@ func downloadRuntimeArchiveOnce(cfg bootstrapConfig, url string) (archivePath st
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		snippet = []byte(strings.TrimSpace(string(snippet)))
+		snippetBytes, snippetErr := io.ReadAll(io.LimitReader(resp.Body, 512))
+		snippet := strings.TrimSpace(string(snippetBytes))
 		var statusErr error
-		if len(snippet) > 0 {
-			statusErr = fmt.Errorf("failed to download ONNX Runtime archive from %q: HTTP %d: %s", url, resp.StatusCode, string(snippet))
+		if snippet != "" {
+			statusErr = fmt.Errorf("failed to download ONNX Runtime archive from %q: HTTP %d: %s", url, resp.StatusCode, snippet)
 		} else {
 			statusErr = fmt.Errorf("failed to download ONNX Runtime archive from %q: HTTP %d", url, resp.StatusCode)
+		}
+		if snippetErr != nil {
+			statusErr = errors.Join(statusErr, fmt.Errorf("failed to read ONNX Runtime archive error response body snippet: %w", snippetErr))
 		}
 		if !isRetryableBootstrapHTTPStatus(resp.StatusCode) {
 			return "", "", markPermanentBootstrapError(statusErr)
@@ -893,12 +918,12 @@ func downloadRuntimeArchiveOnce(cfg bootstrapConfig, url string) (archivePath st
 	}
 
 	if err := os.MkdirAll(cfg.cacheDir, secureDirectoryPermission); err != nil {
-		return "", "", fmt.Errorf("failed to create cache directory %q: %w", cfg.cacheDir, err)
+		return "", "", markPermanentBootstrapError(fmt.Errorf("failed to create cache directory %q: %w", cfg.cacheDir, err))
 	}
 
 	tmpFile, err := os.CreateTemp(cfg.cacheDir, "onnxruntime-*.archive")
 	if err != nil {
-		return "", "", fmt.Errorf("failed to create temporary archive file: %w", err)
+		return "", "", markPermanentBootstrapError(fmt.Errorf("failed to create temporary archive file: %w", err))
 	}
 	tmpPath := tmpFile.Name()
 	archivePath = tmpPath

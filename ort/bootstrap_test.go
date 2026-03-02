@@ -417,9 +417,40 @@ func TestResolveRuntimeArchiveChecksumFromReleaseMetadata(t *testing.T) {
 	}
 }
 
-func TestResolveRuntimeArchiveChecksumFallsBackToPinnedChecksumWhenMetadataFails(t *testing.T) {
-	setBootstrapRetryCountForTest(t, 1)
+func TestResolveRuntimeArchiveChecksumFromReleaseMetadataMissingAsset(t *testing.T) {
+	artifact, err := resolveRuntimeArtifact("linux", "amd64")
+	if err != nil {
+		t.Fatalf("unexpected artifact resolution error: %v", err)
+	}
 
+	const version = "1.99.801"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v"+version {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"assets":[{"name":"some-other-asset.tgz","digest":"sha256:` + strings.Repeat("a", 64) + `"}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := bootstrapConfig{
+		version:            version,
+		releaseMetadataURL: server.URL,
+		httpClient:         server.Client(),
+		retryAttempts:      1,
+	}
+
+	_, err = resolveRuntimeArchiveChecksumFromReleaseMetadata(cfg, artifact)
+	if err == nil {
+		t.Fatalf("expected metadata missing-asset error")
+	}
+	if !strings.Contains(err.Error(), "does not contain asset") {
+		t.Fatalf("unexpected missing-asset error: %v", err)
+	}
+}
+
+func TestResolveRuntimeArchiveChecksumFallsBackToPinnedChecksumWhenMetadataFails(t *testing.T) {
 	artifact, err := resolveRuntimeArtifact("linux", "amd64")
 	if err != nil {
 		t.Fatalf("unexpected artifact resolution error: %v", err)
@@ -439,6 +470,7 @@ func TestResolveRuntimeArchiveChecksumFallsBackToPinnedChecksumWhenMetadataFails
 		releaseMetadataURL: server.URL,
 		expectedSHA256:     pinnedChecksum,
 		httpClient:         server.Client(),
+		retryAttempts:      1,
 	}
 
 	checksum, err := resolveRuntimeArchiveChecksum(cfg, artifact)
@@ -451,8 +483,6 @@ func TestResolveRuntimeArchiveChecksumFallsBackToPinnedChecksumWhenMetadataFails
 }
 
 func TestResolveRuntimeArchiveChecksumFailsWhenMetadataUnavailableAndNoPinnedChecksum(t *testing.T) {
-	setBootstrapRetryCountForTest(t, 1)
-
 	artifact, err := resolveRuntimeArtifact("linux", "amd64")
 	if err != nil {
 		t.Fatalf("unexpected artifact resolution error: %v", err)
@@ -470,6 +500,7 @@ func TestResolveRuntimeArchiveChecksumFailsWhenMetadataUnavailableAndNoPinnedChe
 		baseURL:            defaultBootstrapBaseURL,
 		releaseMetadataURL: server.URL,
 		httpClient:         server.Client(),
+		retryAttempts:      1,
 	}
 
 	_, err = resolveRuntimeArchiveChecksum(cfg, artifact)
@@ -555,6 +586,90 @@ func TestResolveRuntimeArchiveChecksumOfficialSourceHappyPath(t *testing.T) {
 	}
 }
 
+func TestResolveRuntimeArchiveChecksumNonOfficialMirrorSkipsMetadataLookup(t *testing.T) {
+	artifact, err := resolveRuntimeArtifact("linux", "amd64")
+	if err != nil {
+		t.Fatalf("unexpected artifact resolution error: %v", err)
+	}
+
+	pinnedChecksum := strings.Repeat("f", 64)
+	var metadataRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		metadataRequests.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"assets":[]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := bootstrapConfig{
+		version:            "1.99.12",
+		baseURL:            "https://mirror.example.com/onnxruntime/releases/download",
+		releaseMetadataURL: server.URL,
+		expectedSHA256:     pinnedChecksum,
+		httpClient:         server.Client(),
+	}
+
+	checksum, err := resolveRuntimeArchiveChecksum(cfg, artifact)
+	if err != nil {
+		t.Fatalf("unexpected mirror checksum resolution error: %v", err)
+	}
+	if checksum != pinnedChecksum {
+		t.Fatalf("unexpected checksum for mirror source: got %q, want %q", checksum, pinnedChecksum)
+	}
+	if got := metadataRequests.Load(); got != 0 {
+		t.Fatalf("expected no metadata requests for non-official mirror, got %d", got)
+	}
+}
+
+func TestShouldResolveChecksumFromReleaseMetadata(t *testing.T) {
+	tests := []struct {
+		name        string
+		baseURL     string
+		metadataURL string
+		want        bool
+	}{
+		{
+			name:        "official source with metadata",
+			baseURL:     defaultBootstrapBaseURL,
+			metadataURL: defaultBootstrapReleaseMetadataURL,
+			want:        true,
+		},
+		{
+			name:        "official source with trim and trailing slash",
+			baseURL:     " " + defaultBootstrapBaseURL + "/ ",
+			metadataURL: " " + defaultBootstrapReleaseMetadataURL + "/ ",
+			want:        true,
+		},
+		{
+			name:        "official source without metadata",
+			baseURL:     defaultBootstrapBaseURL,
+			metadataURL: "",
+			want:        false,
+		},
+		{
+			name:        "non-official source",
+			baseURL:     "https://mirror.example.com/onnxruntime/releases/download",
+			metadataURL: defaultBootstrapReleaseMetadataURL,
+			want:        false,
+		},
+		{
+			name:        "official source with whitespace metadata",
+			baseURL:     defaultBootstrapBaseURL,
+			metadataURL: "   ",
+			want:        false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := shouldResolveChecksumFromReleaseMetadata(tc.baseURL, tc.metadataURL)
+			if got != tc.want {
+				t.Fatalf("unexpected shouldResolveChecksumFromReleaseMetadata result: got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNewBootstrapHTTPClientPreservesProxyFromEnvironment(t *testing.T) {
 	t.Setenv("HTTPS_PROXY", "http://proxy.example:8080")
 	t.Setenv("NO_PROXY", "")
@@ -581,6 +696,30 @@ func TestNewBootstrapHTTPClientPreservesProxyFromEnvironment(t *testing.T) {
 	}
 	if got, want := proxyURL.Host, "proxy.example:8080"; got != want {
 		t.Fatalf("unexpected proxy host: got %q, want %q", got, want)
+	}
+}
+
+func TestIsRetryableBootstrapHTTPStatus(t *testing.T) {
+	tests := []struct {
+		statusCode int
+		want       bool
+	}{
+		{statusCode: http.StatusRequestTimeout, want: true},
+		{statusCode: http.StatusTooManyRequests, want: true},
+		{statusCode: http.StatusInternalServerError, want: true},
+		{statusCode: http.StatusServiceUnavailable, want: true},
+		{statusCode: http.StatusBadRequest, want: false},
+		{statusCode: http.StatusUnauthorized, want: false},
+		{statusCode: http.StatusForbidden, want: false},
+		{statusCode: http.StatusNotFound, want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(fmt.Sprintf("status-%d", tc.statusCode), func(t *testing.T) {
+			if got := isRetryableBootstrapHTTPStatus(tc.statusCode); got != tc.want {
+				t.Fatalf("unexpected retryable status decision for %d: got %v, want %v", tc.statusCode, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -668,6 +807,65 @@ func TestLooksLikeSHA256(t *testing.T) {
 	}
 }
 
+func TestResolveGitHubToken(t *testing.T) {
+	t.Run("GITHUB_TOKEN preferred", func(t *testing.T) {
+		t.Setenv("GITHUB_TOKEN", "preferred-token")
+		t.Setenv("GH_TOKEN", "fallback-token")
+
+		if got := resolveGitHubToken(); got != "preferred-token" {
+			t.Fatalf("expected GITHUB_TOKEN to be preferred, got %q", got)
+		}
+	})
+
+	t.Run("fallback to GH_TOKEN", func(t *testing.T) {
+		t.Setenv("GITHUB_TOKEN", " ")
+		t.Setenv("GH_TOKEN", "gh-token")
+
+		if got := resolveGitHubToken(); got != "gh-token" {
+			t.Fatalf("expected GH_TOKEN fallback, got %q", got)
+		}
+	})
+
+	t.Run("empty when neither set", func(t *testing.T) {
+		t.Setenv("GITHUB_TOKEN", "")
+		t.Setenv("GH_TOKEN", "")
+
+		if got := resolveGitHubToken(); got != "" {
+			t.Fatalf("expected empty token when env vars are unset, got %q", got)
+		}
+	})
+}
+
+func TestMetadataStatusErrorTokenHintAvoidsCredentialLikeLiteralStrings(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	t.Setenv("GH_TOKEN", "")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("unauthorized"))
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := bootstrapConfig{
+		httpClient: server.Client(),
+	}
+
+	_, err := fetchRuntimeArchiveChecksumFromReleaseMetadataURL(cfg, server.URL+"/v1.2.3", "archive.tgz")
+	if err == nil {
+		t.Fatalf("expected metadata auth error")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "GitHub settings from environment") {
+		t.Fatalf("expected environment credentials hint in error, got: %v", err)
+	}
+	if strings.Contains(message, "GITHUB_TOKEN") || strings.Contains(message, "GH_TOKEN") {
+		t.Fatalf("error message should not contain credential-like literal env var names, got: %v", err)
+	}
+	if !strings.Contains(message, "HTTP 401") {
+		t.Fatalf("expected HTTP status code in error, got: %v", err)
+	}
+}
+
 func TestRejectHTTPSDowngradeRedirect(t *testing.T) {
 	prevURL, err := url.Parse("https://example.com/a")
 	if err != nil {
@@ -684,6 +882,9 @@ func TestRejectHTTPSDowngradeRedirect(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatalf("expected redirect downgrade rejection")
+	}
+	if !isBootstrapRedirectPolicyError(err) {
+		t.Fatalf("expected redirect downgrade error to be tagged as redirect policy error, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "not allowed") {
 		t.Fatalf("unexpected redirect validation error: %v", err)
@@ -718,6 +919,8 @@ func TestRejectHTTPSDowngradeRedirectRejectsNilURL(t *testing.T) {
 		[]*http.Request{{URL: prevURL}},
 	); err == nil {
 		t.Fatalf("expected nil URL rejection when request URL is nil")
+	} else if !isBootstrapRedirectPolicyError(err) {
+		t.Fatalf("expected nil-URL redirect rejection to be tagged as redirect policy error, got: %v", err)
 	}
 
 	nextURL, err := url.Parse("https://example.com/b")
@@ -729,6 +932,8 @@ func TestRejectHTTPSDowngradeRedirectRejectsNilURL(t *testing.T) {
 		[]*http.Request{{}},
 	); err == nil {
 		t.Fatalf("expected nil URL rejection when previous redirect URL is nil")
+	} else if !isBootstrapRedirectPolicyError(err) {
+		t.Fatalf("expected nil-URL redirect rejection to be tagged as redirect policy error, got: %v", err)
 	}
 }
 
@@ -750,6 +955,9 @@ func TestRejectHTTPSDowngradeRedirectLimit(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected redirect limit rejection")
 	}
+	if !isBootstrapRedirectPolicyError(err) {
+		t.Fatalf("expected redirect limit error to be tagged as redirect policy error, got: %v", err)
+	}
 	if !strings.Contains(err.Error(), "stopped after 10 redirects") {
 		t.Fatalf("unexpected redirect limit error: %v", err)
 	}
@@ -765,8 +973,9 @@ func TestDownloadRuntimeArchiveCleansTempFileOnError(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	cfg := bootstrapConfig{
-		cacheDir:   cacheDir,
-		httpClient: server.Client(),
+		cacheDir:      cacheDir,
+		httpClient:    server.Client(),
+		retryAttempts: 1,
 	}
 
 	_, _, err := downloadRuntimeArchive(cfg, server.URL+"/archive")
@@ -797,6 +1006,7 @@ func TestDownloadRuntimeArchiveHTTPStatusError(t *testing.T) {
 		cacheDir:        cacheDir,
 		httpClient:      server.Client(),
 		maxDownloadSize: 1024,
+		retryAttempts:   1,
 	}
 
 	_, _, err := downloadRuntimeArchive(cfg, server.URL+"/archive")
@@ -805,6 +1015,124 @@ func TestDownloadRuntimeArchiveHTTPStatusError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "HTTP 503") {
 		t.Fatalf("expected HTTP status in error, got: %v", err)
+	}
+}
+
+func TestDownloadRuntimeArchiveRetriesTransientThenSucceeds(t *testing.T) {
+	clearBootstrapEnv(t)
+
+	cacheDir := t.TempDir()
+	payload := []byte("onnxruntime-archive")
+	wantSum := sha256.Sum256(payload)
+	wantChecksum := hex.EncodeToString(wantSum[:])
+	var hits atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := hits.Add(1)
+		if current == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("service unavailable"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := bootstrapConfig{
+		cacheDir:        cacheDir,
+		httpClient:      server.Client(),
+		maxDownloadSize: 1024,
+		retryAttempts:   3,
+	}
+
+	archivePath, checksum, err := downloadRuntimeArchive(cfg, server.URL+"/archive")
+	if err != nil {
+		t.Fatalf("expected retry then success, got error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(archivePath)
+	})
+	if checksum != wantChecksum {
+		t.Fatalf("unexpected checksum after retry success: got %q, want %q", checksum, wantChecksum)
+	}
+	if got := hits.Load(); got != 2 {
+		t.Fatalf("expected exactly two attempts (one retry), got %d", got)
+	}
+}
+
+func TestDownloadRuntimeArchivePermanent404StopsImmediately(t *testing.T) {
+	clearBootstrapEnv(t)
+
+	cacheDir := t.TempDir()
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("not found"))
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := bootstrapConfig{
+		cacheDir:        cacheDir,
+		httpClient:      server.Client(),
+		maxDownloadSize: 1024,
+		retryAttempts:   3,
+	}
+
+	_, _, err := downloadRuntimeArchive(cfg, server.URL+"/archive")
+	if err == nil {
+		t.Fatalf("expected permanent HTTP 404 error")
+	}
+	if !strings.Contains(err.Error(), "HTTP 404") {
+		t.Fatalf("expected HTTP 404 in error, got: %v", err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("expected a single attempt for permanent 404, got %d", got)
+	}
+}
+
+func TestDownloadRuntimeArchiveRedirectPolicyStopsImmediately(t *testing.T) {
+	clearBootstrapEnv(t)
+
+	cacheDir := t.TempDir()
+	var httpsHits atomic.Int32
+	var httpHits atomic.Int32
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("archive"))
+	}))
+	t.Cleanup(httpServer.Close)
+
+	httpsServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpsHits.Add(1)
+		http.Redirect(w, r, httpServer.URL+"/archive", http.StatusFound)
+	}))
+	t.Cleanup(httpsServer.Close)
+
+	client := httpsServer.Client()
+	client.CheckRedirect = rejectHTTPSDowngradeRedirect
+
+	cfg := bootstrapConfig{
+		cacheDir:      cacheDir,
+		httpClient:    client,
+		retryAttempts: 3,
+	}
+
+	_, _, err := downloadRuntimeArchive(cfg, httpsServer.URL+"/archive")
+	if err == nil {
+		t.Fatalf("expected redirect policy rejection")
+	}
+	if !strings.Contains(err.Error(), "HTTPS to HTTP is not allowed") {
+		t.Fatalf("unexpected redirect policy error: %v", err)
+	}
+	if got := httpsHits.Load(); got != 1 {
+		t.Fatalf("expected single HTTPS attempt for permanent redirect-policy failure, got %d", got)
+	}
+	if got := httpHits.Load(); got != 0 {
+		t.Fatalf("expected no HTTP downgrade request to be issued, got %d", got)
 	}
 }
 
@@ -1452,15 +1780,6 @@ func clearBootstrapEnv(t *testing.T) {
 	t.Setenv("ONNXRUNTIME_CACHE_DIR", "")
 	t.Setenv("ONNXRUNTIME_VERSION", "")
 	t.Setenv("ONNXRUNTIME_DISABLE_DOWNLOAD", "")
-}
-
-func setBootstrapRetryCountForTest(t *testing.T, attempts int) {
-	t.Helper()
-	previous := bootstrapDownloadRetryCount
-	bootstrapDownloadRetryCount = attempts
-	t.Cleanup(func() {
-		bootstrapDownloadRetryCount = previous
-	})
 }
 
 func newArchiveServer(t *testing.T, artifact runtimeArtifact, version string, archive []byte) (*httptest.Server, *atomic.Int32) {
