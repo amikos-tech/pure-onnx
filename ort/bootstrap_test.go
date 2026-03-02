@@ -594,9 +594,21 @@ func TestIsRetryableGitHubMetadataStatusForbiddenRateLimited(t *testing.T) {
 }
 
 func TestIsRetryableGitHubMetadataStatusForbiddenNonRateLimit(t *testing.T) {
-	if isRetryableGitHubMetadataStatus(http.StatusForbidden, nil, "forbidden") {
-		t.Fatalf("expected non-rate-limited forbidden metadata response to be non-retryable")
-	}
+	t.Run("no headers", func(t *testing.T) {
+		if isRetryableGitHubMetadataStatus(http.StatusForbidden, nil, "forbidden") {
+			t.Fatalf("expected non-rate-limited forbidden metadata response to be non-retryable")
+		}
+	})
+
+	t.Run("with non-exhausted rate-limit headers", func(t *testing.T) {
+		headers := make(http.Header)
+		headers.Set("X-RateLimit-Remaining", "42")
+		headers.Set("X-RateLimit-Reset", fmt.Sprintf("%d", time.Now().Add(time.Minute).Unix()))
+
+		if isRetryableGitHubMetadataStatus(http.StatusForbidden, headers, "forbidden") {
+			t.Fatalf("expected forbidden metadata response with remaining rate limit to be non-retryable")
+		}
+	})
 }
 
 func TestParseSHA256Digest(t *testing.T) {

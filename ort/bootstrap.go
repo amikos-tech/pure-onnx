@@ -706,9 +706,6 @@ func isRetryableGitHubMetadataStatus(statusCode int, headers http.Header, snippe
 		if strings.TrimSpace(headers.Get("X-RateLimit-Remaining")) == "0" {
 			return true
 		}
-		if strings.TrimSpace(headers.Get("X-RateLimit-Reset")) != "" {
-			return true
-		}
 	}
 
 	lowerSnippet := strings.ToLower(strings.TrimSpace(snippet))
