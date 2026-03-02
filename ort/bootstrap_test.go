@@ -555,6 +555,50 @@ func TestResolveRuntimeArchiveChecksumOfficialSourceHappyPath(t *testing.T) {
 	}
 }
 
+func TestNewBootstrapHTTPClientPreservesProxyFromEnvironment(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "http://proxy.example:8080")
+	t.Setenv("NO_PROXY", "")
+
+	client := newBootstrapHTTPClient()
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		t.Fatalf("expected *http.Transport, got %T", client.Transport)
+	}
+	if transport.Proxy == nil {
+		t.Fatalf("expected transport proxy function to be set")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "https://example.com/resource", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	proxyURL, err := transport.Proxy(req)
+	if err != nil {
+		t.Fatalf("unexpected proxy resolution error: %v", err)
+	}
+	if proxyURL == nil {
+		t.Fatalf("expected proxy URL from environment")
+	}
+	if got, want := proxyURL.Host, "proxy.example:8080"; got != want {
+		t.Fatalf("unexpected proxy host: got %q, want %q", got, want)
+	}
+}
+
+func TestIsRetryableGitHubMetadataStatusForbiddenRateLimited(t *testing.T) {
+	headers := make(http.Header)
+	headers.Set("X-RateLimit-Remaining", "0")
+
+	if !isRetryableGitHubMetadataStatus(http.StatusForbidden, headers, "API rate limit exceeded") {
+		t.Fatalf("expected forbidden rate-limited metadata response to be retryable")
+	}
+}
+
+func TestIsRetryableGitHubMetadataStatusForbiddenNonRateLimit(t *testing.T) {
+	if isRetryableGitHubMetadataStatus(http.StatusForbidden, nil, "forbidden") {
+		t.Fatalf("expected non-rate-limited forbidden metadata response to be non-retryable")
+	}
+}
+
 func TestParseSHA256Digest(t *testing.T) {
 	tests := []struct {
 		name    string

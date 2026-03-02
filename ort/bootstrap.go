@@ -408,16 +408,31 @@ func isLoopbackBootstrapHost(host string) bool {
 }
 
 func newBootstrapHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout: 2 * time.Minute,
-		Transport: &http.Transport{
+	var transport *http.Transport
+	if base, ok := http.DefaultTransport.(*http.Transport); ok && base != nil {
+		clone := base.Clone()
+		clone.Proxy = http.ProxyFromEnvironment
+		clone.DialContext = (&net.Dialer{
+			Timeout: 30 * time.Second,
+		}).DialContext
+		clone.TLSHandshakeTimeout = 10 * time.Second
+		clone.ResponseHeaderTimeout = 30 * time.Second
+		clone.IdleConnTimeout = 90 * time.Second
+		transport = clone
+	} else {
+		transport = &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
 				Timeout: 30 * time.Second,
 			}).DialContext,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ResponseHeaderTimeout: 30 * time.Second,
 			IdleConnTimeout:       90 * time.Second,
-		},
+		}
+	}
+	return &http.Client{
+		Timeout:       2 * time.Minute,
+		Transport:     transport,
 		CheckRedirect: rejectHTTPSDowngradeRedirect,
 	}
 }
@@ -677,6 +692,35 @@ func resolveRuntimeArchiveChecksumFromReleaseMetadata(cfg bootstrapConfig, artif
 	return "", fmt.Errorf("failed to resolve ONNX Runtime checksum for %q from %q: %w", archiveName, metadataURL, errors.Join(attemptErrs...))
 }
 
+func isRetryableGitHubMetadataStatus(statusCode int, headers http.Header, snippet string) bool {
+	if isRetryableBootstrapHTTPStatus(statusCode) {
+		return true
+	}
+	if statusCode != http.StatusForbidden {
+		return false
+	}
+	if headers != nil {
+		if strings.TrimSpace(headers.Get("Retry-After")) != "" {
+			return true
+		}
+		if strings.TrimSpace(headers.Get("X-RateLimit-Remaining")) == "0" {
+			return true
+		}
+		if strings.TrimSpace(headers.Get("X-RateLimit-Reset")) != "" {
+			return true
+		}
+	}
+
+	lowerSnippet := strings.ToLower(strings.TrimSpace(snippet))
+	if lowerSnippet == "" {
+		return false
+	}
+	if strings.Contains(lowerSnippet, "rate limit exceeded") || strings.Contains(lowerSnippet, "secondary rate limit") {
+		return true
+	}
+	return false
+}
+
 func fetchRuntimeArchiveChecksumFromReleaseMetadataURL(cfg bootstrapConfig, metadataURL, archiveName string) (checksum string, err error) {
 	req, err := http.NewRequest(http.MethodGet, metadataURL, nil)
 	if err != nil {
@@ -685,8 +729,10 @@ func fetchRuntimeArchiveChecksumFromReleaseMetadataURL(cfg bootstrapConfig, meta
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", bootstrapDownloaderUserAgent)
 	req.Header.Set("X-GitHub-Api-Version", bootstrapGitHubAPIVersion)
+	usedGitHubToken := false
 	if token := resolveGitHubToken(); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+		usedGitHubToken = true
 	}
 
 	resp, err := cfg.httpClient.Do(req)
@@ -707,13 +753,17 @@ func fetchRuntimeArchiveChecksumFromReleaseMetadataURL(cfg bootstrapConfig, meta
 	if resp.StatusCode != http.StatusOK {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		snippet = []byte(strings.TrimSpace(string(snippet)))
+		tokenHint := ""
+		if usedGitHubToken && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+			tokenHint = " (request used GITHUB_TOKEN/GH_TOKEN; verify token validity/scopes)"
+		}
 		var statusErr error
 		if len(snippet) > 0 {
-			statusErr = fmt.Errorf("failed to fetch ONNX Runtime release metadata from %q: HTTP %d: %s", metadataURL, resp.StatusCode, string(snippet))
+			statusErr = fmt.Errorf("failed to fetch ONNX Runtime release metadata from %q: HTTP %d: %s%s", metadataURL, resp.StatusCode, string(snippet), tokenHint)
 		} else {
-			statusErr = fmt.Errorf("failed to fetch ONNX Runtime release metadata from %q: HTTP %d", metadataURL, resp.StatusCode)
+			statusErr = fmt.Errorf("failed to fetch ONNX Runtime release metadata from %q: HTTP %d%s", metadataURL, resp.StatusCode, tokenHint)
 		}
-		if !isRetryableBootstrapHTTPStatus(resp.StatusCode) {
+		if !isRetryableGitHubMetadataStatus(resp.StatusCode, resp.Header, string(snippet)) {
 			return "", markPermanentBootstrapError(statusErr)
 		}
 		return "", statusErr
