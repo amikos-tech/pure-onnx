@@ -43,6 +43,9 @@ vendor/
 
 # Environment files
 .env
+.env.*
+!.env.example
+!.env.sample
 
 # OS specific files
 .DS_Store

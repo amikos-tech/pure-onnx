@@ -219,6 +219,51 @@ func main() {
 }
 ```
 
+### OpenCLIP ONNX Export Tooling (`tools/openclip_export_onnx.py`)
+
+To generate pinned OpenCLIP ONNX artifacts (split text + vision encoders):
+
+Detailed runbook: [`docs/openclip-export.md`](docs/openclip-export.md)
+
+```bash
+pip install torch transformers huggingface_hub numpy onnxruntime==1.23.1
+
+python3 ./tools/openclip_export_onnx.py \
+  --output-dir ./build/openclip-vit-b-32-laion2b-s34b-b79k-onnx
+```
+
+Defaults are pinned to:
+- model: `laion/CLIP-ViT-B-32-laion2B-s34B-b79K`
+- revision: `1a25a446712ba5ee05982a381eed697ef9b435cf`
+
+The export writes:
+- `text_model.onnx`
+- `vision_model.onnx`
+- `config.json`
+- `tokenizer.json`
+- `tokenizer_config.json`
+- `preprocessor_config.json`
+- `manifest.json` (SHA256 + export metadata)
+
+Optional copied files when available upstream:
+- `special_tokens_map.json`
+- `open_clip_config.json`
+- `vocab.json`
+- `merges.txt`
+- `README.md`
+
+If `onnxruntime` is unavailable in your Python env, add `--skip-verify`.
+
+Optional: upload generated artifacts directly to Hugging Face Hub:
+
+```bash
+export HF_TOKEN=<your_hf_token>
+
+python3 ./tools/openclip_export_onnx.py \
+  --output-dir ./build/openclip-vit-b-32-laion2b-s34b-b79k-onnx \
+  --push-to-hub-repo <your-org-or-user>/<repo-name>
+```
+
 ## Project Status
 
 This project is under active development. See our [GitHub Issues](https://github.com/amikos-tech/pure-onnx/issues) for the development roadmap.
