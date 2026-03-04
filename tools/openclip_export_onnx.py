@@ -32,7 +32,7 @@ import shutil
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import torch
@@ -213,6 +213,18 @@ def ensure_output_dir(path: Path, clean: bool) -> None:
         if path.exists() and not path.is_dir():
             raise RuntimeError(f"output path exists and is not a directory: {path}")
 
+        if path.exists() and not clean:
+            try:
+                has_entries = any(path.iterdir())
+            except OSError as exc:
+                raise RuntimeError(f"failed to inspect existing output directory {path}: {exc}") from exc
+            if has_entries:
+                raise RuntimeError(
+                    f"output directory already exists and is not empty: {path}. "
+                    "Use --clean-output-dir to overwrite an existing directory."
+                )
+            return
+
         if clean and path.exists():
             cleanup_target = path.with_name(
                 f"{path.name}.cleanup-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
@@ -287,7 +299,7 @@ def export_text_model(cfg: ExportConfig) -> dict[str, Any]:
     torch.onnx.export(
         wrapper,
         (dummy_input_ids, dummy_attention_mask),
-        output_path.as_posix(),
+        str(output_path),
         export_params=True,
         opset_version=cfg.opset,
         do_constant_folding=True,
@@ -333,7 +345,7 @@ def export_vision_model(cfg: ExportConfig) -> dict[str, Any]:
     torch.onnx.export(
         wrapper,
         (dummy_pixel_values,),
-        output_path.as_posix(),
+        str(output_path),
         export_params=True,
         opset_version=cfg.opset,
         do_constant_folding=True,
@@ -382,7 +394,7 @@ def verify_exports(cfg: ExportConfig, text_meta: dict[str, Any], vision_meta: di
         raise RuntimeError(f"ONNX Runtime failed to import: {message}") from exc
 
     text_path = cfg.output_dir / text_meta["file"]
-    text_session = ort.InferenceSession(text_path.as_posix(), providers=["CPUExecutionProvider"])
+    text_session = ort.InferenceSession(str(text_path), providers=["CPUExecutionProvider"])
     text_input_ids = np.zeros((2, int(text_meta["sequence_length"])), dtype=np.int64)
     text_attention = np.ones((2, int(text_meta["sequence_length"])), dtype=np.int64)
     text_outputs = text_session.run(
@@ -400,7 +412,7 @@ def verify_exports(cfg: ExportConfig, text_meta: dict[str, Any], vision_meta: di
         raise RuntimeError(f"Unexpected text output shape: got {text_shape}, want {expected_text_shape}")
 
     vision_path = cfg.output_dir / vision_meta["file"]
-    vision_session = ort.InferenceSession(vision_path.as_posix(), providers=["CPUExecutionProvider"])
+    vision_session = ort.InferenceSession(str(vision_path), providers=["CPUExecutionProvider"])
     vision_input = np.zeros(
         (2, int(vision_meta["num_channels"]), int(vision_meta["image_size"]), int(vision_meta["image_size"])),
         dtype=np.float32,
@@ -452,7 +464,7 @@ def push_to_hub(cfg: ExportConfig) -> None:
     api.upload_folder(
         repo_id=repo_id,
         repo_type="model",
-        folder_path=cfg.output_dir.as_posix(),
+        folder_path=str(cfg.output_dir),
         path_in_repo="",
         revision=cfg.push_to_hub_revision,
         commit_message=cfg.push_to_hub_commit_message,
@@ -504,16 +516,24 @@ def make_export_config(args: argparse.Namespace) -> ExportConfig:
     manifest_name = args.manifest_name.strip()
     if not manifest_name:
         raise ValueError("--manifest-name cannot be empty")
-    if "/" in manifest_name:
-        raise ValueError("--manifest-name must be a file name, not a path")
+    if manifest_name in {".", ".."}:
+        raise ValueError("--manifest-name must be a regular file name, not '.' or '..'")
+    for path_type in (PurePosixPath, PureWindowsPath):
+        parsed = path_type(manifest_name)
+        if parsed.name != manifest_name or len(parsed.parts) != 1:
+            raise ValueError("--manifest-name must be a file name, not a path")
 
     hf_token = resolve_hf_token(args.hf_token, args.hf_token_env)
     push_to_hub_repo = args.push_to_hub_repo.strip() or None
-    if push_to_hub_repo is not None and hf_token is None:
-        raise ValueError(
-            "--push-to-hub-repo requires a Hugging Face token. "
-            "Set --hf-token or set the environment variable from --hf-token-env."
-        )
+    if push_to_hub_repo is not None:
+        try:
+            HfApi(token=hf_token).whoami()
+        except Exception as exc:
+            raise ValueError(
+                "--push-to-hub-repo requires Hugging Face authentication. "
+                "Either pass a token via --hf-token/--hf-token-env or log in via "
+                "`huggingface-cli login` so cached credentials can be used."
+            ) from exc
     resolved_revision = resolve_model_revision(args.model_id, args.model_revision, hf_token)
 
     return ExportConfig(
