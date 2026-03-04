@@ -230,7 +230,13 @@ def ensure_output_dir(path: Path, clean: bool) -> None:
                 f"{path.name}.cleanup-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
             )
             path.rename(cleanup_target)
-            path.mkdir(parents=True, exist_ok=False)
+            try:
+                path.mkdir(parents=True, exist_ok=False)
+            except OSError as exc:
+                raise RuntimeError(
+                    f"failed to recreate output directory {path} after moving existing contents to {cleanup_target}: {exc}. "
+                    f"Previous contents are preserved under {cleanup_target}"
+                ) from exc
             try:
                 shutil.rmtree(cleanup_target)
             except OSError as exc:
@@ -296,21 +302,22 @@ def export_text_model(cfg: ExportConfig) -> dict[str, Any]:
     output_path = cfg.output_dir / "text_model.onnx"
 
     print(f"Exporting {output_path.name} (sequence_length={sequence_length}, projection_dim={projection_dim})...", file=sys.stderr)
-    torch.onnx.export(
-        wrapper,
-        (dummy_input_ids, dummy_attention_mask),
-        str(output_path),
-        export_params=True,
-        opset_version=cfg.opset,
-        do_constant_folding=True,
-        input_names=["input_ids", "attention_mask"],
-        output_names=["text_embeds"],
-        dynamic_axes={
-            "input_ids": {0: "batch_size", 1: "sequence_length"},
-            "attention_mask": {0: "batch_size", 1: "sequence_length"},
-            "text_embeds": {0: "batch_size"},
-        },
-    )
+    with torch.inference_mode():
+        torch.onnx.export(
+            wrapper,
+            (dummy_input_ids, dummy_attention_mask),
+            str(output_path),
+            export_params=True,
+            opset_version=cfg.opset,
+            do_constant_folding=True,
+            input_names=["input_ids", "attention_mask"],
+            output_names=["text_embeds"],
+            dynamic_axes={
+                "input_ids": {0: "batch_size", 1: "sequence_length"},
+                "attention_mask": {0: "batch_size", 1: "sequence_length"},
+                "text_embeds": {0: "batch_size"},
+            },
+        )
 
     return {
         "file": output_path.name,
@@ -330,7 +337,7 @@ def export_vision_model(cfg: ExportConfig) -> dict[str, Any]:
     )
     image_size = int(model.config.image_size)
     projection_dim = int(model.config.projection_dim)
-    num_channels = 3
+    num_channels = int(getattr(model.config, "num_channels", 3))
 
     wrapper = _VisionExportModule(model)
     wrapper.eval()
@@ -342,20 +349,21 @@ def export_vision_model(cfg: ExportConfig) -> dict[str, Any]:
         f"Exporting {output_path.name} (image_size={image_size}, projection_dim={projection_dim})...",
         file=sys.stderr,
     )
-    torch.onnx.export(
-        wrapper,
-        (dummy_pixel_values,),
-        str(output_path),
-        export_params=True,
-        opset_version=cfg.opset,
-        do_constant_folding=True,
-        input_names=["pixel_values"],
-        output_names=["image_embeds"],
-        dynamic_axes={
-            "pixel_values": {0: "batch_size"},
-            "image_embeds": {0: "batch_size"},
-        },
-    )
+    with torch.inference_mode():
+        torch.onnx.export(
+            wrapper,
+            (dummy_pixel_values,),
+            str(output_path),
+            export_params=True,
+            opset_version=cfg.opset,
+            do_constant_folding=True,
+            input_names=["pixel_values"],
+            output_names=["image_embeds"],
+            dynamic_axes={
+                "pixel_values": {0: "batch_size"},
+                "image_embeds": {0: "batch_size"},
+            },
+        )
 
     return {
         "file": output_path.name,
@@ -555,8 +563,8 @@ def make_export_config(args: argparse.Namespace) -> ExportConfig:
 def main() -> int:
     args = parse_args()
     try:
+        ensure_output_dir(args.output_dir, clean=args.clean_output_dir)
         cfg = make_export_config(args)
-        ensure_output_dir(cfg.output_dir, clean=args.clean_output_dir)
     except Exception as exc:
         print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2

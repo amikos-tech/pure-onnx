@@ -28,6 +28,8 @@ This corresponds to OpenCLIP:
 Use Python 3.10+ and install:
 
 ```bash
+pip install -r ./tools/requirements-openclip.txt
+# or:
 pip install torch transformers huggingface_hub numpy onnxruntime==1.23.1
 ```
 
@@ -36,6 +38,7 @@ Optional for private/gated models:
 
 Optional for publishing:
 - `HF_TOKEN` with write access to the target repo/user/org
+- or local cached auth via `huggingface-cli login`
 
 ## Export Locally
 
@@ -50,6 +53,16 @@ python3 ./tools/openclip_export_onnx.py \
 ```bash
 export HF_TOKEN=<hf_token_with_model_write>
 
+python3 ./tools/openclip_export_onnx.py \
+  --output-dir ./build/openclip-vit-b-32-laion2b-s34b-b79k-onnx \
+  --clean-output-dir \
+  --push-to-hub-repo <org-or-user>/<repo-name>
+```
+
+You can also omit `HF_TOKEN` if you have already authenticated locally:
+
+```bash
+huggingface-cli login
 python3 ./tools/openclip_export_onnx.py \
   --output-dir ./build/openclip-vit-b-32-laion2b-s34b-b79k-onnx \
   --clean-output-dir \
