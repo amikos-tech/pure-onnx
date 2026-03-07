@@ -104,6 +104,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("CLIPSimilarityLogits failed: %v", err)
 	}
+	if len(logits) == 0 {
+		log.Fatalf("CLIPSimilarityLogits returned an empty matrix for %d rows", len(rows))
+	}
+	if err := validateLogitsMatrix(logits, len(rows)); err != nil {
+		log.Fatalf("CLIPSimilarityLogits returned an unexpected shape: %v", err)
+	}
 
 	fmt.Printf("Loaded %d fixture cases from %s\n", len(rows), assetsDir)
 	fmt.Printf("Model assets:\n")
@@ -227,7 +233,7 @@ func decodeImageFile(path string) (image.Image, error) {
 
 	img, _, err := image.Decode(file)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode %q: %w", path, err)
 	}
 	return img, nil
 }
@@ -250,8 +256,9 @@ func printSimilarityRanking(rows []manifestRow, logits [][]float32, topK int) {
 			return scores[i].Score > scores[j].Score
 		})
 
-		if topK > len(scores) {
-			topK = len(scores)
+		k := topK
+		if k > len(scores) {
+			k = len(scores)
 		}
 
 		fmt.Printf("[%02d] image=%s dataset=%s split=%s index=%d file=%s\n",
@@ -262,7 +269,7 @@ func printSimilarityRanking(rows []manifestRow, logits [][]float32, topK int) {
 			caseRow.Index,
 			caseRow.File,
 		)
-		for rank := 0; rank < topK; rank++ {
+		for rank := 0; rank < k; rank++ {
 			match := scores[rank]
 			promptRow := rows[match.PromptIndex]
 			fmt.Printf("  %d. score=%8.4f prompt=%q (prompt_id=%s)\n", rank+1, match.Score, promptRow.Prompt, promptRow.ID)
@@ -271,13 +278,28 @@ func printSimilarityRanking(rows []manifestRow, logits [][]float32, topK int) {
 	}
 }
 
+func validateLogitsMatrix(logits [][]float32, expectedRows int) error {
+	if len(logits) != expectedRows {
+		return fmt.Errorf("row count mismatch: got %d, want %d", len(logits), expectedRows)
+	}
+	for i := range logits {
+		if len(logits[i]) != expectedRows {
+			return fmt.Errorf("row %d column count mismatch: got %d, want %d", i, len(logits[i]), expectedRows)
+		}
+	}
+	return nil
+}
+
 func initializeOrtEnvironment() error {
 	libPath := strings.TrimSpace(os.Getenv(onnxRuntimeLibPathEnv))
 	if libPath != "" {
 		if err := ort.SetSharedLibraryPath(libPath); err != nil {
-			return fmt.Errorf("failed to set explicit ONNX Runtime library path: %w", err)
+			return fmt.Errorf("failed to set explicit ONNX Runtime library path %q: %w", libPath, err)
 		}
-		return ort.InitializeEnvironment()
+		if err := ort.InitializeEnvironment(); err != nil {
+			return fmt.Errorf("failed to initialize ONNX Runtime with explicit path %q: %w", libPath, err)
+		}
+		return nil
 	}
 
 	bootstrappedPath, err := ort.EnsureOnnxRuntimeSharedLibrary()
@@ -287,7 +309,10 @@ func initializeOrtEnvironment() error {
 	log.Printf("%s not set; using bootstrapped library at %s", onnxRuntimeLibPathEnv, bootstrappedPath)
 
 	if err := ort.SetSharedLibraryPath(bootstrappedPath); err != nil {
-		return fmt.Errorf("failed to set bootstrapped ONNX Runtime library path: %w", err)
+		return fmt.Errorf("failed to set bootstrapped ONNX Runtime library path %q: %w", bootstrappedPath, err)
 	}
-	return ort.InitializeEnvironment()
+	if err := ort.InitializeEnvironment(); err != nil {
+		return fmt.Errorf("failed to initialize ONNX Runtime with bootstrapped path %q: %w", bootstrappedPath, err)
+	}
+	return nil
 }

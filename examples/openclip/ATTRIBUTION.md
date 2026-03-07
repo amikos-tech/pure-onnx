@@ -1,8 +1,9 @@
 # OpenCLIP Example Fixture Attribution
 
 This example bundles resized local derivative images for offline execution.
-All bundled images are 224x224 RGB PNG files generated from Hugging Face
-datasets.
+All bundled files are 224x224 PNG images generated from Hugging Face datasets.
+MNIST and Fashion-MNIST source images are grayscale and are converted to RGB
+during fixture generation.
 
 ## Source Datasets
 
@@ -16,7 +17,7 @@ datasets.
   - Split: `test`
   - Indexes used: `0-9`
   - License listed on dataset card: MIT
-- `AI-Lab-Makerere/beans` (loaded via alias `beans`)
+- `AI-Lab-Makerere/beans`
   - URL: <https://huggingface.co/datasets/AI-Lab-Makerere/beans>
   - Split: `test`
   - Indexes used: `0-9`

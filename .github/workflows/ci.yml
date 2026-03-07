@@ -41,6 +41,7 @@ jobs:
         run: |
           go vet -unsafeptr=false ./ort/...
           go vet -unsafeptr=false ./examples/basic/...
+          go vet -unsafeptr=false ./examples/openclip/...
           go vet ./embeddings/...
 
       - name: Run golangci-lint (PR new issues)
@@ -253,6 +254,7 @@ jobs:
       - name: Build examples
         run: |
           go build -v -o basic-example ./examples/basic
+          go build -v -o openclip-example ./examples/openclip
           go build -v -o experimental-example ./examples/experimental
 
   mod-tidy:

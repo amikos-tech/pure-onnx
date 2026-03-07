@@ -35,7 +35,7 @@ go run ./examples/openclip
 - `OPENCLIP_EXAMPLE_LIMIT`
   - optional
   - default: `30`
-  - limits how many manifest rows are loaded in order
+  - limits how many manifest rows are loaded (first `N` rows)
 
 ### ONNX Runtime / model bootstrap
 
