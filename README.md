@@ -292,6 +292,19 @@ Similarity helpers are also available:
 - `openclip.CosineSimilarity(a, b)`
 - `openclip.CLIPSimilarityLogits(imageEmbeddings, textEmbeddings, openclip.DefaultCLIPLogitScale)`
 
+Runnable OpenCLIP example:
+- `examples/openclip/main.go`
+- `examples/openclip/README.md`
+- `examples/openclip/ATTRIBUTION.md`
+
+Run it with:
+
+```bash
+go run ./examples/openclip
+```
+
+OpenCLIP test instructions and commands are documented in [`TESTING.md`](TESTING.md).
+
 ### OpenCLIP ONNX Export Tooling (`tools/openclip_export_onnx.py`)
 
 To generate pinned OpenCLIP ONNX artifacts (split text + vision encoders):

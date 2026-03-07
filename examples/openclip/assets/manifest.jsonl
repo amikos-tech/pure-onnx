@@ -1,0 +1,30 @@
+{"id":"mnist-001","file":"mnist-001.png","dataset":"ylecun/mnist","split":"test","index":0,"prompt":"a grayscale handwritten digit from MNIST"}
+{"id":"mnist-002","file":"mnist-002.png","dataset":"ylecun/mnist","split":"test","index":1,"prompt":"a scanned handwritten number"}
+{"id":"mnist-003","file":"mnist-003.png","dataset":"ylecun/mnist","split":"test","index":2,"prompt":"a black and white digit on a dark background"}
+{"id":"mnist-004","file":"mnist-004.png","dataset":"ylecun/mnist","split":"test","index":3,"prompt":"a centered handwritten numeral"}
+{"id":"mnist-005","file":"mnist-005.png","dataset":"ylecun/mnist","split":"test","index":4,"prompt":"an MNIST digit sample"}
+{"id":"mnist-006","file":"mnist-006.png","dataset":"ylecun/mnist","split":"test","index":5,"prompt":"a white handwritten number on black"}
+{"id":"mnist-007","file":"mnist-007.png","dataset":"ylecun/mnist","split":"test","index":6,"prompt":"a grayscale image of a single digit"}
+{"id":"mnist-008","file":"mnist-008.png","dataset":"ylecun/mnist","split":"test","index":7,"prompt":"a handwritten character representing a digit"}
+{"id":"mnist-009","file":"mnist-009.png","dataset":"ylecun/mnist","split":"test","index":8,"prompt":"a low-resolution handwritten digit image"}
+{"id":"mnist-010","file":"mnist-010.png","dataset":"ylecun/mnist","split":"test","index":9,"prompt":"a monochrome handwritten numeral photo"}
+{"id":"fashion-001","file":"fashion-001.png","dataset":"zalando-datasets/fashion_mnist","split":"test","index":0,"prompt":"a grayscale clothing item from Fashion-MNIST"}
+{"id":"fashion-002","file":"fashion-002.png","dataset":"zalando-datasets/fashion_mnist","split":"test","index":1,"prompt":"an apparel image in grayscale"}
+{"id":"fashion-003","file":"fashion-003.png","dataset":"zalando-datasets/fashion_mnist","split":"test","index":2,"prompt":"a clothing product photo in low resolution"}
+{"id":"fashion-004","file":"fashion-004.png","dataset":"zalando-datasets/fashion_mnist","split":"test","index":3,"prompt":"an item of clothing on a dark background"}
+{"id":"fashion-005","file":"fashion-005.png","dataset":"zalando-datasets/fashion_mnist","split":"test","index":4,"prompt":"a fashion catalog image in grayscale"}
+{"id":"fashion-006","file":"fashion-006.png","dataset":"zalando-datasets/fashion_mnist","split":"test","index":5,"prompt":"a simple garment silhouette"}
+{"id":"fashion-007","file":"fashion-007.png","dataset":"zalando-datasets/fashion_mnist","split":"test","index":6,"prompt":"an image of wearable clothing"}
+{"id":"fashion-008","file":"fashion-008.png","dataset":"zalando-datasets/fashion_mnist","split":"test","index":7,"prompt":"a monochrome apparel sample"}
+{"id":"fashion-009","file":"fashion-009.png","dataset":"zalando-datasets/fashion_mnist","split":"test","index":8,"prompt":"a low-resolution fashion article image"}
+{"id":"fashion-010","file":"fashion-010.png","dataset":"zalando-datasets/fashion_mnist","split":"test","index":9,"prompt":"a grayscale garment classification example"}
+{"id":"beans-001","file":"beans-001.png","dataset":"beans","split":"test","index":0,"prompt":"a close-up photo of a bean leaf"}
+{"id":"beans-002","file":"beans-002.png","dataset":"beans","split":"test","index":1,"prompt":"a field image of bean plant leaves"}
+{"id":"beans-003","file":"beans-003.png","dataset":"beans","split":"test","index":2,"prompt":"a bean leaf disease classification photo"}
+{"id":"beans-004","file":"beans-004.png","dataset":"beans","split":"test","index":3,"prompt":"an outdoor bean leaf image"}
+{"id":"beans-005","file":"beans-005.png","dataset":"beans","split":"test","index":4,"prompt":"a crop health image of a bean leaf"}
+{"id":"beans-006","file":"beans-006.png","dataset":"beans","split":"test","index":5,"prompt":"a bean leaf under natural lighting"}
+{"id":"beans-007","file":"beans-007.png","dataset":"beans","split":"test","index":6,"prompt":"a plant pathology image of bean foliage"}
+{"id":"beans-008","file":"beans-008.png","dataset":"beans","split":"test","index":7,"prompt":"a photographed bean leaf sample"}
+{"id":"beans-009","file":"beans-009.png","dataset":"beans","split":"test","index":8,"prompt":"a high-resolution bean crop leaf image"}
+{"id":"beans-010","file":"beans-010.png","dataset":"beans","split":"test","index":9,"prompt":"a bean leaf disease monitoring photo"}

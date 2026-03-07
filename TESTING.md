@@ -206,7 +206,9 @@ python3 ./tools/splade_generate_golden.py \
   --top-k 24
 ```
 
-Run OpenCLIP golden-dataset parity check (optional):
+### OpenCLIP Golden-Dataset Parity (Optional)
+
+Run OpenCLIP golden-dataset parity check:
 ```bash
 export ONNXRUNTIME_LIB_PATH=/path/to/onnxruntime/lib/libonnxruntime.so
 export HF_DATASET_REPO=tazarov/pure-onnx
