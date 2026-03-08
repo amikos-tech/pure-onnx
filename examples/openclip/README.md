@@ -18,10 +18,9 @@ text-image similarity ranking for bundled fixture images.
 
 ## Run
 
-From the repository root:
-
 ```bash
-go run ./examples/openclip
+cd examples/openclip
+go run .
 ```
 
 ## Environment Variables
@@ -30,7 +29,7 @@ go run ./examples/openclip
 
 - `OPENCLIP_EXAMPLE_ASSETS_DIR`
   - optional
-  - default: `./examples/openclip/assets`
+  - default: `./assets`
   - points to a directory containing `manifest.jsonl` and PNG files
 - `OPENCLIP_EXAMPLE_LIMIT`
   - optional

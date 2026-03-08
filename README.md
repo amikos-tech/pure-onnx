@@ -300,7 +300,8 @@ Runnable OpenCLIP example:
 Run it with:
 
 ```bash
-go run ./examples/openclip
+cd examples/openclip
+go run .
 ```
 
 OpenCLIP test instructions and commands are documented in [`TESTING.md`](TESTING.md).

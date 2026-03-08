@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	defaultAssetsDir      = "./examples/openclip/assets"
+	defaultAssetsDir      = "./assets"
 	defaultExampleLimit   = 30
 	defaultRankingTopK    = 3
 	manifestFileName      = "manifest.jsonl"
@@ -215,7 +215,7 @@ func validateManifestRow(row manifestRow) error {
 		return fmt.Errorf("file must not include directories, got %q", row.File)
 	}
 	if strings.Contains(row.File, "..") {
-		return fmt.Errorf("file contains path traversal")
+		return fmt.Errorf("file contains path traversal: %q", row.File)
 	}
 	if strings.TrimSpace(row.Dataset) == "" {
 		return fmt.Errorf("dataset is empty")
