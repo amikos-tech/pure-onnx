@@ -54,6 +54,14 @@ func TestParsePositiveIntEnv(t *testing.T) {
 			t.Fatal("expected error for zero")
 		}
 	})
+
+	t.Run("rejects negative", func(t *testing.T) {
+		t.Setenv(key, "-3")
+		_, err := parsePositiveIntEnv(key, 30)
+		if err == nil {
+			t.Fatal("expected error for negative value")
+		}
+	})
 }
 
 func TestValidateManifestRow(t *testing.T) {
@@ -75,6 +83,9 @@ func TestValidateManifestRow(t *testing.T) {
 		row  manifestRow
 	}{
 		{name: "empty id", row: manifestRow{File: "x.png", Dataset: "d", Split: "s", Prompt: "p"}},
+		{name: "empty file", row: manifestRow{ID: "x", Dataset: "d", Split: "s", Prompt: "p"}},
+		{name: "empty dataset", row: manifestRow{ID: "x", File: "x.png", Split: "s", Prompt: "p"}},
+		{name: "empty split", row: manifestRow{ID: "x", File: "x.png", Dataset: "d", Prompt: "p"}},
 		{name: "absolute path", row: manifestRow{ID: "x", File: "/tmp/x.png", Dataset: "d", Split: "s", Prompt: "p"}},
 		{name: "nested path", row: manifestRow{ID: "x", File: "nested/x.png", Dataset: "d", Split: "s", Prompt: "p"}},
 		{name: "traversal", row: manifestRow{ID: "x", File: "../x.png", Dataset: "d", Split: "s", Prompt: "p"}},
@@ -158,13 +169,15 @@ func TestLoadExamplesFromManifest(t *testing.T) {
 	})
 }
 
-func writeManifest(path string, rows []manifestRow) error {
+func writeManifest(path string, rows []manifestRow) (retErr error) {
 	file, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		_ = file.Close()
+		if closeErr := file.Close(); retErr == nil && closeErr != nil {
+			retErr = closeErr
+		}
 	}()
 
 	encoder := json.NewEncoder(file)
@@ -176,7 +189,7 @@ func writeManifest(path string, rows []manifestRow) error {
 	return nil
 }
 
-func writeTestPNG(path string) error {
+func writeTestPNG(path string) (retErr error) {
 	img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
 	for y := 0; y < 4; y++ {
 		for x := 0; x < 4; x++ {
@@ -189,7 +202,9 @@ func writeTestPNG(path string) error {
 		return err
 	}
 	defer func() {
-		_ = file.Close()
+		if closeErr := file.Close(); retErr == nil && closeErr != nil {
+			retErr = closeErr
+		}
 	}()
 
 	return png.Encode(file, img)
