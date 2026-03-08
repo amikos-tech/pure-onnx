@@ -43,6 +43,17 @@ type rankingScore struct {
 }
 
 func main() {
+	cleanupFailures := make([]error, 0, 2)
+	defer func() {
+		if len(cleanupFailures) == 0 {
+			return
+		}
+		for _, cleanupErr := range cleanupFailures {
+			log.Printf("cleanup failed: %v", cleanupErr)
+		}
+		os.Exit(1)
+	}()
+
 	assetsDir := strings.TrimSpace(os.Getenv(assetsDirEnvVar))
 	if assetsDir == "" {
 		assetsDir = defaultAssetsDir
@@ -66,7 +77,7 @@ func main() {
 	}
 	defer func() {
 		if destroyErr := ort.DestroyEnvironment(); destroyErr != nil {
-			log.Printf("failed to destroy ONNX Runtime environment: %v", destroyErr)
+			cleanupFailures = append(cleanupFailures, fmt.Errorf("failed to destroy ONNX Runtime environment: %w", destroyErr))
 		}
 	}()
 
@@ -86,7 +97,7 @@ func main() {
 	}
 	defer func() {
 		if closeErr := embedder.Close(); closeErr != nil {
-			log.Printf("failed to close OpenCLIP embedder: %v", closeErr)
+			cleanupFailures = append(cleanupFailures, fmt.Errorf("failed to close OpenCLIP embedder: %w", closeErr))
 		}
 	}()
 
@@ -137,22 +148,24 @@ func parsePositiveIntEnv(key string, fallback int) (int, error) {
 	return value, nil
 }
 
-func loadExamplesFromManifest(assetsDir string, limit int) ([]manifestRow, []image.Image, []string, error) {
+func loadExamplesFromManifest(assetsDir string, limit int) (rows []manifestRow, images []image.Image, texts []string, retErr error) {
 	manifestPath := filepath.Join(assetsDir, manifestFileName)
 	file, err := os.Open(manifestPath)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to open manifest %q: %w", manifestPath, err)
 	}
 	defer func() {
-		_ = file.Close()
+		if closeErr := file.Close(); retErr == nil && closeErr != nil {
+			retErr = fmt.Errorf("failed to close manifest %q: %w", manifestPath, closeErr)
+		}
 	}()
 
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
 
-	rows := make([]manifestRow, 0, limit)
-	images := make([]image.Image, 0, limit)
-	texts := make([]string, 0, limit)
+	rows = make([]manifestRow, 0, limit)
+	images = make([]image.Image, 0, limit)
+	texts = make([]string, 0, limit)
 
 	lineNumber := 0
 	for scanner.Scan() {
@@ -177,7 +190,7 @@ func loadExamplesFromManifest(assetsDir string, limit int) ([]manifestRow, []ima
 		imagePath := filepath.Join(assetsDir, row.File)
 		img, err := decodeImageFile(imagePath)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to decode image %q: %w", imagePath, err)
+			return nil, nil, nil, fmt.Errorf("failed to load image %q: %w", imagePath, err)
 		}
 
 		rows = append(rows, row)
@@ -222,13 +235,15 @@ func validateManifestRow(row manifestRow) error {
 	return nil
 }
 
-func decodeImageFile(path string) (image.Image, error) {
+func decodeImageFile(path string) (retImg image.Image, retErr error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open %q: %w", path, err)
 	}
 	defer func() {
-		_ = file.Close()
+		if closeErr := file.Close(); retErr == nil && closeErr != nil {
+			retErr = fmt.Errorf("close %q: %w", path, closeErr)
+		}
 	}()
 
 	img, _, err := image.Decode(file)
