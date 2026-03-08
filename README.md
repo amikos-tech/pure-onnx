@@ -380,7 +380,7 @@ The pre-commit hook runs:
 - `make gosec`
 - `go test ./...`
 - `make check-mod-tidy`
-- `make vulncheck` (with patched Go toolchain baseline `go1.24.13+auto`)
+- `make vulncheck` (with patched Go toolchain baseline `go1.25.8+auto`)
 
 Optional skip knobs:
 - `SKIP_LINT_NEW=1` (skip new-issues lint check)

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/jpeg"
@@ -43,17 +44,12 @@ type rankingScore struct {
 }
 
 func main() {
-	cleanupFailures := make([]error, 0, 2)
-	defer func() {
-		if len(cleanupFailures) == 0 {
-			return
-		}
-		for _, cleanupErr := range cleanupFailures {
-			log.Printf("cleanup failed: %v", cleanupErr)
-		}
-		os.Exit(1)
-	}()
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
 
+func run() (retErr error) {
 	assetsDir := strings.TrimSpace(os.Getenv(assetsDirEnvVar))
 	if assetsDir == "" {
 		assetsDir = defaultAssetsDir
@@ -61,29 +57,29 @@ func main() {
 
 	limit, err := parsePositiveIntEnv(exampleLimitEnvVar, defaultExampleLimit)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	rows, images, texts, err := loadExamplesFromManifest(assetsDir, limit)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if len(rows) == 0 {
-		log.Fatalf("no fixtures loaded from %s", filepath.Join(assetsDir, manifestFileName))
+		return fmt.Errorf("no fixtures loaded from %s", filepath.Join(assetsDir, manifestFileName))
 	}
 
 	if err := initializeOrtEnvironment(); err != nil {
-		log.Fatalf("failed to initialize ONNX Runtime: %v", err)
+		return fmt.Errorf("failed to initialize ONNX Runtime: %w", err)
 	}
 	defer func() {
 		if destroyErr := ort.DestroyEnvironment(); destroyErr != nil {
-			cleanupFailures = append(cleanupFailures, fmt.Errorf("failed to destroy ONNX Runtime environment: %w", destroyErr))
+			retErr = errors.Join(retErr, fmt.Errorf("failed to destroy ONNX Runtime environment: %w", destroyErr))
 		}
 	}()
 
 	modelAssets, err := openclip.EnsureDefaultAssets()
 	if err != nil {
-		log.Fatalf("failed to resolve default OpenCLIP model assets: %v", err)
+		return fmt.Errorf("failed to resolve default OpenCLIP model assets: %w", err)
 	}
 
 	embedder, err := openclip.NewEmbedder(
@@ -93,33 +89,33 @@ func main() {
 		modelAssets.PreprocessorConfigPath,
 	)
 	if err != nil {
-		log.Fatalf("failed to create OpenCLIP embedder: %v", err)
+		return fmt.Errorf("failed to create OpenCLIP embedder: %w", err)
 	}
 	defer func() {
 		if closeErr := embedder.Close(); closeErr != nil {
-			cleanupFailures = append(cleanupFailures, fmt.Errorf("failed to close OpenCLIP embedder: %w", closeErr))
+			retErr = errors.Join(retErr, fmt.Errorf("failed to close OpenCLIP embedder: %w", closeErr))
 		}
 	}()
 
 	textEmbeddings, err := embedder.EmbedTexts(texts)
 	if err != nil {
-		log.Fatalf("EmbedTexts failed: %v", err)
+		return fmt.Errorf("EmbedTexts failed: %w", err)
 	}
 
 	imageEmbeddings, err := embedder.EmbedImages(images)
 	if err != nil {
-		log.Fatalf("EmbedImages failed: %v", err)
+		return fmt.Errorf("EmbedImages failed: %w", err)
 	}
 
 	logits, err := openclip.CLIPSimilarityLogits(imageEmbeddings, textEmbeddings, openclip.DefaultCLIPLogitScale)
 	if err != nil {
-		log.Fatalf("CLIPSimilarityLogits failed: %v", err)
+		return fmt.Errorf("CLIPSimilarityLogits failed: %w", err)
 	}
 	if len(logits) == 0 {
-		log.Fatalf("CLIPSimilarityLogits returned an empty matrix for %d rows", len(rows))
+		return fmt.Errorf("CLIPSimilarityLogits returned an empty matrix for %d rows", len(rows))
 	}
 	if err := validateLogitsMatrix(logits, len(rows)); err != nil {
-		log.Fatalf("CLIPSimilarityLogits returned an unexpected shape: %v", err)
+		return fmt.Errorf("CLIPSimilarityLogits returned an unexpected shape: %w", err)
 	}
 
 	fmt.Printf("Loaded %d fixture cases from %s\n", len(rows), assetsDir)
@@ -131,6 +127,7 @@ func main() {
 	fmt.Println()
 
 	printSimilarityRanking(rows, logits, defaultRankingTopK)
+	return retErr
 }
 
 func parsePositiveIntEnv(key string, fallback int) (int, error) {
