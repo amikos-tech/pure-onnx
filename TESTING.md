@@ -249,11 +249,11 @@ tests remain self-contained after publishing to `tazarov/pure-onnx`.
 ### GitHub Actions
 
 The CI pipeline runs tests in multiple configurations:
-- **Unit Tests**: Run on all platforms (Linux, macOS, Windows) with Go 1.24.x
+- **Unit Tests**: Run on all platforms (Linux, macOS, Windows) with Go 1.25.x
 - **Integration Tests (matrix job)**: Skipped in the cross-platform matrix (no ONNX Runtime library preinstalled)
 - **Real-model Integration Job**: Linux job downloads ONNX Runtime, runs all-MiniLM integration + memory stability tests, runs SPLADE integration and hosted parity, runs OpenCLIP integration and hosted parity, and runs all-MiniLM benchmarks
 - **Race Detection**: Partially disabled due to checkptr incompatibility with purego FFI
-- **Vulnerability Check**: Runs `make vulncheck` with a patched Go baseline (`go1.25.8+auto`)
+- **Vulnerability Check**: Runs `make vulncheck` with a patched Go baseline (`go1.25.12+auto`)
 
 ### Local Pre-commit Checks
 
