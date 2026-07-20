@@ -10,7 +10,7 @@ permissions:
   id-token: write
 
 env:
-  GO_VERSION_STABLE: "1.24.x"
+  GO_VERSION_STABLE: "1.25.x"
   BUCKET: releases
 
 jobs:

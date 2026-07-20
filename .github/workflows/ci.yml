@@ -8,10 +8,10 @@ on:
   workflow_dispatch:
 
 env:
-  GO_VERSION_STABLE: '1.24.x'
+  GO_VERSION_STABLE: '1.25.x'
   # Keep vulncheck on a patched baseline to avoid stdlib CVE false-fails from older patch toolchains.
-  GO_VERSION_VULNCHECK: '1.25.8'
-  GO_VULNCHECK_TOOLCHAIN: 'go1.25.8+auto'
+  GO_VERSION_VULNCHECK: '1.25.12'
+  GO_VULNCHECK_TOOLCHAIN: 'go1.25.12+auto'
 
 jobs:
   lint:
@@ -69,7 +69,7 @@ jobs:
     name: Test
     strategy:
       matrix:
-        go-version: ['1.24.x']
+        go-version: ['1.25.x']
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -232,7 +232,7 @@ jobs:
     name: Build
     strategy:
       matrix:
-        go-version: ['1.24.x']
+        go-version: ['1.25.x']
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
