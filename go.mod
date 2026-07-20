@@ -2,7 +2,7 @@ module github.com/amikos-tech/pure-onnx
 
 go 1.24.0
 
-require github.com/ebitengine/purego v0.10.0
+require github.com/ebitengine/purego v0.10.1
 
 require (
 	github.com/amikos-tech/pure-tokenizers v0.1.5
