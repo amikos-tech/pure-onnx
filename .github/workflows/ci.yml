@@ -10,8 +10,8 @@ on:
 env:
   GO_VERSION_STABLE: '1.25.x'
   # Keep vulncheck on a patched baseline to avoid stdlib CVE false-fails from older patch toolchains.
-  GO_VERSION_VULNCHECK: '1.25.8'
-  GO_VULNCHECK_TOOLCHAIN: 'go1.25.8+auto'
+  GO_VERSION_VULNCHECK: '1.25.12'
+  GO_VULNCHECK_TOOLCHAIN: 'go1.25.12+auto'
 
 jobs:
   lint:
