@@ -3,8 +3,6 @@
 package ort
 
 import (
-	"unsafe"
-
 	"golang.org/x/sys/windows"
 )
 
@@ -17,11 +15,8 @@ func loadLibrary(path string) (uintptr, error) {
 }
 
 func getSymbol(handle uintptr, symbol string) (uintptr, error) {
-	proc, err := windows.GetProcAddress(windows.Handle(handle), symbol)
-	if err != nil {
-		return 0, err
-	}
-	return uintptr(unsafe.Pointer(proc)), nil
+	// GetProcAddress already returns a uintptr; no unsafe.Pointer round-trip needed.
+	return windows.GetProcAddress(windows.Handle(handle), symbol)
 }
 
 func closeLibrary(handle uintptr) error {
