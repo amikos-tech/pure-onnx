@@ -1,3 +1,19 @@
+---
+gsd_state_version: 1.0
+milestone: v0.1.0
+milestone_name: "**Goal**: v0.1.0 is cut as a tagged, documented release with CI green across all supported platforms and every milestone issue closed."
+status: planning
+stopped_at: Phase 1 context gathered
+last_updated: "2026-07-21T08:15:23.316Z"
+last_activity: 2026-07-21 — Roadmap created for v0.1.0 hardening milestone
+progress:
+  total_phases: 6
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
+---
+
 # Project State
 
 ## Project Reference
@@ -19,6 +35,7 @@ Progress: [░░░░░░░░░░] 0%
 ## Performance Metrics
 
 **Velocity:**
+
 - Total plans completed: 0
 - Average duration: —
 - Total execution time: 0 hours
@@ -30,6 +47,7 @@ Progress: [░░░░░░░░░░] 0%
 | - | - | - | - |
 
 **Recent Trend:**
+
 - Last 5 plans: —
 - Trend: —
 
@@ -66,6 +84,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-21
-Stopped at: Roadmap and initial state created; 12/12 requirements mapped across 6 phases
-Resume file: None
+Last session: 2026-07-21T08:15:23.309Z
+Stopped at: Phase 1 context gathered
+Resume file: .planning/phases/01-dx-test-hardening/01-CONTEXT.md
