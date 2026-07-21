@@ -379,10 +379,13 @@ if !errors.Is(err, ErrUnsupportedPlatform) {
 
 ## Open Questions
 
-1. **Should `Makefile`/CI default invocations be updated to pass `-short` as part of this phase's scope?**
+1. **(RESOLVED) Should `Makefile`/CI default invocations be updated to pass `-short` as part of this phase's scope?**
    - What we know: D-06 requires the stress tests to be "gated behind `testing.Short()`, so normal `go test ./...` / CI runs skip them by default." CONTEXT.md's D-08 enumerates the CI/TESTING.md changes explicitly but does not mention updating `Makefile`'s `test`/`precommit` targets or the existing CI unit-test steps to pass `-short`.
    - What's unclear: Whether this is an oversight in CONTEXT.md's scoping or an intentional decision that "skip by default" only needs to hold true for the new dedicated stress job's sibling jobs, tolerating the (currently negligible, ~0.1-0.5s) extra runtime in the main unit-test job.
    - Recommendation: Treat this as in-scope for TST-02 — add `-short` to `Makefile`'s `test:` and `precommit`'s `go test ./...` step, and to both CI unit-test steps in `ci.yml`. This is the only way D-06's literal wording ("skip them by default") is actually achieved; leaving it out makes the `testing.Short()` gate cosmetic. Flag for the planner to confirm with the user if there's a reason to leave default invocations unchanged.
+   - **Resolution:** Resolved explicitly in `01-03-PLAN.md`'s `<rationale>` block — `-short` is wired into `Makefile`'s `test`/`precommit` targets and both CI unit-test steps in `ci.yml`; `test-race`/`test-race-ort-concurrency` are left untouched since their curated regexes never match `TestStress*`.
+2. **(RESOLVED) Exact iteration/goroutine counts for the redesigned `TestStressMixedOperations` beyond `TestStressConcurrentInitDestroy`.**
+   - **Resolution:** Locked in `01-03-PLAN.md` Task 1 as concrete fixed-iteration parameters (100×1000, 200×500, 50×500) — avoids the wall-clock CI budget risk flagged above.
 
 2. **Exact parameters for the fixed-iteration `TestStressMixedOperations`**
    - What we know: Issue #24 proposes concurrent `InitializeEnvironment`/`DestroyEnvironment`/`IsInitialized`/`GetVersionString`/`SetSharedLibraryPath`/`SetLogLevel` calls, verifying "no panics or deadlocks" — CONTEXT.md's D-06 explicitly leaves "exact set and parameters" to Claude's discretion.
