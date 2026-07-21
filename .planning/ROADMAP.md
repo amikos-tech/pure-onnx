@@ -29,7 +29,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   1. Running the inference example when bootstrap fails exits non-zero with a message that names `GOOS`/`GOARCH` and instructs the user to set `ONNXRUNTIME_LIB_PATH` (change stays in the example, not `ort/`).
   2. Concurrency tests assert correctness via synchronization primitives (channels, `WaitGroup`, atomics) with no remaining sleep/timing-based assertions.
   3. Stress tests exercise many concurrent `InitializeEnvironment`/`DestroyEnvironment` cycles and pass under `go test -race`.
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — DX-01: exported ErrUnsupportedPlatform sentinel + inference example fail-fast hint
+- [ ] 01-02-PLAN.md — TST-01: convert the 3 named concurrency tests to deterministic event-order assertions
+- [ ] 01-03-PLAN.md — TST-02: stress tests for concurrent init/destroy, dedicated CI job, -short wiring, TESTING.md
 
 ### Phase 2: Core API — Errors & Values
 **Goal**: The `ort` core returns comprehensive wrapped errors and exposes a `Value` interface for polymorphic tensor handling.
