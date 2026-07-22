@@ -57,13 +57,13 @@ A pure-Go binding for Microsoft ONNX Runtime that loads and calls the ONNX Runti
 ## Technology Stack
 
 ## Languages
-- Go 1.24.0 - All library code, examples, and tests live under `ort/`, `embeddings/`, `examples/`, and `tools/gen_ortapi.go`.
+- Go 1.25.0 - All library code, examples, and tests live under `ort/`, `embeddings/`, `examples/`, and `tools/gen_ortapi.go`.
 - Python 3.10+ - Export and golden-data tooling in `tools/openclip_export_onnx.py`, `tools/openclip_generate_golden.py`, and `tools/splade_generate_golden.py`.
 - Shell/Make - Local automation and CI entry points in `Makefile`, `.githooks/pre-commit`, and `.github/workflows/*.yml`.
 - C headers (reference only) - ONNX Runtime API definitions in `internal/c_api/onnxruntime_c_api.h` and `internal/c_api/ort_apis.h`; these are not compiled directly.
 ## Runtime
-- Go 1.24.x for normal development and CI (`go.mod`, `.github/workflows/ci.yml`).
-- Patched Go 1.25.8+auto only for vulnerability scanning via `govulncheck` (`Makefile`, CI env `GO_VULNCHECK_TOOLCHAIN`).
+- Go 1.25.x for normal development and CI (`go.mod`, `.github/workflows/ci.yml`).
+- Patched Go 1.25.12+auto only for vulnerability scanning via `govulncheck` (`Makefile`, CI env `GO_VULNCHECK_TOOLCHAIN`).
 - Native ONNX Runtime shared libraries are loaded dynamically at runtime through `purego`, so consumers still need a platform-specific `.so`, `.dylib`, or `.dll`.
 - Go modules
 - Lockfile: `go.sum` present
@@ -90,7 +90,7 @@ A pure-Go binding for Microsoft ONNX Runtime that loads and calls the ONNX Runti
 - `.golangci.yml` - linter and formatter configuration.
 - `.github/workflows/ci.yml` and `.github/workflows/release.yml` - CI, integration, and release pipelines.
 ## Platform Requirements
-- macOS, Linux, or Windows with Go 1.24+.
+- macOS, Linux, or Windows with Go 1.25+.
 - Either an explicit ONNX Runtime shared library or network access for bootstrap download/caching.
 - Python is optional unless working on export or golden-dataset tooling in `tools/`.
 - Intended as an embeddable Go library plus example binaries built from `examples/basic` and `examples/inference`.
@@ -222,19 +222,6 @@ A pure-Go binding for Microsoft ONNX Runtime that loads and calls the ONNX Runti
 
 No project skills found. Add skills to any of: `.claude/skills/`, `.agents/skills/`, `.cursor/skills/`, `.github/skills/`, or `.codex/skills/` with a `SKILL.md` index file.
 <!-- GSD:skills-end -->
-
-<!-- GSD:workflow-start source:GSD defaults -->
-## GSD Workflow Enforcement
-
-Before using Edit, Write, or other file-changing tools, start work through a GSD command so planning artifacts and execution context stay in sync.
-
-Use these entry points:
-- `/gsd-quick` for small fixes, doc updates, and ad-hoc tasks
-- `/gsd-debug` for investigation and bug fixing
-- `/gsd-execute-phase` for planned phase work
-
-Do not make direct repo edits outside a GSD workflow unless the user explicitly asks to bypass it.
-<!-- GSD:workflow-end -->
 
 <!-- GSD:profile-start -->
 ## Developer Profile
