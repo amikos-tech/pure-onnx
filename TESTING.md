@@ -286,18 +286,31 @@ Optional environment flags:
 
 ### Running Stress Tests
 
-`ort/environment_stress_test.go` contains `testing.Short()`-gated stress tests
-(`TestStressConcurrentInitDestroy`, `TestStressRapidInitDestroy`,
-`TestStressMixedOperationsUnderLoad`) that drive many concurrent
-`InitializeEnvironment`/`DestroyEnvironment` cycles to guard against refcount
-corruption, deadlocks, and panics under load.
+`ort/environment_stress_test.go` contains `testing.Short()`-gated stress tests.
+They split into two kinds:
+
+- **Seeded fast-path accounting** (`TestStressConcurrentInitDestroy`,
+  `TestStressRapidInitDestroy`, `TestStressMixedOperationsUnderLoad`): each seeds
+  `refCount = 1` before spawning workers and points at a nonexistent library, so
+  every worker takes the increment/decrement fast path. These stress the
+  refcount/mutex accounting under load — not real library load/teardown.
+- **Real init/teardown transition** (`TestStressRealInitTeardownTransition`):
+  lets `refCount` cross `0<->1` against a real ONNX Runtime library, so
+  concurrent `dlopen`/`dlclose`, `CreateEnv`/`ReleaseEnv`, and purego symbol
+  registration are exercised under the race detector. It **skips** unless
+  `ONNXRUNTIME_LIB_PATH` is set.
+
+Together they guard against refcount corruption, deadlocks, and panics under load
+across both the fast-path accounting and the genuine library lifecycle.
 
 Which repository commands skip them, and which run them:
 
 - **Skipped by** `make test`, `make precommit`, and `make test-race` (all pass
   `-short`), and by CI's `test` job (which also passes `-short`).
 - **Run by** the dedicated CI `test-race-ort-stress` job (`-count=50`, 10-minute
-  timeout), and by any explicit local `-run TestStress` invocation.
+  timeout) for the seeded fast-path tests, by the CI `integration-real-model`
+  job under `-race` for `TestStressRealInitTeardownTransition` (which needs the
+  real library), and by any explicit local `-run TestStress` invocation.
 
 Note the precise Go behavior: `testing.Short()` is only true when `-short` is
 passed on that exact command line. This repository's Makefile targets and CI
