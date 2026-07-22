@@ -147,7 +147,7 @@ jobs:
 
       - name: Run race detector on ORT init/destroy stress tests
         run: |
-          go test -v -race -run=TestStress -count=50 -parallel=4 ./ort/...
+          go test -v -race -run='^(TestStressConcurrentInitDestroy|TestStressRapidInitDestroy|TestStressMixedOperationsUnderLoad)$' -count=50 -parallel=4 ./ort/...
 
   integration-real-model:
     name: Integration (ONNX Runtime + all-MiniLM + SPLADE + OpenCLIP)
