@@ -12,7 +12,7 @@ This is a brownfield hardening milestone for a mature pure-Go ONNX Runtime bindi
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: DX & Test Hardening** - Fail-fast example UX plus deterministic, race-clean concurrency tests
+- [x] **Phase 1: DX & Test Hardening** - Fail-fast example UX plus deterministic, race-clean concurrency tests (completed 2026-07-22)
 - [ ] **Phase 2: Core API — Errors & Values** - Wrapped errors across the surface and a polymorphic `Value` interface
 - [ ] **Phase 3: Generalized Embedder API** - Unified dense/sparse embedder API including SPLADE
 - [ ] **Phase 4: Documentation** - GoDoc, maturity status, lifetime semantics, and known limitations
@@ -32,9 +32,9 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 3 plans
 
 Plans:
-- [ ] 01-01-PLAN.md — DX-01: exported ErrUnsupportedPlatform sentinel + inference example fail-fast hint
-- [ ] 01-02-PLAN.md — TST-01: convert the 3 named concurrency tests to deterministic event-order assertions
-- [ ] 01-03-PLAN.md — TST-02: stress tests for concurrent init/destroy, dedicated CI job, -short wiring, TESTING.md
+- [x] 01-01-PLAN.md — DX-01: exported ErrUnsupportedPlatform sentinel + inference example fail-fast hint
+- [x] 01-02-PLAN.md — TST-01: convert the 3 named concurrency tests to deterministic event-order assertions
+- [x] 01-03-PLAN.md — TST-02: stress tests for concurrent init/destroy, dedicated CI job, -short wiring, TESTING.md
 
 ### Phase 2: Core API — Errors & Values
 **Goal**: The `ort` core returns comprehensive wrapped errors and exposes a `Value` interface for polymorphic tensor handling.
@@ -95,7 +95,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. DX & Test Hardening | 0/TBD | Not started | - |
+| 1. DX & Test Hardening | 3/3 | Complete   | 2026-07-22 |
 | 2. Core API — Errors & Values | 0/TBD | Not started | - |
 | 3. Generalized Embedder API | 0/TBD | Not started | - |
 | 4. Documentation | 0/TBD | Not started | - |

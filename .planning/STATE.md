@@ -4,8 +4,8 @@ milestone: v0.1.0
 milestone_name: "**Goal**: v0.1.0 is cut as a tagged, documented release with CI green across all supported platforms and every milestone issue closed."
 status: executing
 stopped_at: Phase 1 context gathered
-last_updated: "2026-07-21T10:58:44.927Z"
-last_activity: 2026-07-21 -- Phase 01 planning complete
+last_updated: "2026-07-22T07:32:40.493Z"
+last_activity: 2026-07-22 -- Phase 01 execution started
 progress:
   total_phases: 6
   completed_phases: 0
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-21)
 
 **Core value:** Run ONNX Runtime inference from Go with zero CGO — if that stops working, nothing else matters.
-**Current focus:** Phase 1 — DX & Test Hardening
+**Current focus:** Phase 01 — dx-test-hardening
 
 ## Current Position
 
-Phase: 1 of 6 (DX & Test Hardening)
-Plan: 0 of TBD in current phase
-Status: Ready to execute
-Last activity: 2026-07-21 -- Phase 01 planning complete
+Phase: 01 (dx-test-hardening) — EXECUTING
+Plan: 1 of 3
+Status: Executing Phase 01
+Last activity: 2026-07-22 -- Phase 01 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
