@@ -87,14 +87,16 @@ jobs:
 
       - name: Run tests (Unix)
         if: runner.os != 'Windows'
-        run: go test -v -coverprofile=coverage.out ./...
+        run: go test -v -short -coverprofile=coverage.out ./...
         # Note: -race flag disabled because checkptr is incompatible with purego's
         # C string conversion (unsafe.Slice on C allocations). This is a known
         # limitation when using purego for CGO-free C interop.
+        # Short mode skips ort/environment_stress_test.go; those stress tests run
+        # in the dedicated test-race-ort-stress job below.
 
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
-        run: go test -v -coverprofile="${PWD}/coverage.out" ./...
+        run: go test -v -short -coverprofile="${PWD}/coverage.out" ./...
 
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest' && matrix.go-version == env.GO_VERSION_STABLE
@@ -124,6 +126,27 @@ jobs:
       - name: Run race detector on ORT concurrency tests
         run: |
           go test -race ./ort -run 'TestValuesToHandlesDeduplicatesRepeatedLockableValue|TestValuesToHandlesReleasesPriorLeasesOnError|TestAdvancedSessionRunConcurrent|TestAdvancedSessionRunConcurrentAcrossSessionsSharingTensor|TestAdvancedSessionRunAndDestroyConcurrent|TestTensorDestroyWaitsForInFlightRun|TestTensorDestroyDoesNotBlockUnrelatedRun|TestTensorDestroyConcurrentCallsReleaseOnce'
+
+  test-race-ort-stress:
+    name: Test Race (ORT init/destroy stress)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: ${{ env.GO_VERSION_STABLE }}
+          cache: true
+
+      - name: Get dependencies
+        run: go mod download
+
+      - name: Run race detector on ORT init/destroy stress tests
+        run: |
+          go test -v -race -run=TestStress -count=50 -parallel=4 ./ort/...
 
   integration-real-model:
     name: Integration (ONNX Runtime + all-MiniLM + SPLADE + OpenCLIP)

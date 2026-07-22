@@ -253,6 +253,7 @@ The CI pipeline runs tests in multiple configurations:
 - **Integration Tests (matrix job)**: Skipped in the cross-platform matrix (no ONNX Runtime library preinstalled)
 - **Real-model Integration Job**: Linux job downloads ONNX Runtime, runs all-MiniLM integration + memory stability tests, runs SPLADE integration and hosted parity, runs OpenCLIP integration and hosted parity, and runs all-MiniLM benchmarks
 - **Race Detection**: Partially disabled due to checkptr incompatibility with purego FFI
+- **Stress Test Job**: Dedicated `test-race-ort-stress` job runs `ort/environment_stress_test.go` under `-race` with `-count=50` and a 10-minute timeout, separate from `test-race-ort-concurrency`
 - **Vulnerability Check**: Runs `make vulncheck` with a patched Go baseline (`go1.25.12+auto`)
 
 ### Local Pre-commit Checks
@@ -274,7 +275,7 @@ make precommit
 - `make vet`
 - `make precommit-lint-new` (golangci-lint only for issues introduced since merge-base with `PRECOMMIT_BASE_REF`, default `origin/main`)
 - `make gosec` (blocking security scan, excludes `examples/experimental`)
-- `go test ./...`
+- `go test -short ./...`
 - `make check-mod-tidy`
 - `make vulncheck`
 
@@ -282,6 +283,32 @@ Optional environment flags:
 - `SKIP_LINT_NEW=1`
 - `SKIP_GOSEC=1`
 - `SKIP_VULNCHECK=1`
+
+### Running Stress Tests
+
+`ort/environment_stress_test.go` contains `testing.Short()`-gated stress tests
+(`TestStressConcurrentInitDestroy`, `TestStressRapidInitDestroy`,
+`TestStressMixedOperationsUnderLoad`) that drive many concurrent
+`InitializeEnvironment`/`DestroyEnvironment` cycles to guard against refcount
+corruption, deadlocks, and panics under load.
+
+Which repository commands skip them, and which run them:
+
+- **Skipped by** `make test`, `make precommit`, and `make test-race` (all pass
+  `-short`), and by CI's `test` job (which also passes `-short`).
+- **Run by** the dedicated CI `test-race-ort-stress` job (`-count=50`, 10-minute
+  timeout), and by any explicit local `-run TestStress` invocation.
+
+Note the precise Go behavior: `testing.Short()` is only true when `-short` is
+passed on that exact command line. This repository's Makefile targets and CI
+steps wrap `-short` in for you, but a bare `go test ./...` typed directly does
+**not** add it implicitly — that command will still run the stress tests.
+
+Run them locally with:
+
+```bash
+go test -race -run TestStress -count=10 ./ort/...
+```
 
 ### Local CI Simulation
 

@@ -104,13 +104,13 @@ release:
 ## test: Run tests
 test:
 	@echo "$(YELLOW)Running tests...$(NC)"
-	$(GO) test -v -cover ./...
+	$(GO) test -v -cover -short ./...
 	@echo "$(GREEN)✓ Tests complete$(NC)"
 
 ## test-race: Run race-enabled tests for core ort package
 test-race:
 	@echo "$(YELLOW)Running race-enabled tests (ort)...$(NC)"
-	$(GO) test -v -race ./ort/...
+	$(GO) test -v -race -short ./ort/...
 	@echo "$(GREEN)✓ Race tests complete$(NC)"
 
 ## test-coverage: Run tests with coverage report
@@ -358,7 +358,7 @@ precommit: fmt-check
 	else \
 		$(MAKE) gosec; \
 	fi
-	$(GO) test ./...
+	$(GO) test -short ./...
 	@$(MAKE) check-mod-tidy
 	@if [ "$${SKIP_VULNCHECK:-0}" = "1" ]; then \
 		echo "$(YELLOW)Skipping vulncheck (SKIP_VULNCHECK=1).$(NC)"; \
