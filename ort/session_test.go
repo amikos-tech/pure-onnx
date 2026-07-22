@@ -831,15 +831,16 @@ func TestAdvancedSessionDestroyDoesNotBlockUnrelatedRun(t *testing.T) {
 		destroyErrCh <- otherSession.Destroy()
 	}()
 
+	// Deliberate mirror-image of Task 1's watchdog: here the receive branch is the
+	// expected/passing path and the timeout is the FAILURE condition, since this test
+	// proves the ABSENCE of blocking on an unrelated in-flight Run.
 	var destroyErr error
-	require.Eventually(t, func() bool {
-		select {
-		case destroyErr = <-destroyErrCh:
-			return true
-		default:
-			return false
-		}
-	}, 2*time.Second, 10*time.Millisecond, "destroy should not block on unrelated in-flight Run")
+	select {
+	case destroyErr = <-destroyErrCh:
+		// expected: destroy is not blocked by the unrelated in-flight Run
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("destroy on unrelated session did not return within 500ms -- appears blocked by in-flight Run")
+	}
 	if destroyErr != nil {
 		t.Fatalf("destroy failed: %v", destroyErr)
 	}
