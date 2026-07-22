@@ -54,6 +54,7 @@ var ErrUnsupportedPlatform = errors.New("unsupported platform for ONNX Runtime b
 
 // IsUnsupportedPlatformError reports whether err wraps ErrUnsupportedPlatform.
 func IsUnsupportedPlatformError(err error) bool { return errors.Is(err, ErrUnsupportedPlatform) }
+
 var bootstrapCacheFallbackWarnOnce sync.Once
 var bootstrapInitMu sync.Mutex
 
