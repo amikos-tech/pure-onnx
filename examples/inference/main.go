@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -39,7 +40,7 @@ func main() {
 	}
 
 	if err := initializeOrtEnvironment(); err != nil {
-		log.Fatalf("failed to initialize ONNX Runtime: %v", err)
+		log.Fatal(diagnosticFor(err, runtime.GOOS, runtime.GOARCH))
 	}
 	defer func() {
 		if err := ort.DestroyEnvironment(); err != nil {
@@ -91,6 +92,17 @@ func main() {
 	output := outputTensor.GetData()
 	fmt.Printf("inference completed: output shape=%v output elements=%d\n", outputShape, len(output))
 	printPreview(output, 16)
+}
+
+func diagnosticFor(err error, goos, goarch string) string {
+	if ort.IsUnsupportedPlatformError(err) {
+		return fmt.Sprintf(
+			"failed to initialize ONNX Runtime: %v\n"+
+				"automatic bootstrap does not support this platform (GOOS=%s GOARCH=%s).\n"+
+				"set ONNXRUNTIME_LIB_PATH to a prebuilt ONNX Runtime shared library for your platform and re-run.",
+			err, goos, goarch)
+	}
+	return fmt.Sprintf("failed to initialize ONNX Runtime: %v", err)
 }
 
 func envOr(key, fallback string) string {
