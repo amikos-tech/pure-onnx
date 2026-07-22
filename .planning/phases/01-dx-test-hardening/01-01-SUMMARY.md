@@ -96,6 +96,10 @@ None — diagnostic text echoes only compile-time GOOS/GOARCH constants and the 
 - DX-01 closed. `ort.ErrUnsupportedPlatform` / `IsUnsupportedPlatformError` are available as a public error-classification primitive for later phases.
 - No blockers.
 
+## Self-Check: PASSED
+
+All created/modified files present; all task + metadata commits verified in git log.
+
 ---
 *Phase: 01-dx-test-hardening*
 *Completed: 2026-07-22*
