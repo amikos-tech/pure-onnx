@@ -833,13 +833,14 @@ func TestAdvancedSessionDestroyDoesNotBlockUnrelatedRun(t *testing.T) {
 
 	// Deliberate mirror-image of Task 1's watchdog: here the receive branch is the
 	// expected/passing path and the timeout is the FAILURE condition, since this test
-	// proves the ABSENCE of blocking on an unrelated in-flight Run.
+	// proves the ABSENCE of blocking on an unrelated in-flight Run. The timeout only
+	// elapses on a genuine regression, so a generous budget costs passing runs nothing.
 	var destroyErr error
 	select {
 	case destroyErr = <-destroyErrCh:
 		// expected: destroy is not blocked by the unrelated in-flight Run
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("destroy on unrelated session did not return within 500ms -- appears blocked by in-flight Run")
+	case <-time.After(2 * time.Second):
+		t.Fatal("destroy on unrelated session did not return within 2s -- appears blocked by in-flight Run")
 	}
 	if destroyErr != nil {
 		t.Fatalf("destroy failed: %v", destroyErr)
