@@ -239,6 +239,8 @@ Retain the zero-status/no-release case and the 256-worker exact-release test at 
 
 **Analog:** `.planning/spikes/001-ort-status-lifetime/native_status_test.go`
 
+**Platform constraint:** The analog begins with `//go:build !windows` because its `purego.Dlopen`/`Dlsym` loader path is Unix-only. Preserve that first-line constraint in `ort/errors_native_test.go`, and prove the Windows package/test matrix still compiles with `GOOS=windows GOARCH=amd64 go test -c -o /dev/null ./ort`.
+
 **Real ABI registration pattern** (lines 49-79):
 
 ```go
@@ -989,6 +991,14 @@ Install a recording `slog.Handler` with `t.Cleanup(func() { SetDiagnosticHandler
 - URL attributes are redacted,
 - global timing/logger state is restored.
 
+**Permission regression pattern:** Add the exact top-level `TestBootstrapCreatedFilePermissions` in `ort/bootstrap_test.go`. Keep it cross-platform-compilable and immediately `t.Skip` on `runtime.GOOS == "windows"` because Windows ACLs do not provide portable POSIX mode semantics. Unix subtests must exercise production helpers with fresh paths and synthetic TGZ/ZIP library entries, then inspect `os.FileMode.Perm()` for:
+
+- bootstrap-created cache/install/lock directories: owner-accessible, no group-write or other-user bits;
+- final installed library files: required owner read/execute retained, no group/other write bits, including when the archive supplies permissive write bits;
+- lock files: owner read/write, no group/other bits.
+
+If permissive archive input exposes unsafe write bits, clamp only group/other write permissions in both tar and ZIP regular-file creation while retaining executable bits. Do not apply recursive chmod or broaden an existing mode. The anchored verification command is `go test -short ./ort -run '^TestBootstrapCreatedFilePermissions$'`.
+
 ---
 
 ### `.github/workflows/ci.yml` (config, batch)
@@ -1002,7 +1012,7 @@ test-race-ort-concurrency:
   # ...
   - name: Run race detector on ORT concurrency tests
     run: |
-      go test -race ./ort -run 'TestValuesToHandles...|TestAdvancedSessionRunConcurrent...'
+      go test -race ./ort -run '^(TestValuesToHandlesDeduplicatesRepeatedLockableValue|TestValuesToHandlesReleasesPriorLeasesOnError|TestAdvancedSessionRunConcurrent|TestAdvancedSessionRunConcurrentAcrossSessionsSharingTensor|TestAdvancedSessionRunAndDestroyConcurrent|TestAdvancedSessionDestroyDoesNotBlockUnrelatedRun|TestTensorDestroyWaitsForInFlightRun|TestTensorDestroyDoesNotBlockUnrelatedRun|TestTensorDestroyConcurrentCallsReleaseOnce)$'
 ```
 
 Append fake-status, diagnostic reconfiguration, and `RunWithValues` concurrency tests to this lane.
@@ -1017,10 +1027,21 @@ Append fake-status, diagnostic reconfiguration, and `RunWithValues` concurrency 
 
 - name: Run ort real-model integration tests
   run: |
-    go test -v ./ort/... -run 'TestAdvancedSessionRunWithAllMiniLML6V2|...'
+    go test -v ./ort/... -run '^(TestAdvancedSessionRunWithAllMiniLML6V2|TestAdvancedSessionRunWithAllMiniLML6V2MemoryStability)$'
 ```
 
 Add `TestNativeORTStatusRoundTrip` and the real-model `RunWithValues` case here without `-race`. Keep the fake callback ownership proof in the race lane. Never add checkptr-disabling flags.
+
+**Fast workflow and supply-chain assertions:** Task 02-08-02 should verify only the anchored selector text and workflow-input invariants during its under-30-second feedback loop. Before committing the workflow edit, require:
+
+```bash
+test -z "$(git diff HEAD --unified=0 -- .github/workflows/ci.yml |
+  sed -n '/^[+-][[:space:]]*uses:/p')"
+```
+
+This audits only added/removed `uses:` lines, so the intended `run:` selector edits remain allowed while action references cannot drift. Apply the same focused diff check to `continue-on-error` so Phase 2 does not take ownership of Phase 5's enforcing lint change.
+
+Run the full short, targeted race, compile-only, configured native, and vet commands at wave/phase scope. For Phase 2 lint feedback, use the existing `make precommit-lint-new` target from `Makefile`; historical full-tree lint debt cleanup and removal of lint `continue-on-error` remain Phase 5 / CLN-01.
 
 ## Shared Patterns
 
@@ -1110,6 +1131,9 @@ These are partial semantic gaps, not invitations for a new abstraction. The rese
 6. Audit all 14 direct `log.Printf` sites plus three finalizer callers; migrate only non-returnable notices.
 7. Preserve existing examples and all three embedder hot paths as compatibility tests rather than editing them.
 8. No dependency or `go.mod` change is needed.
+9. Anchor `TestBootstrapCreatedFilePermissions` in Plan 07 and canonical T-02-10 evidence, with Unix mode assertions and a Windows-safe skip.
+10. Keep Task 02-08-02 feedback static/focused; run comprehensive suites at wave/phase scope, use `make precommit-lint-new`, and leave the full-tree lint gate to Phase 5.
+11. Treat unchanged `.github/workflows/ci.yml` `uses:` lines as T-02-SC evidence alongside unchanged `go.mod`/`go.sum`.
 
 ## Metadata
 

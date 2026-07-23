@@ -618,26 +618,24 @@ Use this only when both failures are independently useful; a single causal chain
 |---|-------|---------|---------------|
 | — | None. All project-state claims were checked in the repository, locked in `CONTEXT.md`, proven by the committed spikes, or cited from official documentation. | — | — |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Should cross-role reuse of the same tensor be explicitly supported?**
+1. **RESOLVED — Cross-role reuse of the same tensor remains at the current support level.**
    - What we know: `valuesToHandles` deduplicates repeated comparable values within one input or output slice, while current `Run` acquires input and output leases in separate calls. [VERIFIED: ort/session.go]
-   - What's unclear: The locked decisions do not declare in-place input/output aliasing as supported behavior. [VERIFIED: 02-CONTEXT.md]
-   - Recommendation: Preserve current behavior and scope for both public methods. Add a focused regression test only if existing tests or a known consumer use the same tensor in both roles; do not invent in-place semantics during this phase. [RECOMMENDED]
+   - Resolution: Preserve current behavior and scope for both public methods. Add a focused regression test only if existing tests or a known consumer use the same tensor in both roles; do not invent in-place semantics during this phase. [RESOLVED: selected researcher recommendation]
 
-2. **Where should the real native status test obtain the runtime?**
+2. **RESOLVED — The real native status test uses `ONNXRUNTIME_LIB_PATH`.**
    - What we know: Local research found an ONNX Runtime 1.23.1 dylib in the project bootstrap cache, while CI's integration job downloads 1.24.1 and exports `ONNXRUNTIME_LIB_PATH`. [VERIFIED: environment probe; .github/workflows/ci.yml]
-   - What's unclear: A developer's cache path is machine-specific and cannot be encoded in the test. [VERIFIED: environment probe]
-   - Recommendation: Make the test skip unless `ONNXRUNTIME_LIB_PATH` is set, then add its name to the existing non-race ORT integration job. Keep fake status ownership tests self-contained and always runnable. [RECOMMENDED]
+   - Resolution: Make the test skip unless `ONNXRUNTIME_LIB_PATH` is set, then add its name to the existing non-race ORT integration job. Keep fake status ownership tests self-contained and always runnable. [RESOLVED: selected researcher recommendation]
 
-No question blocks planning; both recommendations preserve the locked scope. [RECOMMENDED]
+Both questions are resolved by the selected recommendations above, and both resolutions preserve the locked scope. [RESOLVED]
 
 ## Environment Availability
 
 | Dependency | Required By | Available | Version | Fallback |
 |------------|-------------|-----------|---------|----------|
 | Go toolchain | Build/unit/race tests | ✓ | Local 1.26.5; module baseline 1.25.0 | CI validates the declared 1.25 baseline; avoid local-only 1.26 APIs. [VERIFIED: environment probe; go.mod; CI workflow] |
-| `golangci-lint` | Phase quality gate | ✓ | 2.12.2 | Existing CI lint action remains authoritative. [VERIFIED: environment probe; .github/workflows/ci.yml] |
+| `golangci-lint` | Phase 2 changed-code/new-issues check | ✓ | 2.12.2 | Use the repository's `make precommit-lint-new` target; historical full-tree lint cleanup and enforcement remain Phase 5 / CLN-01. [VERIFIED: environment probe; Makefile; .github/workflows/ci.yml; ROADMAP.md] |
 | ONNX Runtime shared library | Native status ABI and real run tests | ✓ via local cache; env var unset | Local cache 1.23.1 | Existing CI integration job downloads 1.24.1 and sets `ONNXRUNTIME_LIB_PATH`; native tests skip when unset. [VERIFIED: environment probe; .github/workflows/ci.yml] |
 | `purego` module | Native function registration | ✓ | v0.10.1 in `go.mod` | No fallback needed; no upgrade planned. [VERIFIED: go.mod; go list -m -json] |
 | Context7 CLI/MCP | Documentation lookup during research only | ✗ | — | Official Go, ONNX Runtime, and OWASP documentation was used directly. [VERIFIED: environment probe] |
@@ -668,22 +666,23 @@ No question blocks planning; both recommendations preserve the locked scope. [RE
 
 | Req ID | Behavior | Test Type | Automated Command | File Exists? |
 |--------|----------|-----------|-------------------|-------------|
-| API-02 | Zero status returns nil; nonzero status snapshots code/message and releases exactly once, including accessor failure and concurrent calls | unit + race | `go test -race ./ort -run 'Test(StatusToError|ORTError)'` | ❌ Wave 0: `ort/errors_test.go` |
-| API-02 | Real `CreateStatus`/read/release ABI preserves code and message | native integration, non-race | `ONNXRUNTIME_LIB_PATH="$ONNXRUNTIME_LIB_PATH" go test ./ort -run TestNativeORTStatusRoundTrip` | ❌ Wave 0: `ort/errors_native_test.go` |
+| API-02 | Zero status returns nil; nonzero status snapshots code/message and releases exactly once, including accessor failure and concurrent calls | unit + race | `go test -race ./ort -run '^(TestStatusToError|TestORTError)$'` | ❌ Wave 0: `ort/errors_test.go` |
+| API-02 | Real `CreateStatus`/read/release ABI preserves code and message | native integration, non-race | `ONNXRUNTIME_LIB_PATH="$ONNXRUNTIME_LIB_PATH" go test ./ort -run '^TestNativeORTStatusRoundTrip$'` | ❌ Wave 0: `ort/errors_native_test.go` |
 | API-02 | Local validation/lifecycle errors match lean sentinels; OS/network/cleanup causes remain reachable | unit | `go test -short ./ort -run 'Test(ErrorSentinel|Bootstrap.*Error|.*Destroyed|.*NotInitialized)'` | ⚠️ Existing flow files; new assertions needed |
-| API-02 | Default diagnostics are silent; handler wiring, attributes, nil reset, and concurrent reconfiguration work | unit + race | `go test -race ./ort -run TestDiagnostic` | ❌ Wave 0: `ort/diagnostics_test.go` |
+| API-02 | Default diagnostics are silent; handler wiring, attributes, nil reset, and concurrent reconfiguration work | unit + race | `go test -race ./ort -run '^TestDiagnostic$'` | ❌ Wave 0: `ort/diagnostics_test.go` |
 | API-02 | Every approved unreturnable site emits once and returned failures emit zero records | unit/call-site audit | `go test -short ./ort -run 'Test(DiagnosticCallSites|ReturnedErrorsDoNotEmit)'` | ❌ Wave 0 plus existing flow-test edits |
+| API-02 | Bootstrap-created directories, installed TGZ/ZIP libraries, and lock files retain Unix-safe permissions | security regression | `go test -short ./ort -run '^TestBootstrapCreatedFilePermissions$'` | ⚠️ `ort/bootstrap_test.go` exists; exact Unix assertion plus Windows skip missing |
 | API-03 | `Value` is package-sealed; `IsTensor` and exact `AsTensor[T]` handle match, mismatch, nil, and typed nil | compile/unit | `go test -short ./ort -run TestValue` | ❌ Wave 0: `ort/value_test.go`; existing in-package doubles need marker edits |
 | API-03 | `RunWithValues` validates counts/state and uses supplied preallocated handles without changing bound `Run` | unit | `go test -short ./ort -run TestAdvancedSessionRunWithValues` | ⚠️ `ort/session_test.go` exists; cases missing |
-| API-03 | Both run paths preserve serialization, destroy waiting, repeated-value leases, and lock order | race | `go test -race ./ort -run 'Test(AdvancedSessionRunWithValues|ValuesToHandles|TensorDestroy)'` | ⚠️ Existing concurrency helpers/cases; per-call variants missing |
-| API-03 | Per-call tensors produce correct output against a real model | integration, non-race | `go test ./ort -run TestAdvancedSessionRunWithValuesRealModel` | ⚠️ Existing model fixture/path; new case missing |
+| API-03 | Both run paths preserve serialization, destroy waiting, repeated-value leases, and lock order | race | `go test -race ./ort -run '^(TestAdvancedSessionRunWithValues|TestAdvancedSessionRunConcurrent|TestAdvancedSessionRunConcurrentAcrossSessionsSharingTensor|TestAdvancedSessionRunAndDestroyConcurrent|TestTensorDestroyWaitsForInFlightRun|TestValuesToHandlesDeduplicatesRepeatedLockableValue|TestValuesToHandlesReleasesPriorLeasesOnError)$'` | ⚠️ Existing concurrency helpers/cases; per-call variants missing |
+| API-03 | Per-call tensors produce correct output against a real model | integration, non-race | `go test ./ort -run '^TestAdvancedSessionRunWithValuesRealModel$'` | ⚠️ Existing model fixture/path; new case missing |
 
 ### Sampling Rate
 
 - **Per task commit:** `go test -short ./ort -run 'Test(ORTError|StatusToError|Value|AdvancedSessionRunWithValues|Diagnostic)'` [RECOMMENDED]
 - **Per wave merge:** `go test -short ./...` [VERIFIED: established CI command]
-- **Race-sensitive task:** `go test -race ./ort -run 'Test(StatusToError|Diagnostic|AdvancedSessionRunWithValues|ValuesToHandles|TensorDestroy)'` [RECOMMENDED]
-- **Phase gate:** Full short suite green, targeted race suite green, lint green, and native non-race status plus real-model tests green before `$gsd-verify-work`. [RECOMMENDED]
+- **Race-sensitive task:** `go test -race ./ort -run '^(TestStatusToError|TestORTError|TestDiagnostic|TestAdvancedSessionRunWithValues|TestAdvancedSessionErrorContracts|TestAdvancedSessionDiagnosticPolicy|TestValuesToHandlesDeduplicatesRepeatedLockableValue|TestValuesToHandlesReleasesPriorLeasesOnError|TestAdvancedSessionRunConcurrent|TestAdvancedSessionRunConcurrentAcrossSessionsSharingTensor|TestAdvancedSessionRunAndDestroyConcurrent|TestTensorDestroyWaitsForInFlightRun|TestTensorDestroyConcurrentCallsReleaseOnce|TestTensorStatusConversion|TestTensorDiagnosticPolicy|TestEnvironmentErrorChains|TestEnvironmentStatusConversion|TestConcurrentInitialization|TestConcurrentDestroy|TestDiagnosticRuntimeVersion|TestMemoryInfoStatusConversion|TestDiagnosticMemoryInfo|TestDiagnosticCallSites|TestReturnedErrorsDoNotEmit)$'` [RECOMMENDED]
+- **Phase gate:** Full short, targeted race, compile-only, focused permission, vet, `make precommit-lint-new`, and native non-race status/real-model tests green before `$gsd-verify-work`; full-tree lint debt and enforcement remain Phase 5. [RECOMMENDED]
 
 ### Wave 0 Gaps
 
@@ -693,6 +692,7 @@ No question blocks planning; both recommendations preserve the locked scope. [RE
 - [ ] `ort/value_test.go` — kind check plus exact generic extraction matrix for API-03. [RECOMMENDED]
 - [ ] `ort/session_test.go` additions — count validation, supplied handle arrays, bound-path compatibility, borrow/Destroy synchronization, and per-call concurrency for API-03. [RECOMMENDED]
 - [ ] Flow-test additions in `environment_test.go`, `memory_test.go`, `tensor_test.go`, `session_test.go`, and `bootstrap_test.go` — `Is`/`As`, preserved causes, and approved diagnostic call sites for API-02. [RECOMMENDED]
+- [ ] `ort/bootstrap_test.go` — exact `TestBootstrapCreatedFilePermissions` regression covering Unix-safe bootstrap directory, installed-library, and lock-file modes with a Windows-safe POSIX-mode skip. [RECOMMENDED]
 - [ ] `.github/workflows/ci.yml` — include fake status and diagnostic concurrency tests in the targeted race job; include native status and `RunWithValues` real-model cases in the existing integration job. [RECOMMENDED]
 - [ ] No framework installation is needed. [VERIFIED: existing Go test infrastructure]
 

@@ -45,7 +45,26 @@ Plans:
   2. A `Value` interface lets heterogeneous tensor types be passed as session inputs and returned as outputs.
   3. `AdvancedSession.Run` accepts and returns values through the `Value` interface without breaking existing typed `Tensor[T]` usage.
   4. Existing `ort` unit and integration tests pass against the new error and `Value` surfaces.
-**Plans**: TBD
+
+**Plans**: 8 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 02-01-PLAN.md — Define typed native errors, public sentinels, exact status ownership, and real ABI proof
+- [ ] 02-02-PLAN.md — Seal Value and add exact IsTensor/AsTensor inspection
+- [ ] 02-03-PLAN.md — Add the silent, consumer-wired standard-library diagnostic hook
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 02-04-PLAN.md — Add RunWithValues through the shared session run/error/lifetime core
+- [ ] 02-05-PLAN.md — Migrate tensor validation, native errors, and finalizer diagnostics
+- [ ] 02-06-PLAN.md — Migrate environment and MemoryInfo errors/diagnostics
+- [ ] 02-07-PLAN.md — Preserve bootstrap causes and migrate audited structured notices
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 02-08-PLAN.md — Remove obsolete helpers, wire CI race/native lanes, and run compatibility gates
 
 ### Phase 3: Generalized Embedder API
 **Goal**: A unified embedder API serves both dense and sparse embeddings, including SPLADE, on top of the settled core API.
@@ -96,7 +115,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. DX & Test Hardening | 3/3 | Complete   | 2026-07-22 |
-| 2. Core API — Errors & Values | 0/TBD | Not started | - |
+| 2. Core API — Errors & Values | 0/8 | Planned | - |
 | 3. Generalized Embedder API | 0/TBD | Not started | - |
 | 4. Documentation | 0/TBD | Not started | - |
 | 5. Full Lint Gate | 0/TBD | Not started | - |
