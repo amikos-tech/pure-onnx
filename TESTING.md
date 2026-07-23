@@ -295,9 +295,12 @@ They split into two kinds:
   every worker takes the increment/decrement fast path. These stress the
   refcount/mutex accounting under load — not real library load/teardown.
 - **Real init/teardown transition** (`TestStressRealInitTeardownTransition`):
-  lets `refCount` cross `0<->1` against a real ONNX Runtime library, so
-  concurrent `dlopen`/`dlclose`, `CreateEnv`/`ReleaseEnv`, and purego symbol
-  registration are exercised under the race detector. It **skips** unless
+  lets `refCount` cross `0<->1` against a real ONNX Runtime library, so the real
+  `dlopen`/`dlclose`, `CreateEnv`/`ReleaseEnv`, and purego symbol registration
+  lifecycle is exercised under the race detector. `Init`/`Destroy` hold
+  `ortCallMu` exclusively, so those calls themselves are serialized rather than
+  concurrent — what runs under contention is the surrounding refcount/mutex
+  bookkeeping plus repeated `refCount` `0<->1` churn. It **skips** unless
   `ONNXRUNTIME_LIB_PATH` is set.
 
 Together they guard against refcount corruption, deadlocks, and panics under load
