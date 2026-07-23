@@ -5,7 +5,7 @@
 
 **Date:** 2026-07-23
 **Phase:** 2-Core API — Errors & Values
-**Areas discussed:** Session value flow, Value inspection and ownership, Error taxonomy, Error messages and logging
+**Areas discussed:** Session value flow, Value inspection and ownership, Error taxonomy, Error messages and logging, ORT status lifetime spike, Diagnostic logging contract spike
 
 ---
 
@@ -19,7 +19,7 @@
 | Replace the existing constructor/`Run()` flow | Move entirely to call-bound values and migrate current users. | |
 
 **User's choice:** Add `RunWithValues(inputs, outputs []Value) error`.
-**Notes:** Existing `Run()` stays unchanged. Names remain fixed on the session, values are borrowed during the call, and outputs are filled in place.
+**Notes:** Existing `Run()` stays unchanged. Names remain fixed on the session, values are borrowed during the call, and outputs are filled in place. A separate `RunWithValues` spike was considered but intentionally skipped because `valuesToHandles`, per-value run leases, and existing concurrency tests already establish feasibility; a spike would duplicate Phase 2 implementation work.
 
 ---
 
@@ -80,13 +80,42 @@
 
 ---
 
+## Pre-planning spike: ORT status lifetime
+
+| Approach | Description | Selected |
+|----------|-------------|----------|
+| Instrumented callbacks only | Prove exact release count, ordering, copied-message lifetime, and concurrency without a native runtime. | |
+| Real native round trip only | Exercise `CreateStatus`, status accessors, and `ReleaseStatus` through purego against ONNX Runtime. | |
+| Combined callback and native proof | Use race-checked callbacks for exact accounting and a separate real ABI round trip for native compatibility. | ✓ |
+| Public inference failure only | Trigger an error through the current public API without access to native code or release accounting. | |
+
+**User's choice:** Run the status-lifetime spike before planning.
+**Spike verdict:** VALIDATED.
+**Notes:** The helper must treat zero as success, install `defer ReleaseStatus` before any accessor, and copy code/message into Go-owned values. The callback suite passed under `-race`; the real ABI round trip passed separately. Combining the real purego path with `-race` is invalid because race-enabled checkptr rejects this repository's intentional `uintptr` FFI boundary.
+
+---
+
+## Pre-planning spike: diagnostic logging contract
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| Custom `DiagnosticSink` | One project-owned method plus custom `Level` and `Field` types; simplest direct adapter for non-slog consumers. | |
+| Consumer-supplied `slog.Handler` | Standard interface, levels, fields, concurrency rules, and `DiscardHandler`; configure an internal `slog.Logger`. | ✓ |
+| Consumer-supplied `*slog.Logger` | Most direct slog wiring, but exposes a concrete frontend instead of the requested sink interface. | |
+
+**User's choice:** Run all logging variants and fold the validated result into Phase 2 context.
+**Spike verdict:** All three variants were viable; `slog.Handler` is RECOMMENDED.
+**Notes:** `slog.Handler` preserves the consumer-wired interface boundary with no project-owned logging abstraction and a zero-allocation silent path. The custom sink required public logging types, adapter translation, and one 64-byte allocation in the measured no-op path. `*slog.Logger` saved only one `Handler()` call while losing the interface seam. The production contract is `SetDiagnosticHandler(handler slog.Handler)`; `nil` restores `slog.DiscardHandler`, emission stays private, and non-slog adapters remain consumer-owned.
+
+---
+
 ## the agent's Discretion
 
 - Private marker name for the sealed `Value` interface.
 - Exact `AsTensor[T]` return convention.
 - Exact sentinel names and grouping.
 - Internal `ORTError` helper organization.
-- Minimal logger interface, structured-field type, configuration function, and no-op implementation.
+- Private diagnostic helper/state names and exact structured attribute keys at approved non-returnable call sites.
 - Internal refactoring and test organization.
 
 ## Deferred Ideas

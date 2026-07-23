@@ -30,7 +30,7 @@ Existing constructor-bound `AdvancedSession.Run()`, typed `Tensor[T]` use, expli
 
 ### Error taxonomy and wrapping
 - **D-10:** Introduce a public typed `ORTError` for native ONNX Runtime failures. It must retain the native `ErrorCode`, the failed operation, and a Go-owned copy of the native message so callers can inspect it with `errors.As`.
-- **D-11:** Read the native code and copy the native message before releasing the `OrtStatus`; centralize this conversion so all native status paths release status objects consistently.
+- **D-11:** Centralize native status conversion in one helper. A zero status returns `nil`; for every non-zero status, install `defer ReleaseStatus(status)` before calling any status accessor, then capture the native `ErrorCode` and copy the native message into a Go-owned string. The helper owns exactly one release.
 - **D-12:** Add a lean set of public sentinel categories for actionable validation and lifecycle conditions, including invalid arguments, uninitialized state, destroyed resources, and unsupported platform/library conditions. Callers inspect these with `errors.Is`.
 - **D-13:** Preserve underlying OS, filesystem, network, and cleanup causes with `%w` and `errors.Join` where applicable. Do not replace useful lower-level causes with string-only errors.
 - **D-14:** Apply the error model comprehensively across environment, memory, tensor, session, and bootstrap flows; native status failures must no longer be flattened with `%s`.
@@ -38,17 +38,22 @@ Existing constructor-bound `AdvancedSession.Run()`, typed `Tensor[T]` use, expli
 ### Error messages and diagnostic logging
 - **D-15:** Preserve useful existing operation prefixes where practical, but do not make exact error text a compatibility contract. Machine handling belongs to `errors.Is` and `errors.As`.
 - **D-16:** Error text should contain the operation, relevant identifiers, and native detail. Do not add source file names, line numbers, or stack traces.
-- **D-17:** Add a narrow consumer-configurable structured logging sink with a default no-op implementation. The default library behavior is silent.
-- **D-18:** Use the sink only for diagnostics that cannot be returned, such as finalizer cleanup failures, bootstrap fallback/cleanup notices, lock-wait information, and runtime-version warnings. Never automatically log an error that is also returned to the caller.
-- **D-19:** Keep the logging interface substantially smaller than `chroma-go`'s full logger abstraction. It should carry structured fields and permit consumer adapters for `slog`, Zap, or another logger without adding a bundled third-party logging dependency.
-- **D-20:** Logger configuration must be available before bootstrap or environment initialization so all Go-side `ort` diagnostics can use the sink. The sink does not redesign ONNX Runtime's native logging callback.
+- **D-17:** Expose `SetDiagnosticHandler(handler slog.Handler)` as the consumer configuration API. Passing `nil` restores silent behavior through `slog.DiscardHandler`; do not add project-owned logger, level, or field types.
+- **D-18:** Use the private diagnostic emitter only for failures or notices that cannot be returned, such as finalizer cleanup failures, bootstrap fallback/cleanup notices, lock-wait information, and runtime-version warnings. Never automatically log an error that is also returned to the caller.
+- **D-19:** Emit through an internal `*slog.Logger` with `Logger.LogAttrs`, using standard `slog.Level` and `slog.Attr` values. A slog consumer wires an existing logger with `logger.Handler()`; Zap and other consumers own their chosen `slog.Handler` bridge, so this module adds no third-party logging dependency.
+- **D-20:** Handler configuration must be available before bootstrap or environment initialization so all Go-side `ort` diagnostics can use it. Store the process-wide logger in an atomically replaced configuration box initialized with `slog.New(slog.DiscardHandler)`. This does not redesign ONNX Runtime's native logging callback.
+
+### Spike-validated constraints
+- **D-21:** Keep diagnostic emission private to `ort`; this is an observability hook, not a general logging facade. Use `slog.LevelInfo` and `slog.LevelWarn` unless an implementation need proves another level is necessary.
+- **D-22:** The handler type cannot enforce the rule against logging returned errors. Planning and verification must include a call-site audit covering finalizers, bootstrap cleanup/fallbacks, lock waits, and runtime-version warnings, with tests proving returned failures do not also emit diagnostics.
+- **D-23:** Verify native status conversion with two complementary test layers: instrumented callbacks under `go test -race` for exact release accounting and a real ONNX Runtime ABI round trip without `-race`. Do not disable checkptr to combine them; the repository's intentional `uintptr` purego boundary is incompatible with race-enabled checkptr.
 
 ### the agent's Discretion
 - Exact private marker name used to seal `Value`.
 - Whether `AsTensor[T]` returns `(*Tensor[T], bool)` or `(*Tensor[T], error)`, provided it remains an exact-type checked extraction.
 - Exact exported sentinel names and how closely related lifecycle states are grouped, while keeping the public set lean and actionable.
 - Internal `ORTError` constructors/accessors and helper organization.
-- Exact logging interface, structured-field representation, configuration function name, and no-op implementation, subject to D-17 through D-20.
+- Private diagnostic helper/state type names and the exact structured attribute keys at each approved call site, subject to D-17 through D-23.
 - Test-file organization and internal refactoring needed to share the `Run`/`RunWithValues` implementation without changing observable behavior.
 
 </decisions>
@@ -76,6 +81,7 @@ Existing constructor-bound `AdvancedSession.Run()`, typed `Tensor[T]` use, expli
 - `embeddings/openclip/embedder.go` — text and vision sessions using the existing bound-value API.
 
 ### Native status and error plumbing
+- `.planning/spikes/001-ort-status-lifetime/README.md` — validated status ownership sequence, race/native verification split, commands, and evidence.
 - `internal/c_api/onnxruntime_c_api.h` — exact bundled C API contract for `Run`, `GetErrorCode`, `GetErrorMessage`, `ReleaseStatus`, value inspection, and output ownership.
 - `ort/constants.go` — existing Go `ErrorCode` values corresponding to native ORT error codes.
 - `ort/environment.go` — current status-message extraction/release helpers, runtime initialization, and hard-coded warnings.
@@ -87,6 +93,10 @@ Existing constructor-bound `AdvancedSession.Run()`, typed `Tensor[T]` use, expli
 - `https://go.dev/blog/module-compatibility` — official guidance to add rather than change exported function signatures and to seal package-owned interfaces.
 
 ### Consumer-wired logging reference
+- `.planning/spikes/002-logging-contract-comparison.md` — validated comparison and selected `slog.Handler` planning contract.
+- `.planning/spikes/002-b-slog-handler-sink/README.md` — recommended variant's API shape, concurrency proof, and zero-allocation no-op evidence.
+- `.planning/spikes/MANIFEST.md` — spike requirements, verdicts, and consolidated planning outcomes.
+- `.planning/spikes/CONVENTIONS.md` — required verification conventions for purego FFI and comparison spikes.
 - `../chroma-go/pkg/logger/logger.go` — user-selected reference for a consumer-supplied structured logger interface.
 - `../chroma-go/pkg/logger/noop_logger.go` — no-op default behavior to emulate in a narrower form.
 - `../chroma-go/pkg/api/v2/client.go` — `WithLogger` wiring and default no-op installation; inspiration only, not a dependency.
@@ -101,23 +111,24 @@ Existing constructor-bound `AdvancedSession.Run()`, typed `Tensor[T]` use, expli
 - `AdvancedSession.valuesToHandles` and `valueRunLockable`: reuse the existing per-value lease and deduplication machinery for `RunWithValues`.
 - `Tensor[T].lockForRun` / `unlockForRun`: already protect value handles from concurrent `Destroy()` during inference.
 - `ErrorCode`: already mirrors the native ORT status-code enumeration needed by `ORTError`.
-- `getErrorMessage`, `releaseStatus`, and native function-pointer registration: natural foundation for one status-to-error helper that also captures the native code.
+- `getErrorMessage`, `releaseStatus`, and native function-pointer registration: validated foundation for one status-to-error helper that installs release first and copies all status-owned data.
 - `ErrUnsupportedPlatform` plus existing `%w`/`errors.Join` usage in bootstrap: established patterns for inspectable sentinel and multi-cause errors.
-- `logFinalizerWarning` and existing `log.Printf` call sites: concrete migration points for the new silent-by-default diagnostic sink.
+- `logFinalizerWarning` and existing `log.Printf` call sites: concrete audit and migration points for the new silent-by-default diagnostic handler.
 
 ### Established Patterns
 - Sessions fix input/output names and embedders cache preallocated tensors by batch size; per-call values should vary without discarding that reuse model.
 - Resource wrappers are caller-owned, explicitly destroyed, and guarded by finalizers only as a safety net.
 - Lock ordering is documented in `ort/environment.go` and must remain `AdvancedSession.runMu` → `ortCallMu` → global `mu` → value-local lock.
 - Bootstrap already preserves many filesystem/network causes with standard wrapping; Phase 2 should extend that pattern rather than introduce a parallel error library.
-- Process-global runtime settings are configured before initialization; logger configuration should follow the same concurrency-safe model and also cover pre-initialization bootstrap calls.
+- Process-global runtime settings are configured before initialization; the diagnostic handler follows the same model while using atomic replacement to remain race-safe.
+- Purego ownership tests separate deterministic race-checked callbacks from real native ABI tests because race-enabled checkptr rejects the intentional `uintptr` FFI boundary.
 
 ### Integration Points
 - `ort/session.go`: additive `RunWithValues`, shared run core, and sealed-value validation.
 - `ort/types.go` / `ort/tensor.go`: sealed `Value`, tensor inspection helpers, and typed-error declarations as appropriate.
 - `ort/environment.go`, `ort/memory.go`, `ort/tensor.go`, and `ort/session.go`: native status conversion to `ORTError`.
-- `ort/bootstrap.go`: sentinel coverage, preserved causes, and diagnostic-sink migration.
-- `ort/finalizer_log.go`: route non-returnable finalizer failures through the configured sink.
+- `ort/bootstrap.go`: sentinel coverage, preserved causes, and migration of approved non-returnable diagnostics to the configured handler.
+- `ort/finalizer_log.go`: route non-returnable finalizer failures through the private diagnostic emitter.
 - Existing `ort/*_test.go`, integration tests, examples, and all three embedder packages: compatibility and new `errors.Is`/`errors.As` verification.
 
 </code_context>
@@ -127,7 +138,7 @@ Existing constructor-bound `AdvancedSession.Run()`, typed `Tensor[T]` use, expli
 
 - The new call shape is explicitly `RunWithValues(inputs, outputs []Value) error`; outputs are filled in place.
 - The intended type-inspection experience is an exact generic helper such as `tensor, ok := ort.AsTensor[float32](value)`.
-- The logging model should feel like `chroma-go`'s consumer-wired/no-op-default pattern, but reduced to the smallest surface useful for this process-global FFI library.
+- The logging model keeps `chroma-go`'s consumer-wired/no-op-default behavior without copying its logging abstraction: `ort.SetDiagnosticHandler(logger.Handler())` configures standard structured logging, while `nil` restores silence.
 
 </specifics>
 
