@@ -69,7 +69,7 @@ go test -run '^$' -bench BenchmarkDiscardedDiagnostic -benchmem ./.planning/spik
 
 ## Results
 
-**Verdict: VALIDATED as a viable design; comparison winner is not yet chosen.**
+**Verdict: VALIDATED and RECOMMENDED by the comparison.**
 
 The race suite passed:
 
@@ -93,3 +93,7 @@ backend adapter must correctly implement all four `slog.Handler` methods, not
 just one diagnostic method. That burden is acceptable when an existing slog
 handler adapter is already available, but heavier for a small custom or Zap
 integration.
+
+The head-to-head comparison selects this option because it preserves the
+consumer-wired interface boundary with no project-owned logging abstraction.
+See `../002-logging-contract-comparison.md`.

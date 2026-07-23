@@ -18,6 +18,6 @@ De-risk the two Phase 2 decisions with the highest irreversible cost before plan
 | # | Name | Type | Validates | Verdict | Tags |
 |---|------|------|-----------|---------|------|
 | 001 | ort-status-lifetime | standard | Given a native ORT status, when it is converted and released, then its code/operation/message remain inspectable and release occurs exactly once under repeated and concurrent failures | VALIDATED | ffi, errors, ownership, concurrency |
-| 002a | custom-diagnostic-sink | comparison | Given a narrow custom sink with a no-op default, when bootstrap/finalizer diagnostics are emitted concurrently, then structured fields arrive without output or races by default | VALIDATED | logging, api, noop |
-| 002b | slog-handler-sink | comparison | Given a consumer-supplied `slog.Handler`, when diagnostics are emitted, then standard structured output and silent defaults work without a custom logging vocabulary | VALIDATED | logging, slog, api |
+| 002a | custom-diagnostic-sink | comparison | Given a narrow custom sink with a no-op default, when bootstrap/finalizer diagnostics are emitted concurrently, then structured fields arrive without output or races by default | VALIDATED (NOT RECOMMENDED) | logging, api, noop |
+| 002b | slog-handler-sink | comparison | Given a consumer-supplied `slog.Handler`, when diagnostics are emitted, then standard structured output and silent defaults work without a custom logging vocabulary | VALIDATED (RECOMMENDED) | logging, slog, api |
 | 002c | slog-logger-sink | comparison | Given a consumer-supplied `*slog.Logger`, when diagnostics are emitted, then wiring is ergonomic, structured, silent by default, and race-safe | VALIDATED (NOT RECOMMENDED) | logging, slog, api |
