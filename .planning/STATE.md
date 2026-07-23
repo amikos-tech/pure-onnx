@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v0.1.0
 milestone_name: "**Goal**: v0.1.0 is cut as a tagged, documented release with CI green across all supported platforms and every milestone issue closed."
-status: ready_to_plan
-stopped_at: Phase 01 complete (3/3) — ready to discuss Phase 2
-last_updated: 2026-07-22T07:55:25.530Z
-last_activity: 2026-07-22 -- Phase 01 execution started
+status: planning
+stopped_at: Phase 2 context gathered
+last_updated: "2026-07-23T09:28:07.809Z"
+last_activity: 2026-07-22
 progress:
   total_phases: 6
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 3
   completed_plans: 3
-  percent: 0
+  percent: 17
 ---
 
 # Project State
@@ -84,6 +84,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-21T08:15:23.309Z
-Stopped at: Phase 1 context gathered
-Resume file: .planning/phases/01-dx-test-hardening/01-CONTEXT.md
+Last session: 2026-07-23T09:28:07.801Z
+Stopped at: Phase 2 context gathered
+Resume file: .planning/phases/02-core-api-errors-values/02-CONTEXT.md
