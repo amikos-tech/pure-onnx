@@ -5,7 +5,7 @@
 ## Languages
 
 **Primary:**
-- Go 1.24.0 - All library code, examples, and tests live under `ort/`, `embeddings/`, `examples/`, and `tools/gen_ortapi.go`.
+- Go 1.25.0 - All library code, examples, and tests live under `ort/`, `embeddings/`, `examples/`, and `tools/gen_ortapi.go`.
 
 **Secondary:**
 - Python 3.10+ - Export and golden-data tooling in `tools/openclip_export_onnx.py`, `tools/openclip_generate_golden.py`, and `tools/splade_generate_golden.py`.
@@ -15,8 +15,8 @@
 ## Runtime
 
 **Environment:**
-- Go 1.24.x for normal development and CI (`go.mod`, `.github/workflows/ci.yml`).
-- Patched Go 1.25.8+auto only for vulnerability scanning via `govulncheck` (`Makefile`, CI env `GO_VULNCHECK_TOOLCHAIN`).
+- Go 1.25.x for normal development and CI (`go.mod`, `.github/workflows/ci.yml`).
+- Patched Go 1.25.12+auto only for vulnerability scanning via `govulncheck` (`Makefile`, CI env `GO_VULNCHECK_TOOLCHAIN`).
 - Native ONNX Runtime shared libraries are loaded dynamically at runtime through `purego`, so consumers still need a platform-specific `.so`, `.dylib`, or `.dll`.
 
 **Package Manager:**
@@ -65,7 +65,7 @@
 ## Platform Requirements
 
 **Development:**
-- macOS, Linux, or Windows with Go 1.24+.
+- macOS, Linux, or Windows with Go 1.25+.
 - Either an explicit ONNX Runtime shared library or network access for bootstrap download/caching.
 - Python is optional unless working on export or golden-dataset tooling in `tools/`.
 

@@ -48,6 +48,13 @@ const (
 
 var errSharedLibraryNotFound = errors.New("ONNX Runtime shared library not found")
 var errBootstrapRedirectPolicy = errors.New("bootstrap redirect policy rejection")
+
+// ErrUnsupportedPlatform is returned when resolveRuntimeArtifact cannot resolve a prebuilt ONNX Runtime artifact for the host GOOS/GOARCH combination.
+var ErrUnsupportedPlatform = errors.New("unsupported platform for ONNX Runtime bootstrap")
+
+// IsUnsupportedPlatformError reports whether err wraps ErrUnsupportedPlatform.
+func IsUnsupportedPlatformError(err error) bool { return errors.Is(err, ErrUnsupportedPlatform) }
+
 var bootstrapCacheFallbackWarnOnce sync.Once
 var bootstrapInitMu sync.Mutex
 
@@ -519,7 +526,7 @@ func resolveRuntimeArtifact(goos, goarch string) (runtimeArtifact, error) {
 		}
 	}
 
-	return runtimeArtifact{}, fmt.Errorf("unsupported platform for ONNX Runtime bootstrap: GOOS=%s GOARCH=%s", goos, goarch)
+	return runtimeArtifact{}, fmt.Errorf("%w: GOOS=%s GOARCH=%s", ErrUnsupportedPlatform, goos, goarch)
 }
 
 func (a runtimeArtifact) archiveName(version string) string {

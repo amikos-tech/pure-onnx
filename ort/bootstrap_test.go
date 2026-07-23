@@ -25,11 +25,12 @@ import (
 
 func TestResolveRuntimeArtifact(t *testing.T) {
 	tests := []struct {
-		name    string
-		goos    string
-		goarch  string
-		want    runtimeArtifact
-		wantErr bool
+		name                    string
+		goos                    string
+		goarch                  string
+		want                    runtimeArtifact
+		wantErr                 bool
+		wantUnsupportedPlatform bool
 	}{
 		{
 			name:   "darwin arm64",
@@ -98,10 +99,11 @@ func TestResolveRuntimeArtifact(t *testing.T) {
 			},
 		},
 		{
-			name:    "unsupported",
-			goos:    "linux",
-			goarch:  "386",
-			wantErr: true,
+			name:                    "unsupported",
+			goos:                    "linux",
+			goarch:                  "386",
+			wantErr:                 true,
+			wantUnsupportedPlatform: true,
 		},
 	}
 
@@ -111,6 +113,11 @@ func TestResolveRuntimeArtifact(t *testing.T) {
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got nil")
+				}
+				if tc.wantUnsupportedPlatform {
+					if !errors.Is(err, ErrUnsupportedPlatform) {
+						t.Fatalf("expected ErrUnsupportedPlatform, got: %v", err)
+					}
 				}
 				return
 			}

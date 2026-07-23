@@ -7,7 +7,7 @@ GOOS := $(shell go env GOOS)
 GOARCH := $(shell go env GOARCH)
 PROJECT_NAME := pure-onnx
 PKG := github.com/amikos-tech/$(PROJECT_NAME)
-GO_VULNCHECK_TOOLCHAIN ?= go1.25.8+auto
+GO_VULNCHECK_TOOLCHAIN ?= go1.25.12+auto
 GOVULNCHECK := $(shell $(GO) env GOPATH)/bin/govulncheck
 GOLANGCI_LINT_VERSION ?= v2.8.0
 GOSEC_VERSION ?= v2.23.0
@@ -104,13 +104,13 @@ release:
 ## test: Run tests
 test:
 	@echo "$(YELLOW)Running tests...$(NC)"
-	$(GO) test -v -cover ./...
+	$(GO) test -v -cover -short ./...
 	@echo "$(GREEN)✓ Tests complete$(NC)"
 
 ## test-race: Run race-enabled tests for core ort package
 test-race:
 	@echo "$(YELLOW)Running race-enabled tests (ort)...$(NC)"
-	$(GO) test -v -race ./ort/...
+	$(GO) test -v -race -short ./ort/...
 	@echo "$(GREEN)✓ Race tests complete$(NC)"
 
 ## test-coverage: Run tests with coverage report
@@ -149,6 +149,8 @@ vet:
 	@echo "$(YELLOW)Running go vet...$(NC)"
 	@$(GO) vet -unsafeptr=false ./ort/...
 	@$(GO) vet -unsafeptr=false ./examples/basic/...
+	@$(GO) vet -unsafeptr=false ./examples/openclip/...
+	@$(GO) vet -unsafeptr=false ./examples/inference/...
 	@$(GO) vet ./embeddings/...
 	@echo "$(GREEN)✓ Vet complete$(NC)"
 
@@ -358,7 +360,7 @@ precommit: fmt-check
 	else \
 		$(MAKE) gosec; \
 	fi
-	$(GO) test ./...
+	$(GO) test -short ./...
 	@$(MAKE) check-mod-tidy
 	@if [ "$${SKIP_VULNCHECK:-0}" = "1" ]; then \
 		echo "$(YELLOW)Skipping vulncheck (SKIP_VULNCHECK=1).$(NC)"; \

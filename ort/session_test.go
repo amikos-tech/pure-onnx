@@ -2,6 +2,7 @@ package ort
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -687,14 +688,26 @@ func TestAdvancedSessionRunAndDestroyConcurrent(t *testing.T) {
 	releasedCount := int32(0)
 	var releasedHandle atomic.Uintptr
 
+	var (
+		eventsMu sync.Mutex
+		events   []string
+	)
+	record := func(e string) {
+		eventsMu.Lock()
+		events = append(events, e)
+		eventsMu.Unlock()
+	}
+
 	mu.Lock()
 	ortAPI = &OrtApi{}
 	runSessionFunc = func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr {
 		closeRunStarted.Do(func() { close(runStarted) })
 		<-allowRunReturn
+		record("run-returned")
 		return 0
 	}
 	releaseSessionFunc = func(handle uintptr) {
+		record("destroy-released")
 		atomic.AddInt32(&releasedCount, 1)
 		releasedHandle.Store(handle)
 	}
@@ -715,19 +728,28 @@ func TestAdvancedSessionRunAndDestroyConcurrent(t *testing.T) {
 
 	<-runStarted
 
+	// Deterministic lock-contention probe: Run() locks session.runMu before invoking
+	// the mock runSessionFunc, and <-runStarted only unblocks after that mock is entered,
+	// so runMu is guaranteed held here. TryLock() must fail, proving Destroy() WILL block
+	// independent of goroutine scheduling.
+	if session.runMu.TryLock() {
+		session.runMu.Unlock()
+		t.Fatalf("expected session.runMu to be held by the in-flight Run(), TryLock unexpectedly succeeded")
+	}
+
 	destroyErrCh := make(chan error, 1)
 	go func() {
 		destroyErrCh <- session.Destroy()
 	}()
 
-	require.Never(t, func() bool {
-		select {
-		case <-destroyErrCh:
-			return true
-		default:
-			return false
-		}
-	}, 500*time.Millisecond, 50*time.Millisecond, "destroy returned before run completed")
+	// Deadlock safety net only -- the TryLock probe above already proved blocking.
+	// This watchdog runs on the main test goroutine (testing.T.FailNow contract) and
+	// fires only on a genuine regression where destroy returns before Run unblocks.
+	select {
+	case err := <-destroyErrCh:
+		t.Fatalf("destroy returned before run completed (err=%v) -- deadlock-safety-net fired unexpectedly early", err)
+	case <-time.After(500 * time.Millisecond):
+	}
 
 	close(allowRunReturn)
 
@@ -736,6 +758,14 @@ func TestAdvancedSessionRunAndDestroyConcurrent(t *testing.T) {
 	}
 	if err := <-destroyErrCh; err != nil {
 		t.Fatalf("destroy failed: %v", err)
+	}
+
+	eventsMu.Lock()
+	got := append([]string(nil), events...)
+	eventsMu.Unlock()
+	want := []string{"run-returned", "destroy-released"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("expected event order %v, got %v", want, got)
 	}
 
 	if got := atomic.LoadInt32(&releasedCount); got != 1 {
@@ -801,15 +831,17 @@ func TestAdvancedSessionDestroyDoesNotBlockUnrelatedRun(t *testing.T) {
 		destroyErrCh <- otherSession.Destroy()
 	}()
 
+	// Deliberate mirror-image of Task 1's watchdog: here the receive branch is the
+	// expected/passing path and the timeout is the FAILURE condition, since this test
+	// proves the ABSENCE of blocking on an unrelated in-flight Run. The timeout only
+	// elapses on a genuine regression, so a generous budget costs passing runs nothing.
 	var destroyErr error
-	require.Eventually(t, func() bool {
-		select {
-		case destroyErr = <-destroyErrCh:
-			return true
-		default:
-			return false
-		}
-	}, 2*time.Second, 10*time.Millisecond, "destroy should not block on unrelated in-flight Run")
+	select {
+	case destroyErr = <-destroyErrCh:
+		// expected: destroy is not blocked by the unrelated in-flight Run
+	case <-time.After(2 * time.Second):
+		t.Fatal("destroy on unrelated session did not return within 2s -- appears blocked by in-flight Run")
+	}
 	if destroyErr != nil {
 		t.Fatalf("destroy failed: %v", destroyErr)
 	}
@@ -839,14 +871,26 @@ func TestTensorDestroyWaitsForInFlightRun(t *testing.T) {
 
 	releasedTensor := int32(0)
 
+	var (
+		eventsMu sync.Mutex
+		events   []string
+	)
+	record := func(e string) {
+		eventsMu.Lock()
+		events = append(events, e)
+		eventsMu.Unlock()
+	}
+
 	mu.Lock()
 	ortAPI = &OrtApi{}
 	runSessionFunc = func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr {
 		closeRunStarted.Do(func() { close(runStarted) })
 		<-allowRunReturn
+		record("run-returned")
 		return 0
 	}
 	releaseValueFunc = func(handle uintptr) {
+		record("destroy-released")
 		atomic.AddInt32(&releasedTensor, 1)
 	}
 	mu.Unlock()
@@ -867,19 +911,27 @@ func TestTensorDestroyWaitsForInFlightRun(t *testing.T) {
 
 	<-runStarted
 
+	// Deterministic lock-contention probe: Run()'s value-locking path takes
+	// inputTensor.runMu.RLock() (via lockForRun) before invoking the mock, and
+	// <-runStarted only unblocks after that mock is entered. A write-lock TryLock()
+	// against the RWMutex must fail while any RLock is held, proving Tensor.Destroy()
+	// WILL block independent of goroutine scheduling.
+	if inputTensor.runMu.TryLock() {
+		inputTensor.runMu.Unlock()
+		t.Fatalf("expected inputTensor.runMu to be held (RLock) by the in-flight Run(), TryLock unexpectedly succeeded")
+	}
+
 	tensorDestroyErrCh := make(chan error, 1)
 	go func() {
 		tensorDestroyErrCh <- inputTensor.Destroy()
 	}()
 
-	require.Never(t, func() bool {
-		select {
-		case <-tensorDestroyErrCh:
-			return true
-		default:
-			return false
-		}
-	}, 500*time.Millisecond, 50*time.Millisecond, "tensor destroy returned before run completed")
+	// Deadlock safety net only -- the TryLock probe above already proved blocking.
+	select {
+	case err := <-tensorDestroyErrCh:
+		t.Fatalf("tensor destroy returned before run completed (err=%v) -- deadlock-safety-net fired unexpectedly early", err)
+	case <-time.After(500 * time.Millisecond):
+	}
 
 	close(allowRunReturn)
 
@@ -888,6 +940,14 @@ func TestTensorDestroyWaitsForInFlightRun(t *testing.T) {
 	}
 	if err := <-tensorDestroyErrCh; err != nil {
 		t.Fatalf("tensor destroy failed: %v", err)
+	}
+
+	eventsMu.Lock()
+	got := append([]string(nil), events...)
+	eventsMu.Unlock()
+	want := []string{"run-returned", "destroy-released"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("expected event order %v, got %v", want, got)
 	}
 
 	if got := atomic.LoadInt32(&releasedTensor); got != 1 {

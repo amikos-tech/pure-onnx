@@ -253,6 +253,7 @@ The CI pipeline runs tests in multiple configurations:
 - **Integration Tests (matrix job)**: Skipped in the cross-platform matrix (no ONNX Runtime library preinstalled)
 - **Real-model Integration Job**: Linux job downloads ONNX Runtime, runs all-MiniLM integration + memory stability tests, runs SPLADE integration and hosted parity, runs OpenCLIP integration and hosted parity, and runs all-MiniLM benchmarks
 - **Race Detection**: Partially disabled due to checkptr incompatibility with purego FFI
+- **Stress Test Job**: Dedicated `test-race-ort-stress` job runs `ort/environment_stress_test.go` under `-race` with `-count=50` and a 10-minute timeout, separate from `test-race-ort-concurrency`
 - **Vulnerability Check**: Runs `make vulncheck` with a patched Go baseline (`go1.25.12+auto`)
 
 ### Local Pre-commit Checks
@@ -274,7 +275,7 @@ make precommit
 - `make vet`
 - `make precommit-lint-new` (golangci-lint only for issues introduced since merge-base with `PRECOMMIT_BASE_REF`, default `origin/main`)
 - `make gosec` (blocking security scan, excludes `examples/experimental`)
-- `go test ./...`
+- `go test -short ./...`
 - `make check-mod-tidy`
 - `make vulncheck`
 
@@ -282,6 +283,48 @@ Optional environment flags:
 - `SKIP_LINT_NEW=1`
 - `SKIP_GOSEC=1`
 - `SKIP_VULNCHECK=1`
+
+### Running Stress Tests
+
+`ort/environment_stress_test.go` contains `testing.Short()`-gated stress tests.
+They split into two kinds:
+
+- **Seeded fast-path accounting** (`TestStressConcurrentInitDestroy`,
+  `TestStressRapidInitDestroy`, `TestStressMixedOperationsUnderLoad`): each seeds
+  `refCount = 1` before spawning workers and points at a nonexistent library, so
+  every worker takes the increment/decrement fast path. These stress the
+  refcount/mutex accounting under load — not real library load/teardown.
+- **Real init/teardown transition** (`TestStressRealInitTeardownTransition`):
+  lets `refCount` cross `0<->1` against a real ONNX Runtime library, so the real
+  `dlopen`/`dlclose`, `CreateEnv`/`ReleaseEnv`, and purego symbol registration
+  lifecycle is exercised under the race detector. `Init`/`Destroy` hold
+  `ortCallMu` exclusively, so those calls themselves are serialized rather than
+  concurrent — what runs under contention is the surrounding refcount/mutex
+  bookkeeping plus repeated `refCount` `0<->1` churn. It **skips** unless
+  `ONNXRUNTIME_LIB_PATH` is set.
+
+Together they guard against refcount corruption, deadlocks, and panics under load
+across both the fast-path accounting and the genuine library lifecycle.
+
+Which repository commands skip them, and which run them:
+
+- **Skipped by** `make test`, `make precommit`, and `make test-race` (all pass
+  `-short`), and by CI's `test` job (which also passes `-short`).
+- **Run by** the dedicated CI `test-race-ort-stress` job (`-count=50`, 10-minute
+  timeout) for the seeded fast-path tests, by the CI `integration-real-model`
+  job under `-race` for `TestStressRealInitTeardownTransition` (which needs the
+  real library), and by any explicit local `-run TestStress` invocation.
+
+Note the precise Go behavior: `testing.Short()` is only true when `-short` is
+passed on that exact command line. This repository's Makefile targets and CI
+steps wrap `-short` in for you, but a bare `go test ./...` typed directly does
+**not** add it implicitly — that command will still run the stress tests.
+
+Run them locally with:
+
+```bash
+go test -race -run TestStress -count=10 ./ort/...
+```
 
 ### Local CI Simulation
 
