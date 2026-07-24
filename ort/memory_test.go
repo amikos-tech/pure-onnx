@@ -1,9 +1,13 @@
 package ort
 
 import (
+	"bytes"
+	"errors"
+	"log/slog"
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -166,27 +170,44 @@ func TestCreateMemoryInfo(t *testing.T) {
 }
 
 func TestMemoryInfoDoubleDestroy(t *testing.T) {
-	cleanup := setupTestEnvironment(t)
-	defer cleanup()
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
 
-	memInfo, err := CreateCpuMemoryInfo(AllocatorTypeArena, MemTypeCPU)
-	if err != nil {
-		t.Fatalf("Failed to create memory info: %v", err)
+	var releases atomic.Int32
+	mu.Lock()
+	releaseMemoryInfoFunc = func(handle uintptr) {
+		if handle != 701 {
+			t.Errorf("release handle = %d, want 701", handle)
+		}
+		releases.Add(1)
+	}
+	mu.Unlock()
+
+	memInfo := &MemoryInfo{handle: 701, name: "Cpu"}
+	if err := memInfo.Destroy(); err != nil {
+		t.Fatalf("first destroy failed: %v", err)
 	}
 
 	if err := memInfo.Destroy(); err != nil {
-		t.Fatalf("First destroy failed: %v", err)
+		t.Fatalf("second destroy should be a no-op: %v", err)
+	}
+	if got := releases.Load(); got != 1 {
+		t.Fatalf("release count = %d, want 1", got)
 	}
 
-	// Second destroy should be safe (no-op)
-	if err := memInfo.Destroy(); err != nil {
-		t.Errorf("Second destroy should not return error, got: %v", err)
+	var nilInfo *MemoryInfo
+	if err := nilInfo.Destroy(); err != nil {
+		t.Fatalf("nil destroy should be a no-op: %v", err)
 	}
 }
 
 func TestMemoryInfoDestroyReleaseUnavailable(t *testing.T) {
 	resetEnvironmentState()
-	defer resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	handler := &diagnosticCountingHandler{}
+	SetDiagnosticHandler(handler)
+	t.Cleanup(func() { SetDiagnosticHandler(nil) })
 
 	memInfo := &MemoryInfo{
 		handle:   123,
@@ -196,8 +217,8 @@ func TestMemoryInfoDestroyReleaseUnavailable(t *testing.T) {
 	}
 
 	err := memInfo.Destroy()
-	if err == nil || !strings.Contains(err.Error(), "release function unavailable") {
-		t.Fatalf("expected release-unavailable destroy error, got: %v", err)
+	if !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("destroy error = %v, want ErrNotInitialized", err)
 	}
 	if memInfo.handle != 0 {
 		t.Fatalf("expected handle to be reset even on release failure")
@@ -206,6 +227,9 @@ func TestMemoryInfoDestroyReleaseUnavailable(t *testing.T) {
 	// Second destroy remains a safe no-op once handle has been cleared.
 	if err := memInfo.Destroy(); err != nil {
 		t.Fatalf("second destroy should be no-op, got: %v", err)
+	}
+	if got := handler.count.Load(); got != 0 {
+		t.Fatalf("returned destroy error emitted %d diagnostics, want 0", got)
 	}
 }
 
@@ -230,9 +254,235 @@ func TestMemoryInfoFinalizer(t *testing.T) {
 }
 
 func TestMemoryInfoBeforeInit(t *testing.T) {
-	// Don't initialize environment
-	_, err := CreateCpuMemoryInfo(AllocatorTypeArena, MemTypeCPU)
-	if err == nil {
-		t.Error("Expected error when creating memory info before initialization")
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	handler := &diagnosticCountingHandler{}
+	SetDiagnosticHandler(handler)
+	t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+	if _, err := CreateMemoryInfo("", AllocatorTypeArena, 0, MemTypeCPU); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("empty name error = %v, want ErrInvalidArgument", err)
 	}
+	if _, err := CreateCpuMemoryInfo(AllocatorTypeArena, MemTypeCPU); !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("before-init error = %v, want ErrNotInitialized", err)
+	}
+	if got := handler.count.Load(); got != 0 {
+		t.Fatalf("returned creation errors emitted %d diagnostics, want 0", got)
+	}
+}
+
+func TestMemoryInfoStatusConversion(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	handler := &diagnosticCountingHandler{}
+	SetDiagnosticHandler(handler)
+	t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+	const statusHandle = uintptr(711)
+	var releases atomic.Int32
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	createMemoryInfoFunc = func(
+		name uintptr,
+		allocatorType AllocatorType,
+		deviceID int32,
+		memType MemType,
+		out *uintptr,
+	) uintptr {
+		if name == 0 || allocatorType != AllocatorTypeArena || deviceID != 4 ||
+			memType != MemTypeCPU || out == nil {
+			t.Errorf(
+				"unexpected creation args: name=%d allocator=%d device=%d memType=%d out=%p",
+				name,
+				allocatorType,
+				deviceID,
+				memType,
+				out,
+			)
+		}
+		return statusHandle
+	}
+	getErrorCodeFunc = func(status uintptr) ErrorCode {
+		if status != statusHandle {
+			t.Errorf("GetErrorCode status = %d, want %d", status, statusHandle)
+		}
+		return ErrorCodeInvalidArgument
+	}
+	getErrorMessageFunc = func(status uintptr) uintptr {
+		if status != statusHandle {
+			t.Errorf("GetErrorMessage status = %d, want %d", status, statusHandle)
+		}
+		// TestStatusToError owns the non-empty message copy proof. Keeping this
+		// call-site probe null avoids a Go-pointer uintptr round trip under -race.
+		return 0
+	}
+	releaseStatusFunc = func(status uintptr) {
+		if status != statusHandle {
+			t.Errorf("ReleaseStatus status = %d, want %d", status, statusHandle)
+		}
+		releases.Add(1)
+	}
+	mu.Unlock()
+
+	memInfo, err := CreateMemoryInfo("Cpu", AllocatorTypeArena, 4, MemTypeCPU)
+	if memInfo != nil {
+		t.Fatalf("memory info = %#v, want nil on status failure", memInfo)
+	}
+	var nativeErr *ORTError
+	if !errors.As(err, &nativeErr) {
+		t.Fatalf("errors.As(%v, *ORTError) = false", err)
+	}
+	if nativeErr.Operation != "create memory info" {
+		t.Fatalf("operation = %q, want create memory info", nativeErr.Operation)
+	}
+	if nativeErr.Code != ErrorCodeInvalidArgument {
+		t.Fatalf("code = %d, want %d", nativeErr.Code, ErrorCodeInvalidArgument)
+	}
+	if nativeErr.Message != "" {
+		t.Fatalf("message = %q, want empty race-safe probe message", nativeErr.Message)
+	}
+	if got := releases.Load(); got != 1 {
+		t.Fatalf("status release count = %d, want 1", got)
+	}
+	if got := handler.count.Load(); got != 0 {
+		t.Fatalf("returned status error emitted %d diagnostics, want 0", got)
+	}
+}
+
+func TestCreateMemoryInfoBlocksEnvironmentTeardown(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	const statusHandle = uintptr(712)
+	nativeStarted := make(chan struct{})
+	allowNativeReturn := make(chan struct{})
+	accessorStarted := make(chan struct{})
+	allowAccessorReturn := make(chan struct{})
+	statusReleased := make(chan struct{})
+
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	createMemoryInfoFunc = func(
+		uintptr,
+		AllocatorType,
+		int32,
+		MemType,
+		*uintptr,
+	) uintptr {
+		close(nativeStarted)
+		<-allowNativeReturn
+		return statusHandle
+	}
+	getErrorCodeFunc = func(status uintptr) ErrorCode {
+		if status != statusHandle {
+			t.Errorf("GetErrorCode status = %d, want %d", status, statusHandle)
+		}
+		close(accessorStarted)
+		<-allowAccessorReturn
+		return ErrorCodeFail
+	}
+	getErrorMessageFunc = func(uintptr) uintptr { return 0 }
+	releaseStatusFunc = func(status uintptr) {
+		if status != statusHandle {
+			t.Errorf("ReleaseStatus status = %d, want %d", status, statusHandle)
+		}
+		close(statusReleased)
+	}
+	mu.Unlock()
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := CreateMemoryInfo("Cpu", AllocatorTypeArena, 0, MemTypeCPU)
+		result <- err
+	}()
+
+	<-nativeStarted
+	nativeProtected := !ortCallMu.TryLock()
+	if !nativeProtected {
+		ortCallMu.Unlock()
+	}
+
+	close(allowNativeReturn)
+	<-accessorStarted
+	accessorProtected := !ortCallMu.TryLock()
+	if !accessorProtected {
+		ortCallMu.Unlock()
+	}
+
+	close(allowAccessorReturn)
+	err := <-result
+	<-statusReleased
+
+	availableAfterConversion := ortCallMu.TryLock()
+	if availableAfterConversion {
+		ortCallMu.Unlock()
+	}
+
+	if !nativeProtected {
+		t.Error("exclusive teardown lock was available during native CreateMemoryInfo")
+	}
+	if !accessorProtected {
+		t.Error("exclusive teardown lock was available during status conversion")
+	}
+	if !availableAfterConversion {
+		t.Error("exclusive teardown lock remained unavailable after conversion and release")
+	}
+	var nativeErr *ORTError
+	if !errors.As(err, &nativeErr) {
+		t.Fatalf("errors.As(%v, *ORTError) = false", err)
+	}
+}
+
+func TestDiagnosticMemoryInfo(t *testing.T) {
+	t.Run("returned errors stay silent", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		handler := &diagnosticCountingHandler{}
+		SetDiagnosticHandler(handler)
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+		if _, err := CreateMemoryInfo("", AllocatorTypeArena, 0, MemTypeCPU); err == nil {
+			t.Fatal("empty-name creation returned nil error")
+		}
+		if _, err := CreateCpuMemoryInfo(AllocatorTypeArena, MemTypeCPU); err == nil {
+			t.Fatal("before-init creation returned nil error")
+		}
+		if err := (&MemoryInfo{handle: 801, name: "Cpu"}).Destroy(); err == nil {
+			t.Fatal("release-unavailable destroy returned nil error")
+		}
+
+		if got := handler.count.Load(); got != 0 {
+			t.Fatalf("returned memory failures emitted %d diagnostics, want 0", got)
+		}
+	})
+
+	t.Run("finalizer-only failure emits one structured warning", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		var output bytes.Buffer
+		SetDiagnosticHandler(slog.NewJSONHandler(&output, nil))
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+		memInfo := &MemoryInfo{handle: 802, name: "Cpu"}
+		finalizeMemoryInfo(memInfo)
+		finalizeMemoryInfo(memInfo)
+
+		if got := strings.Count(output.String(), "\n"); got != 1 {
+			t.Fatalf("finalizer diagnostic record count = %d, want 1", got)
+		}
+		record := decodeDiagnosticRecord(t, &output)
+		if got := record["level"]; got != "WARN" {
+			t.Fatalf("level = %v, want WARN", got)
+		}
+		if got := record["resource"]; got != "memory_info" {
+			t.Fatalf("resource = %v, want memory_info", got)
+		}
+		if got := record["error"]; got == nil || !strings.Contains(got.(string), "release function unavailable") {
+			t.Fatalf("error attr = %v, want release-function failure", got)
+		}
+	})
 }
