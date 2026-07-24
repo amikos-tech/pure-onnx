@@ -26,22 +26,22 @@ type AdvancedSession struct {
 func NewAdvancedSession(modelPath string, inputNames []string, outputNames []string,
 	inputValues []Value, outputValues []Value, options *SessionOptions) (*AdvancedSession, error) {
 	if modelPath == "" {
-		return nil, fmt.Errorf("model path cannot be empty")
+		return nil, fmt.Errorf("model path cannot be empty: %w", ErrInvalidArgument)
 	}
 	if len(inputNames) == 0 {
-		return nil, fmt.Errorf("at least one input name is required")
+		return nil, fmt.Errorf("at least one input name is required: %w", ErrInvalidArgument)
 	}
 	if len(outputNames) == 0 {
-		return nil, fmt.Errorf("at least one output name is required")
+		return nil, fmt.Errorf("at least one output name is required: %w", ErrInvalidArgument)
 	}
 	if len(inputNames) != len(inputValues) {
-		return nil, fmt.Errorf("input names/values count mismatch: got %d names and %d values", len(inputNames), len(inputValues))
+		return nil, fmt.Errorf("input names/values count mismatch: got %d names and %d values: %w", len(inputNames), len(inputValues), ErrInvalidArgument)
 	}
 	if len(outputNames) != len(outputValues) {
-		return nil, fmt.Errorf("output names/values count mismatch: got %d names and %d values", len(outputNames), len(outputValues))
+		return nil, fmt.Errorf("output names/values count mismatch: got %d names and %d values: %w", len(outputNames), len(outputValues), ErrInvalidArgument)
 	}
 	if options != nil && options.handle == 0 {
-		return nil, fmt.Errorf("session options handle is not initialized")
+		return nil, fmt.Errorf("session options handle is not initialized: %w", ErrInvalidArgument)
 	}
 
 	ortCallMu.RLock()
@@ -64,7 +64,7 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 	// DestroyEnvironment takes ortCallMu.Lock before it can nil these globals.
 	if ortAPI == nil || ortEnv == 0 || createSessionOptionsFunc == nil || releaseSessionOptionsFunc == nil || createSessionFunc == nil {
 		mu.Unlock()
-		return nil, fmt.Errorf("ONNX Runtime not initialized")
+		return nil, fmt.Errorf("ONNX Runtime not initialized: %w", ErrNotInitialized)
 	}
 	envHandle := ortEnv
 	createSessionOptions := createSessionOptionsFunc
@@ -122,12 +122,21 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 	return session, nil
 }
 
-// Run executes inference on the session.
-// Calls are intentionally serialized per session instance via runMu because this MVP
-// binds fixed input/output value handles onto the session object.
+// Run executes inference with the input and output values bound at construction.
 func (s *AdvancedSession) Run() error {
+	return s.run(nil, nil, true)
+}
+
+// RunWithValues executes inference with caller-supplied input and output values.
+// NewAdvancedSession still requires bound values at construction; this method leaves
+// those values unchanged so later Run calls continue to use the original bindings.
+func (s *AdvancedSession) RunWithValues(inputs, outputs []Value) error {
+	return s.run(inputs, outputs, false)
+}
+
+func (s *AdvancedSession) run(inputs, outputs []Value, useBoundValues bool) error {
 	if s == nil {
-		return fmt.Errorf("session is nil")
+		return fmt.Errorf("session is nil: %w", ErrInvalidArgument)
 	}
 
 	// Lock order here is runMu -> ortCallMu -> mu.
@@ -150,22 +159,26 @@ func (s *AdvancedSession) Run() error {
 
 	// Session-owned fields are guarded by runMu.
 	if s.handle == 0 {
-		return fmt.Errorf("session has been destroyed")
+		return fmt.Errorf("session has been destroyed: %w", ErrDestroyed)
 	}
 	if len(s.inputNames) == 0 || len(s.outputNames) == 0 {
-		return fmt.Errorf("session is missing input/output names")
+		return fmt.Errorf("session is missing input/output names: %w", ErrInvalidArgument)
 	}
-	if len(s.inputNames) != len(s.inputValues) {
-		return fmt.Errorf("session input names/values count mismatch: got %d names and %d values", len(s.inputNames), len(s.inputValues))
+	if useBoundValues {
+		inputs = s.inputValues
+		outputs = s.outputValues
 	}
-	if len(s.outputNames) != len(s.outputValues) {
-		return fmt.Errorf("session output names/values count mismatch: got %d names and %d values", len(s.outputNames), len(s.outputValues))
+	if len(s.inputNames) != len(inputs) {
+		return fmt.Errorf("session input names/values count mismatch: got %d names and %d values: %w", len(s.inputNames), len(inputs), ErrInvalidArgument)
+	}
+	if len(s.outputNames) != len(outputs) {
+		return fmt.Errorf("session output names/values count mismatch: got %d names and %d values: %w", len(s.outputNames), len(outputs), ErrInvalidArgument)
 	}
 	sessionHandle = s.handle
 	inputNames = s.inputNames
 	outputNames = s.outputNames
-	inputValues = s.inputValues
-	outputValues = s.outputValues
+	inputValues = inputs
+	outputValues = outputs
 
 	// Global runtime pointers/functions are guarded by mu.
 	// Safe to snapshot under mu here because ortCallMu.RLock is already held.
@@ -173,7 +186,7 @@ func (s *AdvancedSession) Run() error {
 	mu.Lock()
 	if ortAPI == nil || runSessionFunc == nil {
 		mu.Unlock()
-		return fmt.Errorf("ONNX Runtime not initialized")
+		return fmt.Errorf("ONNX Runtime not initialized: %w", ErrNotInitialized)
 	}
 	run = runSessionFunc
 	mu.Unlock()
@@ -210,6 +223,8 @@ func (s *AdvancedSession) Run() error {
 	runtime.KeepAlive(outputNamePtrs)
 	runtime.KeepAlive(inputValueHandles)
 	runtime.KeepAlive(outputValueHandles)
+	runtime.KeepAlive(inputValues)
+	runtime.KeepAlive(outputValues)
 	if status != 0 {
 		errMsg := getErrorMessage(status)
 		releaseStatus(status)
@@ -254,7 +269,7 @@ func (s *AdvancedSession) Destroy() error {
 	if handle != 0 && releaseSession != nil {
 		releaseSession(handle)
 	} else if handle != 0 {
-		return fmt.Errorf("cannot destroy session: ONNX Runtime release function unavailable (environment may already be destroyed); ensure all tensors and sessions are destroyed before calling DestroyEnvironment()")
+		return fmt.Errorf("cannot destroy session: ONNX Runtime release function unavailable (environment may already be destroyed); ensure all tensors and sessions are destroyed before calling DestroyEnvironment(): %w", ErrNotInitialized)
 	}
 
 	return nil
@@ -301,9 +316,9 @@ func validateSessionValue(v Value, role string, index int) error {
 		return nil
 	}
 	if errors.Is(err, errValueDestroyed) {
-		return fmt.Errorf("%s value at index %d has been destroyed", role, index)
+		return fmt.Errorf("%s value at index %d has been destroyed: %w", role, index, ErrDestroyed)
 	}
-	return fmt.Errorf("invalid %s value at index %d: %w", role, index, err)
+	return fmt.Errorf("invalid %s value at index %d: %v: %w", role, index, err, ErrInvalidArgument)
 }
 
 func valuesToHandles(values []Value, role string) ([]uintptr, func(), error) {
@@ -325,7 +340,7 @@ func valuesToHandles(values []Value, role string) ([]uintptr, func(), error) {
 			key, keyOk := comparableIdentityKey(lockable)
 			if !keyOk {
 				release()
-				return nil, noOpRelease, fmt.Errorf("%s value at index %d is invalid: lockable value type %T must be comparable", role, i, v)
+				return nil, noOpRelease, fmt.Errorf("%s value at index %d is invalid: lockable value type %T must be comparable: %w", role, i, v, ErrInvalidArgument)
 			}
 
 			// Lease each comparable lockable only once per Run(). This avoids a deadlock
@@ -340,9 +355,9 @@ func valuesToHandles(values []Value, role string) ([]uintptr, func(), error) {
 			if err != nil {
 				release()
 				if errors.Is(err, errValueDestroyed) {
-					return nil, noOpRelease, fmt.Errorf("%s value at index %d has been destroyed", role, i)
+					return nil, noOpRelease, fmt.Errorf("%s value at index %d has been destroyed: %w", role, i, ErrDestroyed)
 				}
-				return nil, noOpRelease, fmt.Errorf("%s value at index %d is invalid: %w", role, i, err)
+				return nil, noOpRelease, fmt.Errorf("%s value at index %d is invalid: %v: %w", role, i, err, ErrInvalidArgument)
 			}
 			handles[i] = handle
 			unlockFns = append(unlockFns, lockable.unlockForRun)
@@ -356,9 +371,9 @@ func valuesToHandles(values []Value, role string) ([]uintptr, func(), error) {
 		if err != nil {
 			release()
 			if errors.Is(err, errValueDestroyed) {
-				return nil, noOpRelease, fmt.Errorf("%s value at index %d has been destroyed", role, i)
+				return nil, noOpRelease, fmt.Errorf("%s value at index %d has been destroyed: %w", role, i, ErrDestroyed)
 			}
-			return nil, noOpRelease, fmt.Errorf("%s value at index %d is invalid: %w", role, i, err)
+			return nil, noOpRelease, fmt.Errorf("%s value at index %d is invalid: %v: %w", role, i, err, ErrInvalidArgument)
 		}
 
 		handles[i] = handle

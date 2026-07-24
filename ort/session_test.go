@@ -508,10 +508,10 @@ func TestAdvancedSessionRunWithValues(t *testing.T) {
 		t.Cleanup(resetEnvironmentState)
 
 		type runCall struct {
-			inputName    string
-			outputName   string
-			inputHandle  uintptr
-			outputHandle uintptr
+			inputNamePresent  bool
+			outputNamePresent bool
+			inputHandle       uintptr
+			outputHandle      uintptr
 		}
 		calls := make([]runCall, 0, 2)
 
@@ -519,10 +519,10 @@ func TestAdvancedSessionRunWithValues(t *testing.T) {
 		ortAPI = &OrtApi{}
 		runSessionFunc = func(_ uintptr, _ uintptr, inputNames *uintptr, inputValues *uintptr, _ uintptr, outputNames *uintptr, _ uintptr, outputValues *uintptr) uintptr {
 			calls = append(calls, runCall{
-				inputName:    CstringToGo(*inputNames),
-				outputName:   CstringToGo(*outputNames),
-				inputHandle:  *inputValues,
-				outputHandle: *outputValues,
+				inputNamePresent:  inputNames != nil && *inputNames != 0,
+				outputNamePresent: outputNames != nil && *outputNames != 0,
+				inputHandle:       *inputValues,
+				outputHandle:      *outputValues,
 			})
 			return 0
 		}
@@ -549,14 +549,18 @@ func TestAdvancedSessionRunWithValues(t *testing.T) {
 		}
 
 		want := []runCall{
-			{inputName: "fixed_input", outputName: "fixed_output", inputHandle: 21, outputHandle: 22},
-			{inputName: "fixed_input", outputName: "fixed_output", inputHandle: 11, outputHandle: 12},
+			{inputNamePresent: true, outputNamePresent: true, inputHandle: 21, outputHandle: 22},
+			{inputNamePresent: true, outputNamePresent: true, inputHandle: 11, outputHandle: 12},
 		}
 		if !slices.Equal(calls, want) {
 			t.Fatalf("run calls = %#v, want %#v", calls, want)
 		}
 		if session.inputValues[0] != boundInput || session.outputValues[0] != boundOutput {
 			t.Fatal("RunWithValues changed the session's bound values")
+		}
+		if !slices.Equal(session.inputNames, []string{"fixed_input"}) ||
+			!slices.Equal(session.outputNames, []string{"fixed_output"}) {
+			t.Fatal("RunWithValues changed the session's fixed names")
 		}
 	})
 
