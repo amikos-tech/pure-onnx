@@ -1,7 +1,9 @@
 package ort
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"os"
 	"slices"
 	"strings"
@@ -147,6 +149,80 @@ func (v *countingLeaseValue) unlockForRun() {
 		v.released <- v.handle
 	}
 	v.runMu.RUnlock()
+}
+
+type sessionStatusProbe struct {
+	handle         uintptr
+	code           ErrorCode
+	messageBacking []byte
+	messagePointer uintptr
+	releases       atomic.Int32
+}
+
+func installSessionStatusProbe(t *testing.T, code ErrorCode, message string) *sessionStatusProbe {
+	t.Helper()
+
+	messageBacking, messagePointer := GoToCstring(message)
+	probe := &sessionStatusProbe{
+		handle:         9001,
+		code:           code,
+		messageBacking: messageBacking,
+		messagePointer: messagePointer,
+	}
+
+	mu.Lock()
+	getErrorCodeFunc = func(status uintptr) ErrorCode {
+		if status != probe.handle {
+			t.Errorf("GetErrorCode status = %d, want %d", status, probe.handle)
+		}
+		return probe.code
+	}
+	getErrorMessageFunc = func(status uintptr) uintptr {
+		if status != probe.handle {
+			t.Errorf("GetErrorMessage status = %d, want %d", status, probe.handle)
+		}
+		return probe.messagePointer
+	}
+	releaseStatusFunc = func(status uintptr) {
+		if status != probe.handle {
+			t.Errorf("ReleaseStatus status = %d, want %d", status, probe.handle)
+		}
+		for i := range probe.messageBacking {
+			probe.messageBacking[i] = 'x'
+		}
+		probe.releases.Add(1)
+	}
+	mu.Unlock()
+
+	return probe
+}
+
+func requireSessionORTError(
+	t *testing.T,
+	err error,
+	operation string,
+	code ErrorCode,
+	message string,
+	releases *atomic.Int32,
+) {
+	t.Helper()
+
+	var nativeErr *ORTError
+	if !errors.As(err, &nativeErr) {
+		t.Fatalf("errors.As(%v, *ORTError) = false", err)
+	}
+	if nativeErr.Operation != operation {
+		t.Fatalf("operation = %q, want %q", nativeErr.Operation, operation)
+	}
+	if nativeErr.Code != code {
+		t.Fatalf("code = %d, want %d", nativeErr.Code, code)
+	}
+	if nativeErr.Message != message {
+		t.Fatalf("message = %q, want %q", nativeErr.Message, message)
+	}
+	if got := releases.Load(); got != 1 {
+		t.Fatalf("status release count = %d, want 1", got)
+	}
 }
 
 func TestValuesToHandlesDeduplicatesRepeatedLockableValue(t *testing.T) {
@@ -931,6 +1007,253 @@ func TestAdvancedSessionRunWithValues(t *testing.T) {
 	})
 }
 
+func TestAdvancedSessionErrorContracts(t *testing.T) {
+	t.Run("CreateSessionOptions status", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		probe := installSessionStatusProbe(t, ErrorCodeInvalidArgument, "invalid session options")
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		ortEnv = 100
+		createSessionOptionsFunc = func(*uintptr) uintptr {
+			return probe.handle
+		}
+		releaseSessionOptionsFunc = func(uintptr) {}
+		createSessionFunc = func(_ uintptr, _ uintptr, _ uintptr, _ *uintptr) uintptr {
+			t.Fatal("CreateSession called after CreateSessionOptions failed")
+			return 0
+		}
+		mu.Unlock()
+
+		_, err := NewAdvancedSession(
+			"model.onnx",
+			[]string{"input"},
+			[]string{"output"},
+			[]Value{&fakeValue{handle: 1}},
+			[]Value{&fakeValue{handle: 2}},
+			nil,
+		)
+		requireSessionORTError(
+			t,
+			err,
+			"create session options",
+			ErrorCodeInvalidArgument,
+			"invalid session options",
+			&probe.releases,
+		)
+	})
+
+	t.Run("CreateSession status", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		probe := installSessionStatusProbe(t, ErrorCodeNoSuchFile, "model file missing")
+		var releasedOptions atomic.Int32
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		ortEnv = 101
+		createSessionOptionsFunc = func(out *uintptr) uintptr {
+			*out = 102
+			return 0
+		}
+		releaseSessionOptionsFunc = func(uintptr) {
+			releasedOptions.Add(1)
+		}
+		createSessionFunc = func(_ uintptr, _ uintptr, _ uintptr, _ *uintptr) uintptr {
+			return probe.handle
+		}
+		mu.Unlock()
+
+		_, err := NewAdvancedSession(
+			"missing.onnx",
+			[]string{"input"},
+			[]string{"output"},
+			[]Value{&fakeValue{handle: 1}},
+			[]Value{&fakeValue{handle: 2}},
+			nil,
+		)
+		requireSessionORTError(
+			t,
+			err,
+			"create session",
+			ErrorCodeNoSuchFile,
+			"model file missing",
+			&probe.releases,
+		)
+		if got := releasedOptions.Load(); got != 1 {
+			t.Fatalf("created session options release count = %d, want 1", got)
+		}
+	})
+
+	t.Run("Run status", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		probe := installSessionStatusProbe(t, ErrorCodeRuntimeException, "kernel execution failed")
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		runSessionFunc = func(_ uintptr, _ uintptr, _ *uintptr, _ *uintptr, _ uintptr, _ *uintptr, _ uintptr, _ *uintptr) uintptr {
+			return probe.handle
+		}
+		mu.Unlock()
+
+		session := &AdvancedSession{
+			handle:       103,
+			inputNames:   []string{"input"},
+			outputNames:  []string{"output"},
+			inputValues:  []Value{&fakeValue{handle: 1}},
+			outputValues: []Value{&fakeValue{handle: 2}},
+		}
+		err := session.Run()
+		requireSessionORTError(
+			t,
+			err,
+			"run inference",
+			ErrorCodeRuntimeException,
+			"kernel execution failed",
+			&probe.releases,
+		)
+	})
+
+	t.Run("local failures retain public sentinels", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		var nilSession *AdvancedSession
+		if err := nilSession.Run(); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("nil Run error = %v, want ErrInvalidArgument", err)
+		}
+		if err := nilSession.RunWithValues(nil, nil); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("nil RunWithValues error = %v, want ErrInvalidArgument", err)
+		}
+
+		_, err := NewAdvancedSession("", nil, nil, nil, nil, nil)
+		if !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("invalid constructor error = %v, want ErrInvalidArgument", err)
+		}
+
+		_, err = NewAdvancedSession(
+			"model.onnx",
+			[]string{"input"},
+			[]string{"output"},
+			[]Value{&fakeValue{handle: 1}},
+			[]Value{&fakeValue{handle: 2}},
+			nil,
+		)
+		if !errors.Is(err, ErrNotInitialized) {
+			t.Fatalf("uninitialized constructor error = %v, want ErrNotInitialized", err)
+		}
+
+		destroyed := &AdvancedSession{
+			inputNames:  []string{"input"},
+			outputNames: []string{"output"},
+		}
+		if err := destroyed.RunWithValues(
+			[]Value{&fakeValue{handle: 1}},
+			[]Value{&fakeValue{handle: 2}},
+		); !errors.Is(err, ErrDestroyed) {
+			t.Fatalf("destroyed RunWithValues error = %v, want ErrDestroyed", err)
+		}
+
+		releaseUnavailable := &AdvancedSession{handle: 104}
+		if err := releaseUnavailable.Destroy(); !errors.Is(err, ErrNotInitialized) {
+			t.Fatalf("Destroy error = %v, want ErrNotInitialized", err)
+		}
+	})
+}
+
+func TestAdvancedSessionDiagnosticPolicy(t *testing.T) {
+	t.Run("returned failures emit no records", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		handler := &diagnosticCountingHandler{}
+		SetDiagnosticHandler(handler)
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+		if _, err := NewAdvancedSession("", nil, nil, nil, nil, nil); err == nil {
+			t.Fatal("invalid constructor returned nil error")
+		}
+
+		destroyed := &AdvancedSession{
+			inputNames:  []string{"input"},
+			outputNames: []string{"output"},
+		}
+		if err := destroyed.Run(); err == nil {
+			t.Fatal("destroyed Run returned nil error")
+		}
+
+		uninitialized := &AdvancedSession{
+			handle:       200,
+			inputNames:   []string{"input"},
+			outputNames:  []string{"output"},
+			inputValues:  []Value{&fakeValue{handle: 1}},
+			outputValues: []Value{&fakeValue{handle: 2}},
+		}
+		if err := uninitialized.Run(); err == nil {
+			t.Fatal("uninitialized Run returned nil error")
+		}
+
+		releaseUnavailable := &AdvancedSession{handle: 201}
+		if err := releaseUnavailable.Destroy(); err == nil {
+			t.Fatal("release-unavailable Destroy returned nil error")
+		}
+
+		probe := installSessionStatusProbe(t, ErrorCodeFail, "native run failed")
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		runSessionFunc = func(_ uintptr, _ uintptr, _ *uintptr, _ *uintptr, _ uintptr, _ *uintptr, _ uintptr, _ *uintptr) uintptr {
+			return probe.handle
+		}
+		mu.Unlock()
+		nativeFailure := &AdvancedSession{
+			handle:       202,
+			inputNames:   []string{"input"},
+			outputNames:  []string{"output"},
+			inputValues:  []Value{&fakeValue{handle: 1}},
+			outputValues: []Value{&fakeValue{handle: 2}},
+		}
+		if err := nativeFailure.Run(); err == nil {
+			t.Fatal("native Run returned nil error")
+		}
+
+		if got := handler.count.Load(); got != 0 {
+			t.Fatalf("returned session failures emitted %d diagnostic records, want 0", got)
+		}
+	})
+
+	t.Run("finalizer-only failure emits one structured warning", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		var output bytes.Buffer
+		SetDiagnosticHandler(slog.NewJSONHandler(&output, nil))
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+		session := &AdvancedSession{handle: 300}
+		finalizeAdvancedSession(session)
+		finalizeAdvancedSession(session)
+
+		if got := strings.Count(output.String(), "\n"); got != 1 {
+			t.Fatalf("finalizer diagnostic record count = %d, want 1", got)
+		}
+		record := decodeDiagnosticRecord(t, &output)
+		if got := record["level"]; got != "WARN" {
+			t.Fatalf("level = %v, want WARN", got)
+		}
+		if got := record["msg"]; got != "finalizer cleanup failed" {
+			t.Fatalf("message = %v, want finalizer cleanup failed", got)
+		}
+		if got := record["resource"]; got != "session" {
+			t.Fatalf("resource = %v, want session", got)
+		}
+		if got := record["error"]; got == nil || !strings.Contains(got.(string), "release function unavailable") {
+			t.Fatalf("error attr = %v, want release-function failure", got)
+		}
+	})
+}
+
 func TestAdvancedSessionDestroy(t *testing.T) {
 	resetEnvironmentState()
 	defer resetEnvironmentState()
@@ -1691,6 +2014,110 @@ func TestAdvancedSessionRunWithRealModel(t *testing.T) {
 
 	if err := session.Run(); err != nil {
 		t.Fatalf("session run failed: %v", err)
+	}
+}
+
+func TestAdvancedSessionRunWithValuesRealModel(t *testing.T) {
+	cleanup := setupTestEnvironment(t)
+	t.Cleanup(cleanup)
+
+	modelPath := resolveAllMiniLMModelPath(t)
+	sequenceLength := allMiniLMSequenceLength(t)
+	inputShape := Shape{1, int64(sequenceLength)}
+	outputShape := Shape{1, int64(sequenceLength), allMiniLMOutputEmbeddingDim}
+	inputIDs, attentionMask, tokenTypeIDs := makeAllMiniLMInputs(t, sequenceLength)
+
+	newInputs := func(label string) []*Tensor[int64] {
+		t.Helper()
+
+		values := [][]int64{inputIDs, attentionMask, tokenTypeIDs}
+		tensors := make([]*Tensor[int64], len(values))
+		for i, value := range values {
+			tensor, err := NewTensor[int64](inputShape, append([]int64(nil), value...))
+			if err != nil {
+				t.Fatalf("create %s input %d: %v", label, i, err)
+			}
+			tensors[i] = tensor
+			t.Cleanup(func() {
+				requireDestroy(t, label+" input", tensor.Destroy)
+			})
+		}
+		return tensors
+	}
+
+	boundInputs := newInputs("bound")
+	suppliedInputs := newInputs("supplied")
+	boundOutput, err := NewEmptyTensor[float32](outputShape)
+	if err != nil {
+		t.Fatalf("create bound output: %v", err)
+	}
+	t.Cleanup(func() { requireDestroy(t, "bound output", boundOutput.Destroy) })
+	suppliedOutput, err := NewEmptyTensor[float32](outputShape)
+	if err != nil {
+		t.Fatalf("create supplied output: %v", err)
+	}
+	t.Cleanup(func() { requireDestroy(t, "supplied output", suppliedOutput.Destroy) })
+
+	session, err := NewAdvancedSession(
+		modelPath,
+		[]string{"input_ids", "attention_mask", "token_type_ids"},
+		[]string{"last_hidden_state"},
+		[]Value{boundInputs[0], boundInputs[1], boundInputs[2]},
+		[]Value{boundOutput},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("create all-MiniLM session: %v", err)
+	}
+	t.Cleanup(func() { requireDestroy(t, "session", session.Destroy) })
+
+	if err := session.RunWithValues(
+		[]Value{suppliedInputs[0], suppliedInputs[1], suppliedInputs[2]},
+		[]Value{suppliedOutput},
+	); err != nil {
+		t.Fatalf("RunWithValues all-MiniLM inference: %v", err)
+	}
+
+	output := suppliedOutput.GetData()
+	wantOutputLength := sequenceLength * int(allMiniLMOutputEmbeddingDim)
+	if got := len(output); got != wantOutputLength {
+		t.Fatalf("supplied output length = %d, want %d", got, wantOutputLength)
+	}
+	requireFiniteFloat32Slice(t, "RunWithValues all-MiniLM output", output)
+	allZero := true
+	for _, value := range output {
+		if value != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		t.Fatal("RunWithValues all-MiniLM output is unexpectedly all zero")
+	}
+	for i, value := range boundOutput.GetData() {
+		if value != 0 {
+			t.Fatalf("bound output changed at index %d: %v", i, value)
+		}
+	}
+
+	if err := session.Destroy(); err != nil {
+		t.Fatalf("destroy session: %v", err)
+	}
+	for i := len(suppliedInputs) - 1; i >= 0; i-- {
+		if err := suppliedInputs[i].Destroy(); err != nil {
+			t.Fatalf("destroy supplied input %d: %v", i, err)
+		}
+	}
+	if err := suppliedOutput.Destroy(); err != nil {
+		t.Fatalf("destroy supplied output: %v", err)
+	}
+	for i := len(boundInputs) - 1; i >= 0; i-- {
+		if err := boundInputs[i].Destroy(); err != nil {
+			t.Fatalf("destroy bound input %d: %v", i, err)
+		}
+	}
+	if err := boundOutput.Destroy(); err != nil {
+		t.Fatalf("destroy bound output: %v", err)
 	}
 }
 
