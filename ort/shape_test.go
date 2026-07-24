@@ -3,6 +3,7 @@ package ort
 import (
 	"errors"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -73,31 +74,55 @@ func TestStatus_IsOK(t *testing.T) {
 	}
 }
 
-func TestStatus_GetErrorCode(t *testing.T) {
+func TestStatusNativeErrorAccessors(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	firstMessage, firstMessagePtr := GoToCstring("invalid graph")
+	secondMessage, secondMessagePtr := GoToCstring("runtime failure")
+	mu.Lock()
+	getErrorCodeFunc = func(status uintptr) ErrorCode {
+		switch status {
+		case 11:
+			return ErrorCodeInvalidGraph
+		case 12:
+			return ErrorCodeRuntimeException
+		default:
+			return ErrorCodeFail
+		}
+	}
+	getErrorMessageFunc = func(status uintptr) uintptr {
+		switch status {
+		case 11:
+			return firstMessagePtr
+		case 12:
+			return secondMessagePtr
+		default:
+			return 0
+		}
+	}
+	mu.Unlock()
+
 	tests := []struct {
-		name   string
-		status Status
-		want   ErrorCode
+		status      Status
+		wantCode    ErrorCode
+		wantMessage string
 	}{
-		{
-			name:   "returns ErrorCodeOK when status is OK",
-			status: Status{handle: 0},
-			want:   ErrorCodeOK,
-		},
-		{
-			name:   "returns ErrorCodeFail when status is not OK",
-			status: Status{handle: 1},
-			want:   ErrorCodeFail,
-		},
+		{status: Status{}, wantCode: ErrorCodeOK, wantMessage: ""},
+		{status: Status{handle: 11}, wantCode: ErrorCodeInvalidGraph, wantMessage: "invalid graph"},
+		{status: Status{handle: 12}, wantCode: ErrorCodeRuntimeException, wantMessage: "runtime failure"},
+	}
+	for _, test := range tests {
+		if got := test.status.GetErrorCode(); got != test.wantCode {
+			t.Errorf("Status(%d).GetErrorCode() = %v, want %v", test.status.handle, got, test.wantCode)
+		}
+		if got := test.status.GetErrorMessage(); got != test.wantMessage {
+			t.Errorf("Status(%d).GetErrorMessage() = %q, want %q", test.status.handle, got, test.wantMessage)
+		}
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.status.GetErrorCode(); got != tt.want {
-				t.Errorf("Status.GetErrorCode() = %v, want %v", got, tt.want)
-			}
-		})
-	}
+	runtime.KeepAlive(firstMessage)
+	runtime.KeepAlive(secondMessage)
 }
 
 func TestParseShape(t *testing.T) {

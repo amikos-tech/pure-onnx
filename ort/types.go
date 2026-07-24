@@ -22,23 +22,39 @@ func (s *Status) IsOK() bool {
 }
 
 // GetErrorCode returns the error code from the status
-// TODO: This method is not fully implemented yet - currently returns ErrorCodeFail for any error
 func (s *Status) GetErrorCode() ErrorCode {
 	if s.IsOK() {
 		return ErrorCodeOK
 	}
-	// TODO: Implement actual error code retrieval using OrtApi.GetErrorCode
-	return ErrorCodeFail
+
+	ortCallMu.RLock()
+	defer ortCallMu.RUnlock()
+
+	mu.Lock()
+	getErrorCode := getErrorCodeFunc
+	mu.Unlock()
+	if getErrorCode == nil {
+		return ErrorCodeFail
+	}
+	return getErrorCode(s.handle)
 }
 
 // GetErrorMessage returns the error message from the status
-// TODO: This method is not fully implemented yet - currently returns generic message
 func (s *Status) GetErrorMessage() string {
 	if s.IsOK() {
 		return ""
 	}
-	// TODO: Implement actual error message retrieval using OrtApi.GetErrorMessage
-	return "Error occurred"
+
+	ortCallMu.RLock()
+	defer ortCallMu.RUnlock()
+
+	mu.Lock()
+	getErrorMessage := getErrorMessageFunc
+	mu.Unlock()
+	if getErrorMessage == nil {
+		return ""
+	}
+	return CstringToGo(getErrorMessage(s.handle))
 }
 
 // Environment represents an ONNX Runtime environment
