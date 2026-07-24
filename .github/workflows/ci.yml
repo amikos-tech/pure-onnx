@@ -335,12 +335,7 @@ jobs:
       - name: Run Gosec Security Scanner
         uses: securego/gosec@223e19b8856e00f02cc67804499a83f77e208f3c # v2.25.0
         with:
-          args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=examples/experimental ./...'
-        # Allow gosec to continue even if it finds issues. This project uses unsafe operations
-        # for purego FFI which gosec flags (G103). These are necessary and documented with
-        # #nosec comments. We continue-on-error to allow the SARIF results to be uploaded
-        # for review without blocking the build.
-        continue-on-error: true
+          args: '-fmt sarif -out results.sarif -exclude-dir=examples/experimental ./...'
 
       - name: Upload SARIF file
         uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
