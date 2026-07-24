@@ -12,6 +12,45 @@ import (
 	"unsafe"
 )
 
+type tensorStatusProbe struct {
+	handle   uintptr
+	code     ErrorCode
+	releases atomic.Int32
+}
+
+func installTensorStatusProbe(t *testing.T, code ErrorCode) *tensorStatusProbe {
+	t.Helper()
+
+	probe := &tensorStatusProbe{
+		handle: 9101,
+		code:   code,
+	}
+	mu.Lock()
+	getErrorCodeFunc = func(status uintptr) ErrorCode {
+		if status != probe.handle {
+			t.Errorf("GetErrorCode status = %d, want %d", status, probe.handle)
+		}
+		return probe.code
+	}
+	// A null native message exercises the production conversion without routing
+	// a Go heap pointer back through uintptr, which checkptr rejects under -race.
+	getErrorMessageFunc = func(status uintptr) uintptr {
+		if status != probe.handle {
+			t.Errorf("GetErrorMessage status = %d, want %d", status, probe.handle)
+		}
+		return 0
+	}
+	releaseStatusFunc = func(status uintptr) {
+		if status != probe.handle {
+			t.Errorf("ReleaseStatus status = %d, want %d", status, probe.handle)
+		}
+		probe.releases.Add(1)
+	}
+	mu.Unlock()
+
+	return probe
+}
+
 func TestTensorElementType(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -279,7 +318,7 @@ func TestTensorStatusConversion(t *testing.T) {
 		resetEnvironmentState()
 		t.Cleanup(resetEnvironmentState)
 
-		probe := installSessionStatusProbe(t, ErrorCodeInvalidArgument, "invalid memory info")
+		probe := installTensorStatusProbe(t, ErrorCodeInvalidArgument)
 		mu.Lock()
 		ortAPI = &OrtApi{}
 		createMemoryInfoFunc = func(_ uintptr, _ AllocatorType, _ int32, _ MemType, _ *uintptr) uintptr {
@@ -300,7 +339,7 @@ func TestTensorStatusConversion(t *testing.T) {
 			err,
 			"create CPU memory info",
 			ErrorCodeInvalidArgument,
-			"invalid memory info",
+			"",
 			&probe.releases,
 		)
 	})
@@ -309,7 +348,7 @@ func TestTensorStatusConversion(t *testing.T) {
 		resetEnvironmentState()
 		t.Cleanup(resetEnvironmentState)
 
-		probe := installSessionStatusProbe(t, ErrorCodeRuntimeException, "tensor creation failed")
+		probe := installTensorStatusProbe(t, ErrorCodeRuntimeException)
 		var memoryInfoReleases atomic.Int32
 		mu.Lock()
 		ortAPI = &OrtApi{}
@@ -356,7 +395,7 @@ func TestTensorStatusConversion(t *testing.T) {
 			err,
 			"create tensor with data",
 			ErrorCodeRuntimeException,
-			"tensor creation failed",
+			"",
 			&probe.releases,
 		)
 		if got := memoryInfoReleases.Load(); got != 1 {
@@ -387,7 +426,7 @@ func TestTensorDiagnosticPolicy(t *testing.T) {
 			t.Fatal("release-unavailable Destroy returned nil error")
 		}
 
-		probe := installSessionStatusProbe(t, ErrorCodeFail, "native memory info failed")
+		probe := installTensorStatusProbe(t, ErrorCodeFail)
 		mu.Lock()
 		ortAPI = &OrtApi{}
 		createMemoryInfoFunc = func(_ uintptr, _ AllocatorType, _ int32, _ MemType, _ *uintptr) uintptr {

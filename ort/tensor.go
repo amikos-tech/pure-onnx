@@ -41,7 +41,13 @@ func NewTensor[T any](shape Shape, data []T) (*Tensor[T], error) {
 		return nil, err
 	}
 	if len(data) != elementCount {
-		return nil, fmt.Errorf("data length mismatch: got %d elements, expected %d for shape %v", len(data), elementCount, shapeCopy)
+		return nil, fmt.Errorf(
+			"data length mismatch: got %d elements, expected %d for shape %v: %w",
+			len(data),
+			elementCount,
+			shapeCopy,
+			ErrInvalidArgument,
+		)
 	}
 
 	return newTensorFromData(shapeCopy, data, elementType, elementSize)
@@ -75,9 +81,18 @@ func newTensorFromData[T any](shape Shape, data []T, elementType TensorElementDa
 	defer ortCallMu.RUnlock()
 
 	mu.Lock()
-	if ortAPI == nil || createMemoryInfoFunc == nil || releaseMemoryInfoFunc == nil || createTensorWithDataAsOrtValueFunc == nil {
+	if ortAPI == nil ||
+		createMemoryInfoFunc == nil ||
+		releaseMemoryInfoFunc == nil ||
+		createTensorWithDataAsOrtValueFunc == nil ||
+		getErrorCodeFunc == nil ||
+		getErrorMessageFunc == nil ||
+		releaseStatusFunc == nil {
 		mu.Unlock()
-		return nil, fmt.Errorf("ONNX Runtime not initialized")
+		return nil, fmt.Errorf(
+			"ONNX Runtime not initialized; required tensor functions are unavailable: %w",
+			ErrNotInitialized,
+		)
 	}
 	createMemoryInfo := createMemoryInfoFunc
 	releaseMemoryInfo := releaseMemoryInfoFunc
@@ -90,9 +105,10 @@ func newTensorFromData[T any](shape Shape, data []T, elementType TensorElementDa
 	status := createMemoryInfo(namePtr, AllocatorTypeArena, 0, MemTypeCPU, &memInfo)
 	runtime.KeepAlive(nameBytes)
 	if status != 0 {
-		errMsg := getErrorMessage(status)
-		releaseStatus(status)
-		return nil, fmt.Errorf("failed to create CPU memory info: %s", errMsg)
+		return nil, fmt.Errorf(
+			"failed to create CPU memory info: %w",
+			statusToError(status, "create CPU memory info"),
+		)
 	}
 	defer releaseMemoryInfo(memInfo)
 
@@ -114,13 +130,15 @@ func newTensorFromData[T any](shape Shape, data []T, elementType TensorElementDa
 	// ORT reads shape dimensions synchronously during CreateTensorWithDataAsOrtValue call.
 	// Keep shape alive for the call; tensor data lifetime is guarded by pinner.
 	runtime.KeepAlive(shape)
+	runtime.KeepAlive(data)
 	if status != 0 {
 		if pinner != nil {
 			pinner.Unpin()
 		}
-		errMsg := getErrorMessage(status)
-		releaseStatus(status)
-		return nil, fmt.Errorf("failed to create tensor: %s", errMsg)
+		return nil, fmt.Errorf(
+			"failed to create tensor: %w",
+			statusToError(status, "create tensor with data"),
+		)
 	}
 
 	tensor := &Tensor[T]{
@@ -131,13 +149,15 @@ func newTensorFromData[T any](shape Shape, data []T, elementType TensorElementDa
 	}
 
 	// Finalizer is a safety net to avoid leaking OrtValue if callers forget Destroy().
-	runtime.SetFinalizer(tensor, func(t *Tensor[T]) {
-		if err := t.Destroy(); err != nil {
-			logFinalizerWarning("WARNING: tensor finalizer destroy failed: %v", err)
-		}
-	})
+	runtime.SetFinalizer(tensor, finalizeTensor[T])
 
 	return tensor, nil
+}
+
+func finalizeTensor[T any](tensor *Tensor[T]) {
+	if err := tensor.Destroy(); err != nil {
+		emitFinalizerDiagnostic("tensor", err)
+	}
 }
 
 // GetData returns the tensor data.
@@ -205,7 +225,10 @@ func (t *Tensor[T]) Destroy() error {
 		if pinner != nil {
 			pinner.Unpin()
 		}
-		return fmt.Errorf("cannot destroy tensor: ONNX Runtime release function unavailable (environment may already be destroyed); ensure all tensors and sessions are destroyed before calling DestroyEnvironment()")
+		return fmt.Errorf(
+			"cannot destroy tensor: ONNX Runtime release function unavailable (environment may already be destroyed); ensure all tensors and sessions are destroyed before calling DestroyEnvironment(): %w",
+			ErrNotInitialized,
+		)
 	}
 	if pinner != nil {
 		pinner.Unpin()
@@ -216,14 +239,14 @@ func (t *Tensor[T]) Destroy() error {
 
 func (t *Tensor[T]) lockForRun() (uintptr, error) {
 	if t == nil {
-		return 0, errValueNil
+		return 0, fmt.Errorf("%w: %w", ErrInvalidArgument, errValueNil)
 	}
 
 	t.runMu.RLock()
 	handle := t.handle
 	if handle == 0 {
 		t.runMu.RUnlock()
-		return 0, errValueDestroyed
+		return 0, fmt.Errorf("%w: %w", ErrDestroyed, errValueDestroyed)
 	}
 
 	return handle, nil
@@ -258,7 +281,21 @@ func shapeElementCount(shape Shape) (int, error) {
 	count := 1
 	for i, dim := range shape {
 		if dim < 0 {
-			return 0, fmt.Errorf("invalid shape dimension at index %d: %d (must be >= 0)", i, dim)
+			return 0, fmt.Errorf(
+				"invalid shape dimension at index %d: %d (must be >= 0): %w",
+				i,
+				dim,
+				ErrInvalidArgument,
+			)
+		}
+
+		if dim > int64(maxInt) {
+			return 0, fmt.Errorf(
+				"shape dimension at index %d is too large: %d: %w",
+				i,
+				dim,
+				ErrInvalidArgument,
+			)
 		}
 
 		if dim == 0 {
@@ -271,13 +308,13 @@ func shapeElementCount(shape Shape) (int, error) {
 			continue
 		}
 
-		if dim > int64(maxInt) {
-			return 0, fmt.Errorf("shape dimension at index %d is too large: %d", i, dim)
-		}
-
 		dimInt := int(dim)
 		if count > maxInt/dimInt {
-			return 0, fmt.Errorf("shape %v exceeds maximum supported element count", shape)
+			return 0, fmt.Errorf(
+				"shape %v exceeds maximum supported element count: %w",
+				shape,
+				ErrInvalidArgument,
+			)
 		}
 
 		count *= dimInt
@@ -304,18 +341,23 @@ func shapePtr(shape Shape) *int64 {
 
 func tensorDataByteSize(elementCount int, elementSize uintptr) (uintptr, error) {
 	if elementCount < 0 {
-		return 0, fmt.Errorf("element count cannot be negative: %d", elementCount)
+		return 0, fmt.Errorf("element count cannot be negative: %d: %w", elementCount, ErrInvalidArgument)
 	}
 	if elementCount == 0 {
 		return 0, nil
 	}
 	if elementSize == 0 {
-		return 0, fmt.Errorf("element size cannot be zero")
+		return 0, fmt.Errorf("element size cannot be zero: %w", ErrInvalidArgument)
 	}
 
 	count := uintptr(elementCount)
 	if count > ^uintptr(0)/elementSize {
-		return 0, fmt.Errorf("tensor data size overflow: %d elements with element size %d", elementCount, elementSize)
+		return 0, fmt.Errorf(
+			"tensor data size overflow: %d elements with element size %d: %w",
+			elementCount,
+			elementSize,
+			ErrInvalidArgument,
+		)
 	}
 
 	return count * elementSize, nil
@@ -336,6 +378,10 @@ func tensorElementType[T any]() (TensorElementDataType, uintptr, error) {
 	case int64:
 		return TensorElementDataTypeInt64, unsafe.Sizeof(zero), nil
 	default:
-		return TensorElementDataTypeUndefined, 0, fmt.Errorf("unsupported tensor element type %T", zero)
+		return TensorElementDataTypeUndefined, 0, fmt.Errorf(
+			"unsupported tensor element type %T: %w",
+			zero,
+			ErrInvalidArgument,
+		)
 	}
 }
