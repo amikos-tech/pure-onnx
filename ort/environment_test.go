@@ -369,6 +369,46 @@ func TestDiagnosticRuntimeVersion(t *testing.T) {
 		}
 	})
 
+	t.Run("future major runtime emits nothing", func(t *testing.T) {
+		handler := &diagnosticCountingHandler{}
+		SetDiagnosticHandler(handler)
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+		emitRuntimeVersionWarning("2.0.0")
+
+		if got := handler.count.Load(); got != 0 {
+			t.Fatalf("future major runtime emitted %d diagnostics, want 0", got)
+		}
+	})
+
+	t.Run("older major runtime emits warning", func(t *testing.T) {
+		handler := &diagnosticCountingHandler{}
+		SetDiagnosticHandler(handler)
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+		emitRuntimeVersionWarning("0.99.0")
+
+		if got := handler.count.Load(); got != 1 {
+			t.Fatalf("older major runtime emitted %d diagnostics, want 1", got)
+		}
+	})
+
+	t.Run("malformed runtime emits diagnostic", func(t *testing.T) {
+		var output bytes.Buffer
+		SetDiagnosticHandler(slog.NewJSONHandler(&output, nil))
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+		emitRuntimeVersionWarning("not-a-version")
+
+		record := decodeDiagnosticRecord(t, &output)
+		if got := record["msg"]; got != "Could not parse ONNX Runtime version" {
+			t.Fatalf("message = %v, want parse diagnostic", got)
+		}
+		if got := record["runtime_version"]; got != "not-a-version" {
+			t.Fatalf("runtime_version = %v, want not-a-version", got)
+		}
+	})
+
 	t.Run("nil handler is silent", func(t *testing.T) {
 		handler := &diagnosticCountingHandler{}
 		SetDiagnosticHandler(handler)

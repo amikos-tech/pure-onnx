@@ -74,13 +74,37 @@ func clearORTGlobalsLocked() {
 }
 
 func emitRuntimeVersionWarning(version string) {
-	parts := strings.Split(version, ".")
-	if len(parts) < 2 {
+	version = strings.TrimSpace(version)
+	if version == "" {
 		return
 	}
 
-	minor, err := strconv.Atoi(parts[1])
-	if err != nil || minor >= 22 {
+	parts := strings.Split(version, ".")
+	if len(parts) < 2 {
+		emitDiagnostic(
+			context.Background(),
+			slog.LevelWarn,
+			"Could not parse ONNX Runtime version",
+			slog.String("runtime_version", version),
+			slog.Int("api_version", int(ORT_API_VERSION)),
+		)
+		return
+	}
+
+	major, majorErr := strconv.Atoi(parts[0])
+	minor, minorErr := strconv.Atoi(parts[1])
+	if majorErr != nil || minorErr != nil || major < 0 || minor < 0 {
+		emitDiagnostic(
+			context.Background(),
+			slog.LevelWarn,
+			"Could not parse ONNX Runtime version",
+			slog.String("runtime_version", version),
+			slog.Int("api_version", int(ORT_API_VERSION)),
+		)
+		return
+	}
+
+	if major > 1 || (major == 1 && minor >= 22) {
 		return
 	}
 
