@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v0.1.0
 milestone_name: "**Goal**: v0.1.0 is cut as a tagged, documented release with CI green across all supported platforms and every milestone issue closed."
-status: executing
-stopped_at: Completed 02-07-PLAN.md
-last_updated: "2026-07-24T13:59:06.969Z"
+status: verifying
+stopped_at: Completed 02-08-PLAN.md
+last_updated: "2026-07-24T14:25:38.218Z"
 last_activity: 2026-07-24
 progress:
   total_phases: 6
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 11
-  completed_plans: 10
-  percent: 17
+  completed_plans: 11
+  percent: 33
 ---
 
 # Project State
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-07-21)
 
 Phase: 02 (core-api-errors-values) — EXECUTING
 Plan: 8 of 8
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-07-24
 
-Progress: [█████████░] 91%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -59,6 +59,7 @@ Progress: [█████████░] 91%
 | Phase 02 P05 | 12min | 1 tasks | 4 files |
 | Phase 02 P06 | 18min | 2 tasks | 4 files |
 | Phase 02 P07 | 23min | 3 tasks | 2 files |
+| Phase 02 P08 | 18min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -88,6 +89,9 @@ Recent decisions affecting current work:
 - [Phase 02]: Keep unsupported platforms distinct from supported-platform library absence — ErrUnsupportedPlatform and ErrSharedLibraryNotFound remain independently actionable
 - [Phase 02]: Clamp only group and other write bits from archive-derived file modes — Owner execute permissions survive while archive-supplied writable permissions are removed
 - [Phase 02]: Allowlist structured bootstrap attributes and redact URLs before emission — Returned errors stay diagnostic-free and trusted synchronous handler panics continue to propagate
+- [Phase 02]: Fail CI unless the exact race and native selectors resolve to 29 and 4 top-level tests respectively — Selector liveness makes test renames or omissions fail instead of silently shrinking coverage
+- [Phase 02]: Keep call-site status probes checkptr-safe with null message pointers while central and native tests retain non-empty message-copy proof — Each test proves one ownership property without sending Go heap pointers through uintptr under race
+- [Phase 02]: Preserve intentional native pointer and nil-context tests with line-scoped lint annotations instead of weakening repository lint — The tests exercise required boundaries and narrow annotations keep the changed-code gate enforcing everywhere else
 
 ### Pending Todos
 
@@ -109,6 +113,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-24T13:59:06.964Z
-Stopped at: Completed 02-07-PLAN.md
+Last session: 2026-07-24T14:25:38.211Z
+Stopped at: Completed 02-08-PLAN.md
 Resume file: None

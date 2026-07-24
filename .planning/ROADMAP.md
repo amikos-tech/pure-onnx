@@ -13,7 +13,7 @@ This is a brownfield hardening milestone for a mature pure-Go ONNX Runtime bindi
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: DX & Test Hardening** - Fail-fast example UX plus deterministic, race-clean concurrency tests (completed 2026-07-22)
-- [ ] **Phase 2: Core API — Errors & Values** - Wrapped errors across the surface and a polymorphic `Value` interface
+- [x] **Phase 2: Core API — Errors & Values** - Wrapped errors across the surface and a polymorphic `Value` interface (completed 2026-07-24)
 - [ ] **Phase 3: Generalized Embedder API** - Unified dense/sparse embedder API including SPLADE
 - [ ] **Phase 4: Documentation** - GoDoc, maturity status, lifetime semantics, and known limitations
 - [ ] **Phase 5: Full Lint Gate** - Remove `continue-on-error` and pass the full golangci-lint gate
@@ -64,7 +64,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 02-08-PLAN.md — Remove obsolete helpers, wire CI race/native lanes, and run compatibility gates
+- [x] 02-08-PLAN.md — Remove obsolete helpers, wire CI race/native lanes, and run compatibility gates
 
 ### Phase 3: Generalized Embedder API
 **Goal**: A unified embedder API serves both dense and sparse embeddings, including SPLADE, on top of the settled core API.
@@ -115,7 +115,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. DX & Test Hardening | 3/3 | Complete   | 2026-07-22 |
-| 2. Core API — Errors & Values | 7/8 | In Progress|  |
+| 2. Core API — Errors & Values | 8/8 | Complete   | 2026-07-24 |
 | 3. Generalized Embedder API | 0/TBD | Not started | - |
 | 4. Documentation | 0/TBD | Not started | - |
 | 5. Full Lint Gate | 0/TBD | Not started | - |
