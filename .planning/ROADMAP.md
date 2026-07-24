@@ -60,7 +60,7 @@ Plans:
 - [ ] 02-04-PLAN.md — Add RunWithValues through the shared session run/error/lifetime core
 - [ ] 02-05-PLAN.md — Migrate tensor validation, native errors, and finalizer diagnostics
 - [ ] 02-06-PLAN.md — Migrate environment and MemoryInfo errors/diagnostics
-- [ ] 02-07-PLAN.md — Preserve bootstrap causes and migrate audited structured notices
+- [ ] 02-07-PLAN.md — Preserve bootstrap causes, isolate permission hardening, and migrate audited structured notices
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
