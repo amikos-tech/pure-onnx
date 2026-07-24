@@ -65,6 +65,9 @@ func NewEmptyTensor[T any](shape Shape) (*Tensor[T], error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, err := tensorDataByteSize(elementCount, elementSize); err != nil {
+		return nil, err
+	}
 
 	data := make([]T, elementCount)
 

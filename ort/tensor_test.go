@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"log/slog"
+	"math"
 	"reflect"
 	"strings"
 	"sync"
@@ -188,7 +189,16 @@ func TestShapeElementCount(t *testing.T) {
 
 func TestTensorDataByteSizeOverflow(t *testing.T) {
 	maxInt := int(^uint(0) >> 1)
-	_, err := tensorDataByteSize(maxInt, 3)
+
+	got, err := tensorDataByteSize(maxInt, 1)
+	if err != nil {
+		t.Fatalf("one-byte tensor size at maximum element count: %v", err)
+	}
+	if got != uintptr(maxInt) {
+		t.Fatalf("one-byte tensor size = %d, want %d", got, maxInt)
+	}
+
+	_, err = tensorDataByteSize(maxInt, 3)
 	if err == nil {
 		t.Fatalf("expected overflow error")
 	}
@@ -197,6 +207,26 @@ func TestTensorDataByteSizeOverflow(t *testing.T) {
 	}
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("tensorDataByteSize error = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestNewEmptyTensorRejectsByteSizeOverflowBeforeAllocation(t *testing.T) {
+	if math.MaxInt != math.MaxInt64 {
+		t.Skip("test requires a 64-bit int")
+	}
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("NewEmptyTensor panicked before rejecting byte-size overflow: %v", recovered)
+		}
+	}()
+
+	_, err := NewEmptyTensor[int64](Shape{math.MaxInt64})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("NewEmptyTensor error = %v, want ErrInvalidArgument", err)
+	}
+	if !strings.Contains(err.Error(), "tensor data size overflow") {
+		t.Fatalf("NewEmptyTensor error = %v, want byte-size overflow", err)
 	}
 }
 
