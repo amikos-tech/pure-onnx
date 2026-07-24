@@ -384,3 +384,12 @@ jobs:
         run: |
           echo "Checking ORT_API_VERSION constant..."
           grep -nE '^[[:space:]]*ORT_API_VERSION[[:space:]]*=' ort/constants.go
+
+      - name: Verify bootstrap and integration runtime versions match
+        run: |
+          BOOTSTRAP_VERSION="$(sed -nE 's/^[[:space:]]*DefaultOnnxRuntimeVersion[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' ort/bootstrap.go)"
+          INTEGRATION_VERSION="$(sed -nE "s/^[[:space:]]*ORT_VERSION:[[:space:]]*'([^']+)'.*/\1/p" .github/workflows/ci.yml)"
+          MAKE_VERSION="$(sed -nE 's/^ORT_VERSION[[:space:]]*:=[[:space:]]*([^[:space:]]+).*/\1/p' Makefile)"
+          test -n "$BOOTSTRAP_VERSION"
+          test "$BOOTSTRAP_VERSION" = "$INTEGRATION_VERSION"
+          test "$BOOTSTRAP_VERSION" = "$MAKE_VERSION"

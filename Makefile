@@ -18,7 +18,7 @@ RELEASE_DIR := build/release
 RELEASE_BINARIES := basic inference
 
 # ONNX Runtime version (supports API v22)
-ORT_VERSION := 1.23.1
+ORT_VERSION := 1.24.1
 ORT_BASE_URL := https://github.com/microsoft/onnxruntime/releases/download
 
 # Platform detection for ONNX Runtime downloads

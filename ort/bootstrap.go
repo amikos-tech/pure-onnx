@@ -30,7 +30,7 @@ import (
 const (
 	// DefaultOnnxRuntimeVersion is the default ONNX Runtime version used by bootstrap.
 	// This should track the runtime version validated by CI and examples.
-	DefaultOnnxRuntimeVersion = "1.23.1"
+	DefaultOnnxRuntimeVersion = "1.24.1"
 
 	defaultBootstrapBaseURL            = "https://github.com/microsoft/onnxruntime/releases/download"
 	defaultBootstrapReleaseMetadataURL = "https://api.github.com/repos/microsoft/onnxruntime/releases/tags"
@@ -190,7 +190,7 @@ func WithBootstrapCacheDir(dir string) BootstrapOption {
 	}
 }
 
-// WithBootstrapVersion sets the ONNX Runtime version to download (for example: 1.23.1).
+// WithBootstrapVersion sets the ONNX Runtime version to download (for example: 1.24.1).
 func WithBootstrapVersion(version string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
 		version = strings.TrimSpace(version)
