@@ -31,6 +31,42 @@ func resetEnvironmentState() {
 	releaseSessionFunc = nil
 }
 
+func TestEnvironmentErrorFunctionRegistration(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	registerTestFunctions := func() {
+		mu.Lock()
+		getErrorCodeFunc = func(uintptr) ErrorCode { return ErrorCodeFail }
+		getErrorMessageFunc = func(uintptr) uintptr { return 0 }
+		releaseStatusFunc = func(uintptr) {}
+		mu.Unlock()
+	}
+	assertRegistered := func(want bool) {
+		t.Helper()
+		mu.Lock()
+		got := getErrorCodeFunc != nil &&
+			getErrorMessageFunc != nil &&
+			releaseStatusFunc != nil
+		mu.Unlock()
+		if got != want {
+			t.Fatalf("status error functions registered = %t, want %t", got, want)
+		}
+	}
+
+	registerTestFunctions()
+	assertRegistered(true)
+
+	mu.Lock()
+	clearORTGlobalsLocked()
+	mu.Unlock()
+	assertRegistered(false)
+
+	registerTestFunctions()
+	resetEnvironmentState()
+	assertRegistered(false)
+}
+
 func TestIsInitialized(t *testing.T) {
 	resetEnvironmentState()
 
