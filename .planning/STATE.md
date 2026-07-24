@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.1.0
 milestone_name: "**Goal**: v0.1.0 is cut as a tagged, documented release with CI green across all supported platforms and every milestone issue closed."
 status: executing
-stopped_at: Completed 02-05-PLAN.md
-last_updated: "2026-07-24T13:08:30.102Z"
+stopped_at: Completed 02-06-PLAN.md
+last_updated: "2026-07-24T13:31:07.156Z"
 last_activity: 2026-07-24
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 11
-  completed_plans: 8
+  completed_plans: 9
   percent: 17
 ---
 
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-07-21)
 ## Current Position
 
 Phase: 02 (core-api-errors-values) — EXECUTING
-Plan: 6 of 8
+Plan: 7 of 8
 Status: Ready to execute
 Last activity: 2026-07-24
 
-Progress: [███████░░░] 73%
+Progress: [████████░░] 82%
 
 ## Performance Metrics
 
@@ -57,6 +57,7 @@ Progress: [███████░░░] 73%
 | Phase 02 P03 | 4min | 1 tasks | 2 files |
 | Phase 02 P04 | 18min | 2 tasks | 2 files |
 | Phase 02 P05 | 12min | 1 tasks | 4 files |
+| Phase 02 P06 | 18min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -80,6 +81,9 @@ Recent decisions affecting current work:
 - [Phase 02]: Preserve strconv.NumError alongside ErrInvalidArgument for ParseShape integer failures — Callers can classify invalid input and inspect the exact parse cause independently
 - [Phase 02]: Require the complete tensor and status callback set before native tensor creation — A partial runtime registration fails with ErrNotInitialized instead of panicking during status conversion
 - [Phase 02]: Use a null-message fake status for tensor call-site checks under the race detector — This proves operation, code, and exact release without sending a Go heap pointer through uintptr; non-empty copying remains covered by the status ownership tests
+- [Phase 02]: Use private environment loader seams for exact cause-chain tests — This proves load, symbol, and cleanup identity without invoking purego on fake symbols
+- [Phase 02]: Keep race-lane environment and MemoryInfo status probes null-message — The central converter test proves non-empty copying without sending Go heap pointers through uintptr
+- [Phase 02]: Require the complete MemoryInfo create, release, and status callback set before native creation — Partial registration cannot safely convert failures or release a successful handle
 
 ### Pending Todos
 
@@ -101,6 +105,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-24T13:08:30.095Z
-Stopped at: Completed 02-05-PLAN.md
+Last session: 2026-07-24T13:31:07.151Z
+Stopped at: Completed 02-06-PLAN.md
 Resume file: None
