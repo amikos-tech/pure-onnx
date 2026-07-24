@@ -53,7 +53,7 @@ Plans:
 
 - [x] 02-01-PLAN.md — Define typed native errors, public sentinels, exact status ownership, and real ABI proof
 - [x] 02-02-PLAN.md — Seal Value and add exact IsTensor/AsTensor inspection
-- [ ] 02-03-PLAN.md — Add the silent, consumer-wired standard-library diagnostic hook
+- [x] 02-03-PLAN.md — Add the silent, consumer-wired standard-library diagnostic hook
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -115,7 +115,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. DX & Test Hardening | 3/3 | Complete   | 2026-07-22 |
-| 2. Core API — Errors & Values | 2/8 | In Progress|  |
+| 2. Core API — Errors & Values | 3/8 | In Progress|  |
 | 3. Generalized Embedder API | 0/TBD | Not started | - |
 | 4. Documentation | 0/TBD | Not started | - |
 | 5. Full Lint Gate | 0/TBD | Not started | - |
