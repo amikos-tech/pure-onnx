@@ -2,6 +2,7 @@ package ort
 
 import (
 	"fmt"
+	"math"
 	"runtime"
 )
 
@@ -10,6 +11,13 @@ import (
 func CreateMemoryInfo(name string, allocatorType AllocatorType, deviceID int, memType MemType) (*MemoryInfo, error) {
 	if name == "" {
 		return nil, fmt.Errorf("create memory info: allocator name is empty: %w", ErrInvalidArgument)
+	}
+	if deviceID < math.MinInt32 || deviceID > math.MaxInt32 {
+		return nil, fmt.Errorf(
+			"create memory info: device ID %d is outside the native int32 range: %w",
+			deviceID,
+			ErrInvalidArgument,
+		)
 	}
 
 	ortCallMu.RLock()
@@ -35,7 +43,7 @@ func CreateMemoryInfo(name string, allocatorType AllocatorType, deviceID int, me
 	nameBytes, namePtr := GoToCstring(name)
 
 	var handle uintptr
-	// #nosec G115 -- deviceID is validated by ONNX Runtime, conversion is safe
+	// #nosec G115 -- deviceID is range-checked above before conversion.
 	status := createMemoryInfo(namePtr, allocatorType, int32(deviceID), memType, &handle)
 	runtime.KeepAlive(nameBytes)
 	if status != 0 {

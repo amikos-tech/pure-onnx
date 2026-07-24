@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"log/slog"
+	"math"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -263,6 +265,16 @@ func TestMemoryInfoBeforeInit(t *testing.T) {
 
 	if _, err := CreateMemoryInfo("", AllocatorTypeArena, 0, MemTypeCPU); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("empty name error = %v, want ErrInvalidArgument", err)
+	}
+	if strconv.IntSize > 32 {
+		tooLarge := int64(math.MaxInt32) + 1
+		if _, err := CreateMemoryInfo("Cpu", AllocatorTypeArena, int(tooLarge), MemTypeCPU); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("oversized device ID error = %v, want ErrInvalidArgument", err)
+		}
+		tooSmall := int64(math.MinInt32) - 1
+		if _, err := CreateMemoryInfo("Cpu", AllocatorTypeArena, int(tooSmall), MemTypeCPU); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("undersized device ID error = %v, want ErrInvalidArgument", err)
+		}
 	}
 	if _, err := CreateCpuMemoryInfo(AllocatorTypeArena, MemTypeCPU); !errors.Is(err, ErrNotInitialized) {
 		t.Fatalf("before-init error = %v, want ErrNotInitialized", err)
