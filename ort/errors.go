@@ -52,3 +52,17 @@ func statusToErrorWithOps(status uintptr, operation string, ops statusOps) error
 		Message:   ops.copyMessage(status),
 	}
 }
+
+// statusToError copies a native status into a Go-owned error and releases it.
+// Every production caller must hold ortCallMu for the complete native call and
+// conversion. InitializeEnvironment instead holds ortCallMu.Lock plus mu. Those
+// scopes prevent runtime reset from clearing these accessors during conversion.
+func statusToError(status uintptr, operation string) error {
+	return statusToErrorWithOps(status, operation, statusOps{
+		getCode: getErrorCodeFunc,
+		copyMessage: func(status uintptr) string {
+			return CstringToGo(getErrorMessageFunc(status))
+		},
+		release: releaseStatusFunc,
+	})
+}

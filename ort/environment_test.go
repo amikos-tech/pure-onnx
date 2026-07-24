@@ -18,6 +18,7 @@ func resetEnvironmentState() {
 	libPath = ""
 	logLevel = LoggingLevelWarning
 	getVersionStringFunc = nil
+	getErrorCodeFunc = nil
 	getErrorMessageFunc = nil
 	releaseStatusFunc = nil
 	createMemoryInfoFunc = nil
@@ -45,12 +46,19 @@ func TestEnvironmentErrorFunctionRegistration(t *testing.T) {
 	assertRegistered := func(want bool) {
 		t.Helper()
 		mu.Lock()
-		got := getErrorCodeFunc != nil &&
-			getErrorMessageFunc != nil &&
-			releaseStatusFunc != nil
+		functions := []struct {
+			name       string
+			registered bool
+		}{
+			{name: "GetErrorCode", registered: getErrorCodeFunc != nil},
+			{name: "GetErrorMessage", registered: getErrorMessageFunc != nil},
+			{name: "ReleaseStatus", registered: releaseStatusFunc != nil},
+		}
 		mu.Unlock()
-		if got != want {
-			t.Fatalf("status error functions registered = %t, want %t", got, want)
+		for _, function := range functions {
+			if function.registered != want {
+				t.Fatalf("%s registered = %t, want %t", function.name, function.registered, want)
+			}
 		}
 	}
 

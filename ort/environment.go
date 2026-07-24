@@ -37,6 +37,7 @@ var (
 	libPath                            string
 	logLevel                           LoggingLevel = LoggingLevelWarning // Default to Warning
 	getVersionStringFunc               func() uintptr
+	getErrorCodeFunc                   func(uintptr) ErrorCode
 	getErrorMessageFunc                func(uintptr) uintptr
 	releaseStatusFunc                  func(uintptr)
 	createMemoryInfoFunc               func(name uintptr, allocatorType AllocatorType, deviceID int32, memType MemType, out *uintptr) uintptr
@@ -54,6 +55,7 @@ func clearORTGlobalsLocked() {
 	ortAPI = nil
 	ortEnv = 0
 	getVersionStringFunc = nil
+	getErrorCodeFunc = nil
 	getErrorMessageFunc = nil
 	releaseStatusFunc = nil
 	createMemoryInfoFunc = nil
@@ -148,6 +150,7 @@ func InitializeEnvironment() (err error) {
 	ortAPI = (*OrtApi)(unsafe.Pointer(apiPtr))
 
 	// Register frequently-used API functions once to avoid repeated RegisterFunc calls
+	purego.RegisterFunc(&getErrorCodeFunc, ortAPI.GetErrorCode)
 	purego.RegisterFunc(&getErrorMessageFunc, ortAPI.GetErrorMessage)
 	purego.RegisterFunc(&releaseStatusFunc, ortAPI.ReleaseStatus)
 	purego.RegisterFunc(&createMemoryInfoFunc, ortAPI.CreateMemoryInfo)
