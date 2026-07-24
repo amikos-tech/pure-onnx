@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -130,6 +131,162 @@ func TestResolveRuntimeArtifact(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("supported platform library absence is distinct", func(t *testing.T) {
+		artifact, err := resolveRuntimeArtifact("linux", "amd64")
+		if err != nil {
+			t.Fatalf("unexpected supported-platform resolution error: %v", err)
+		}
+
+		_, err = resolveExtractedLibraryPath(t.TempDir(), artifact)
+		if !errors.Is(err, ErrSharedLibraryNotFound) {
+			t.Fatalf("expected ErrSharedLibraryNotFound, got: %v", err)
+		}
+		if errors.Is(err, ErrUnsupportedPlatform) {
+			t.Fatalf("supported-platform absence unexpectedly matched ErrUnsupportedPlatform: %v", err)
+		}
+	})
+}
+
+func TestBootstrapErrorChains(t *testing.T) {
+	t.Run("filesystem cause and library category", func(t *testing.T) {
+		missingPath := filepath.Join(t.TempDir(), "missing", "libonnxruntime.so")
+
+		_, err := validateLibraryFile(missingPath)
+		if !errors.Is(err, ErrSharedLibraryNotFound) {
+			t.Fatalf("expected ErrSharedLibraryNotFound, got: %v", err)
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("expected os.ErrNotExist in filesystem chain, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), missingPath) {
+			t.Fatalf("expected missing library path in error, got: %v", err)
+		}
+	})
+
+	t.Run("network cause", func(t *testing.T) {
+		networkCause := errors.New("synthetic network failure")
+		const archiveURL = "https://example.invalid/onnxruntime.tgz"
+		cfg := bootstrapConfig{
+			cacheDir: t.TempDir(),
+			httpClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return nil, networkCause
+			})},
+			retryAttempts: 1,
+		}
+
+		_, _, err := downloadRuntimeArchive(cfg, archiveURL)
+		if !errors.Is(err, networkCause) {
+			t.Fatalf("expected network cause in error chain, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), archiveURL) {
+			t.Fatalf("expected download URL in error, got: %v", err)
+		}
+	})
+
+	t.Run("checksum metadata parse cause", func(t *testing.T) {
+		artifact, err := resolveRuntimeArtifact("linux", "amd64")
+		if err != nil {
+			t.Fatalf("unexpected artifact resolution error: %v", err)
+		}
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"assets":`))
+		}))
+		t.Cleanup(server.Close)
+
+		cfg := bootstrapConfig{
+			version:            "1.2.3",
+			releaseMetadataURL: server.URL,
+			httpClient:         server.Client(),
+			retryAttempts:      1,
+		}
+		_, err = resolveRuntimeArchiveChecksumFromReleaseMetadata(cfg, artifact)
+		var syntaxErr *json.SyntaxError
+		if !errors.As(err, &syntaxErr) {
+			t.Fatalf("expected JSON syntax cause in checksum error chain, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), server.URL) {
+			t.Fatalf("expected metadata URL in error, got: %v", err)
+		}
+	})
+
+	t.Run("archive cause", func(t *testing.T) {
+		archivePath := filepath.Join(t.TempDir(), "invalid.tgz")
+		if err := os.WriteFile(archivePath, []byte("not a gzip archive"), 0o600); err != nil {
+			t.Fatalf("failed to write invalid archive: %v", err)
+		}
+
+		_, err := extractTGZArchive(archivePath, t.TempDir(), "")
+		if !errors.Is(err, gzip.ErrHeader) {
+			t.Fatalf("expected gzip.ErrHeader in archive error chain, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), archivePath) {
+			t.Fatalf("expected archive path in error, got: %v", err)
+		}
+	})
+
+	t.Run("dynamic library cause", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		libPath := filepath.Join(t.TempDir(), "libonnxruntime.so")
+		if err := os.WriteFile(libPath, []byte("synthetic library"), 0o600); err != nil {
+			t.Fatalf("failed to write synthetic library: %v", err)
+		}
+		loadCause := errors.New("synthetic dynamic loader failure")
+		mu.Lock()
+		environmentLoadLibrary = func(path string) (uintptr, error) {
+			return 0, &os.PathError{Op: "dlopen", Path: path, Err: loadCause}
+		}
+		mu.Unlock()
+
+		err := InitializeEnvironmentWithBootstrap(WithBootstrapLibraryPath(libPath))
+		if !errors.Is(err, loadCause) {
+			t.Fatalf("expected dynamic loader cause in error chain, got: %v", err)
+		}
+		var pathErr *os.PathError
+		if !errors.As(err, &pathErr) {
+			t.Fatalf("expected *os.PathError in dynamic loader chain, got: %v", err)
+		}
+		if pathErr.Path != libPath {
+			t.Fatalf("loader path = %q, want %q", pathErr.Path, libPath)
+		}
+	})
+
+	t.Run("primary and cleanup causes", func(t *testing.T) {
+		primaryCause := errors.New("synthetic response read failure")
+		cleanupCause := errors.New("synthetic response close failure")
+		const archiveURL = "https://example.invalid/onnxruntime.tgz"
+		cfg := bootstrapConfig{
+			cacheDir: t.TempDir(),
+			httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body: &failingReadCloser{
+						readErr:  primaryCause,
+						closeErr: cleanupCause,
+					},
+					Request: req,
+				}, nil
+			})},
+			maxDownloadSize: 1024,
+			retryAttempts:   1,
+		}
+
+		_, _, err := downloadRuntimeArchive(cfg, archiveURL)
+		if !errors.Is(err, primaryCause) {
+			t.Fatalf("expected primary cause in joined error, got: %v", err)
+		}
+		if !errors.Is(err, cleanupCause) {
+			t.Fatalf("expected cleanup cause in joined error, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), archiveURL) {
+			t.Fatalf("expected download URL in joined error, got: %v", err)
+		}
+	})
 }
 
 func TestEnsureOnnxRuntimeSharedLibraryWithExplicitPath(t *testing.T) {
@@ -1260,6 +1417,13 @@ func TestWithBootstrapVersionRejectsEmpty(t *testing.T) {
 	var cfg bootstrapConfig
 	if err := WithBootstrapVersion("   ")(&cfg); err == nil {
 		t.Fatalf("expected empty version validation error")
+	} else {
+		if !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("expected ErrInvalidArgument, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "version") {
+			t.Fatalf("expected version identifier in error, got: %v", err)
+		}
 	}
 }
 
@@ -1268,9 +1432,13 @@ func TestWithBootstrapLibraryPathAndCacheDirRejectEmpty(t *testing.T) {
 
 	if err := WithBootstrapLibraryPath("   ")(&cfg); err == nil {
 		t.Fatalf("expected empty library path validation error")
+	} else if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument for library path, got: %v", err)
 	}
 	if err := WithBootstrapCacheDir("   ")(&cfg); err == nil {
 		t.Fatalf("expected empty cache directory validation error")
+	} else if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument for cache directory, got: %v", err)
 	}
 }
 
@@ -1296,6 +1464,9 @@ func TestWithBootstrapExpectedSHA256Validation(t *testing.T) {
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected validation error for checksum %q", tc.checksum)
+				}
+				if !errors.Is(err, ErrInvalidArgument) {
+					t.Fatalf("expected ErrInvalidArgument for checksum %q, got: %v", tc.checksum, err)
 				}
 				return
 			}
@@ -1333,6 +1504,9 @@ func TestWithBootstrapBaseURLValidation(t *testing.T) {
 			err := withBootstrapBaseURL(tc.baseURL)(&cfg)
 			if tc.wantErr && err == nil {
 				t.Fatalf("expected validation error for %q", tc.baseURL)
+			}
+			if tc.wantErr && !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("expected ErrInvalidArgument for %q, got: %v", tc.baseURL, err)
 			}
 			if !tc.wantErr && err != nil {
 				t.Fatalf("unexpected validation error for %q: %v", tc.baseURL, err)
@@ -1415,6 +1589,9 @@ func TestResolveBootstrapConfigRejectsInvalidDisableDownloadEnv(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ONNXRUNTIME_DISABLE_DOWNLOAD") {
 		t.Fatalf("expected variable name in error, got: %v", err)
+	}
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument, got: %v", err)
 	}
 }
 
@@ -1929,4 +2106,23 @@ func buildZIPArchive(t *testing.T, files map[string]string) []byte {
 	}
 
 	return buf.Bytes()
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type failingReadCloser struct {
+	readErr  error
+	closeErr error
+}
+
+func (r *failingReadCloser) Read([]byte) (int, error) {
+	return 0, r.readErr
+}
+
+func (r *failingReadCloser) Close() error {
+	return r.closeErr
 }
