@@ -1390,7 +1390,7 @@ func TestResolveExtractedLibraryPathDistinguishesInvalidCandidates(t *testing.T)
 	if err == nil {
 		t.Fatalf("expected invalid-candidate error")
 	}
-	if errors.Is(err, errSharedLibraryNotFound) {
+	if errors.Is(err, ErrSharedLibraryNotFound) {
 		t.Fatalf("expected invalid-candidate error, got not-found: %v", err)
 	}
 	if !strings.Contains(err.Error(), "none are valid") {
@@ -1408,7 +1408,7 @@ func TestResolveExtractedLibraryPathReturnsNotFoundWhenMissing(t *testing.T) {
 		primaryLibrary: "libonnxruntime.so",
 		libraryGlob:    "libonnxruntime.so*",
 	})
-	if !errors.Is(err, errSharedLibraryNotFound) {
+	if !errors.Is(err, ErrSharedLibraryNotFound) {
 		t.Fatalf("expected not-found error, got: %v", err)
 	}
 }

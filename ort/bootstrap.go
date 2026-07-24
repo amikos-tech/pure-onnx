@@ -46,7 +46,6 @@ const (
 	maxMetadataBytes       int64 = 5 << 20 // 5 MiB
 )
 
-var errSharedLibraryNotFound = errors.New("ONNX Runtime shared library not found")
 var errBootstrapRedirectPolicy = errors.New("bootstrap redirect policy rejection")
 
 // ErrUnsupportedPlatform is returned when resolveRuntimeArtifact cannot resolve a prebuilt ONNX Runtime artifact for the host GOOS/GOARCH combination.
@@ -146,7 +145,7 @@ func WithBootstrapLibraryPath(path string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
 		path = strings.TrimSpace(path)
 		if path == "" {
-			return fmt.Errorf("bootstrap library path cannot be empty")
+			return fmt.Errorf("bootstrap library path cannot be empty: %w", ErrInvalidArgument)
 		}
 		cfg.libraryPath = path
 		return nil
@@ -158,7 +157,7 @@ func WithBootstrapCacheDir(dir string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
 		dir = strings.TrimSpace(dir)
 		if dir == "" {
-			return fmt.Errorf("bootstrap cache directory cannot be empty")
+			return fmt.Errorf("bootstrap cache directory cannot be empty: %w", ErrInvalidArgument)
 		}
 		cfg.cacheDir = dir
 		return nil
@@ -170,7 +169,7 @@ func WithBootstrapVersion(version string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
 		version = strings.TrimSpace(version)
 		if version == "" {
-			return fmt.Errorf("bootstrap version cannot be empty")
+			return fmt.Errorf("bootstrap version cannot be empty: %w", ErrInvalidArgument)
 		}
 		cfg.version = version
 		return nil
@@ -191,10 +190,10 @@ func WithBootstrapExpectedSHA256(checksum string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
 		checksum = strings.TrimSpace(strings.ToLower(checksum))
 		if checksum == "" {
-			return fmt.Errorf("expected SHA256 checksum cannot be empty")
+			return fmt.Errorf("expected SHA256 checksum cannot be empty: %w", ErrInvalidArgument)
 		}
 		if !looksLikeSHA256(checksum) {
-			return fmt.Errorf("expected SHA256 checksum must be 64 hex characters (0-9, a-f)")
+			return fmt.Errorf("expected SHA256 checksum must be 64 hex characters (0-9, a-f): %w", ErrInvalidArgument)
 		}
 		cfg.expectedSHA256 = checksum
 		return nil
@@ -205,7 +204,7 @@ func withBootstrapBaseURL(baseURL string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
 		baseURL = strings.TrimSpace(baseURL)
 		if baseURL == "" {
-			return fmt.Errorf("bootstrap base URL cannot be empty")
+			return fmt.Errorf("bootstrap base URL cannot be empty: %w", ErrInvalidArgument)
 		}
 		if err := validateBootstrapBaseURL(baseURL); err != nil {
 			return err
@@ -218,7 +217,7 @@ func withBootstrapBaseURL(baseURL string) BootstrapOption {
 func withBootstrapHTTPClient(client *http.Client) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
 		if client == nil {
-			return fmt.Errorf("bootstrap HTTP client cannot be nil")
+			return fmt.Errorf("bootstrap HTTP client cannot be nil: %w", ErrInvalidArgument)
 		}
 		cfg.httpClient = client
 		return nil
@@ -247,12 +246,16 @@ func EnsureOnnxRuntimeSharedLibrary(opts ...BootstrapOption) (string, error) {
 	installDir := filepath.Join(cfg.cacheDir, artifact.archiveName(cfg.version))
 	if path, resolveErr := resolveExtractedLibraryPath(installDir, artifact); resolveErr == nil {
 		return path, nil
-	} else if !errors.Is(resolveErr, errSharedLibraryNotFound) {
+	} else if !errors.Is(resolveErr, ErrSharedLibraryNotFound) {
 		return "", resolveErr
 	}
 
 	if cfg.disableDownload {
-		return "", fmt.Errorf("ONNX Runtime library not found in cache and download is disabled: %s", installDir)
+		return "", fmt.Errorf(
+			"ONNX Runtime library not found in cache and download is disabled at %q: %w",
+			installDir,
+			ErrSharedLibraryNotFound,
+		)
 	}
 
 	if err := os.MkdirAll(cfg.cacheDir, secureDirectoryPermission); err != nil {
@@ -265,7 +268,7 @@ func EnsureOnnxRuntimeSharedLibrary(opts ...BootstrapOption) (string, error) {
 		if path, resolveErr := resolveExtractedLibraryPath(installDir, artifact); resolveErr == nil {
 			resolvedPath = path
 			return nil
-		} else if !errors.Is(resolveErr, errSharedLibraryNotFound) {
+		} else if !errors.Is(resolveErr, ErrSharedLibraryNotFound) {
 			return resolveErr
 		}
 
@@ -304,11 +307,14 @@ func InitializeEnvironmentWithBootstrap(opts ...BootstrapOption) error {
 		currentPath := libPath
 		mu.Unlock()
 		if !alreadyInitialized || currentPath != path {
-			return err
+			return fmt.Errorf("set bootstrap shared library path %q: %w", path, err)
 		}
 	}
 
-	return InitializeEnvironment()
+	if err := InitializeEnvironment(); err != nil {
+		return fmt.Errorf("initialize environment with bootstrap library %q: %w", path, err)
+	}
+	return nil
 }
 
 func resolveBootstrapConfig(opts ...BootstrapOption) (bootstrapConfig, error) {
@@ -354,12 +360,12 @@ func resolveBootstrapConfig(opts ...BootstrapOption) (bootstrapConfig, error) {
 	cfg.version = version
 
 	if cfg.cacheDir == "" {
-		return bootstrapConfig{}, fmt.Errorf("bootstrap cache directory is empty")
+		return bootstrapConfig{}, fmt.Errorf("bootstrap cache directory is empty: %w", ErrInvalidArgument)
 	}
 	cfg.cacheDir = filepath.Clean(cfg.cacheDir)
 
 	if strings.TrimSpace(cfg.baseURL) == "" {
-		return bootstrapConfig{}, fmt.Errorf("bootstrap base URL is empty")
+		return bootstrapConfig{}, fmt.Errorf("bootstrap base URL is empty: %w", ErrInvalidArgument)
 	}
 	cfg.baseURL = strings.TrimRight(strings.TrimSpace(cfg.baseURL), "/")
 	if err := validateBootstrapBaseURL(cfg.baseURL); err != nil {
@@ -373,10 +379,14 @@ func resolveBootstrapConfig(opts ...BootstrapOption) (bootstrapConfig, error) {
 	}
 
 	if cfg.httpClient == nil {
-		return bootstrapConfig{}, fmt.Errorf("bootstrap HTTP client cannot be nil")
+		return bootstrapConfig{}, fmt.Errorf("bootstrap HTTP client cannot be nil: %w", ErrInvalidArgument)
 	}
 	if cfg.maxDownloadSize <= 0 {
-		return bootstrapConfig{}, fmt.Errorf("bootstrap max download bytes must be > 0, got %d", cfg.maxDownloadSize)
+		return bootstrapConfig{}, fmt.Errorf(
+			"bootstrap max download bytes must be > 0, got %d: %w",
+			cfg.maxDownloadSize,
+			ErrInvalidArgument,
+		)
 	}
 
 	return cfg, nil
@@ -385,13 +395,13 @@ func resolveBootstrapConfig(opts ...BootstrapOption) (bootstrapConfig, error) {
 func validateBootstrapBaseURL(baseURL string) error {
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
-		return fmt.Errorf("invalid bootstrap base URL %q: %w", baseURL, err)
+		return fmt.Errorf("invalid bootstrap base URL %q: %w: %w", baseURL, ErrInvalidArgument, err)
 	}
 	if parsed.Scheme == "" {
-		return fmt.Errorf("bootstrap base URL %q must include a scheme", baseURL)
+		return fmt.Errorf("bootstrap base URL %q must include a scheme: %w", baseURL, ErrInvalidArgument)
 	}
 	if parsed.Host == "" {
-		return fmt.Errorf("bootstrap base URL %q must include a host", baseURL)
+		return fmt.Errorf("bootstrap base URL %q must include a host: %w", baseURL, ErrInvalidArgument)
 	}
 
 	scheme := strings.ToLower(parsed.Scheme)
@@ -399,10 +409,19 @@ func validateBootstrapBaseURL(baseURL string) error {
 		return nil
 	}
 	if scheme != "http" {
-		return fmt.Errorf("bootstrap base URL %q uses unsupported scheme %q", baseURL, parsed.Scheme)
+		return fmt.Errorf(
+			"bootstrap base URL %q uses unsupported scheme %q: %w",
+			baseURL,
+			parsed.Scheme,
+			ErrInvalidArgument,
+		)
 	}
 	if !isLoopbackBootstrapHost(parsed.Hostname()) {
-		return fmt.Errorf("bootstrap base URL %q must use https (http is allowed only for loopback hosts)", baseURL)
+		return fmt.Errorf(
+			"bootstrap base URL %q must use https (http is allowed only for loopback hosts): %w",
+			baseURL,
+			ErrInvalidArgument,
+		)
 	}
 	return nil
 }
@@ -600,7 +619,7 @@ func downloadAndInstallRuntime(cfg bootstrapConfig, artifact runtimeArtifact, in
 	}
 
 	if _, err := resolveExtractedLibraryPath(extractedInstallDir, artifact); err != nil {
-		if errors.Is(err, errSharedLibraryNotFound) {
+		if errors.Is(err, ErrSharedLibraryNotFound) {
 			errMessage := fmt.Sprintf("downloaded archive did not contain expected shared library in %q", filepath.Join(extractedInstallDir, "lib"))
 			switch {
 			case extractReport.skippedLibraryLinkEntries > 0:
@@ -623,7 +642,7 @@ func downloadAndInstallRuntime(cfg bootstrapConfig, artifact runtimeArtifact, in
 			case extractReport.skippedLinkEntries > 0:
 				errMessage = fmt.Sprintf("%s (extraction skipped %d link entries)", errMessage, extractReport.skippedLinkEntries)
 			}
-			return errors.New(errMessage)
+			return fmt.Errorf("%s: %w", errMessage, err)
 		}
 		return err
 	}
@@ -670,7 +689,12 @@ func resolveRuntimeArchiveChecksum(cfg bootstrapConfig, artifact runtimeArtifact
 	}
 
 	if pinnedChecksum != "" && officialChecksum != "" && pinnedChecksum != officialChecksum {
-		return "", fmt.Errorf("configured expected checksum %s does not match ONNX Runtime release metadata checksum %s", pinnedChecksum, officialChecksum)
+		return "", fmt.Errorf(
+			"configured expected checksum %s does not match ONNX Runtime release metadata checksum %s: %w",
+			pinnedChecksum,
+			officialChecksum,
+			ErrInvalidArgument,
+		)
 	}
 	if officialChecksum != "" {
 		return officialChecksum, nil
@@ -687,7 +711,7 @@ func shouldResolveChecksumFromReleaseMetadata(baseURL, metadataURL string) bool 
 func resolveRuntimeArchiveChecksumFromReleaseMetadata(cfg bootstrapConfig, artifact runtimeArtifact) (string, error) {
 	metadataBaseURL := strings.TrimRight(strings.TrimSpace(cfg.releaseMetadataURL), "/")
 	if metadataBaseURL == "" {
-		return "", fmt.Errorf("bootstrap release metadata URL is empty")
+		return "", fmt.Errorf("bootstrap release metadata URL is empty: %w", ErrInvalidArgument)
 	}
 	metadataURL := fmt.Sprintf("%s/v%s", metadataBaseURL, cfg.version)
 	archiveName := artifact.archiveFilename(cfg.version)
@@ -1259,13 +1283,13 @@ func resolveExtractedLibraryPath(installDir string, artifact runtimeArtifact) (s
 		return "", fmt.Errorf("found ONNX Runtime shared library candidates in %q but none are valid: %w", libDir, errors.Join(invalidCandidates...))
 	}
 
-	return "", errSharedLibraryNotFound
+	return "", ErrSharedLibraryNotFound
 }
 
 func validateLibraryFile(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return "", fmt.Errorf("library path is empty")
+		return "", fmt.Errorf("library path is empty: %w", ErrInvalidArgument)
 	}
 
 	absPath, err := filepath.Abs(path)
@@ -1275,6 +1299,14 @@ func validateLibraryFile(path string) (string, error) {
 
 	info, err := os.Stat(absPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf(
+				"failed to stat library file %q: %w: %w",
+				absPath,
+				ErrSharedLibraryNotFound,
+				err,
+			)
+		}
 		return "", fmt.Errorf("failed to stat library file %q: %w", absPath, err)
 	}
 	if info.IsDir() {
@@ -1289,7 +1321,7 @@ func validateLibraryFile(path string) (string, error) {
 
 func withProcessFileLock(lockPath string, fn func() error) (err error) {
 	if fn == nil {
-		return fmt.Errorf("lock callback is nil")
+		return fmt.Errorf("bootstrap lock callback is nil: %w", ErrInvalidArgument)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(lockPath), secureDirectoryPermission); err != nil {
@@ -1333,7 +1365,13 @@ func withProcessFileLock(lockPath string, fn func() error) (err error) {
 
 	defer func() {
 		unlockErr := unlockFile(file)
+		if unlockErr != nil {
+			unlockErr = fmt.Errorf("failed to release lock %q: %w", lockPath, unlockErr)
+		}
 		closeErr := file.Close()
+		if closeErr != nil {
+			closeErr = fmt.Errorf("failed to close lock file %q: %w", lockPath, closeErr)
+		}
 		err = errors.Join(err, unlockErr, closeErr)
 	}()
 
@@ -1395,20 +1433,20 @@ func normalizeRuntimeVersion(version string) (string, error) {
 	version = strings.TrimSpace(version)
 	version = strings.TrimPrefix(version, "v")
 	if version == "" {
-		return "", fmt.Errorf("ONNX Runtime version is empty")
+		return "", fmt.Errorf("ONNX Runtime version is empty: %w", ErrInvalidArgument)
 	}
 
 	parts := strings.Split(version, ".")
 	if len(parts) != 3 {
-		return "", fmt.Errorf("ONNX Runtime version must have format x.y.z, got %q", version)
+		return "", fmt.Errorf("ONNX Runtime version must have format x.y.z, got %q: %w", version, ErrInvalidArgument)
 	}
 
 	for _, part := range parts {
 		if part == "" {
-			return "", fmt.Errorf("ONNX Runtime version must have format x.y.z, got %q", version)
+			return "", fmt.Errorf("ONNX Runtime version must have format x.y.z, got %q: %w", version, ErrInvalidArgument)
 		}
 		if _, err := strconv.Atoi(part); err != nil {
-			return "", fmt.Errorf("ONNX Runtime version must have numeric segments, got %q", version)
+			return "", fmt.Errorf("ONNX Runtime version must have numeric segments, got %q: %w", version, ErrInvalidArgument)
 		}
 	}
 
@@ -1432,7 +1470,12 @@ func parseBootstrapBoolEnv(name string) (bool, error) {
 	case "no", "n", "off":
 		return false, nil
 	default:
-		return false, fmt.Errorf("invalid boolean value for %s: %q (expected true/false, 1/0, yes/no, y/n, on/off)", name, value)
+		return false, fmt.Errorf(
+			"invalid boolean value for %s: %q (expected true/false, 1/0, yes/no, y/n, on/off): %w",
+			name,
+			value,
+			ErrInvalidArgument,
+		)
 	}
 }
 
