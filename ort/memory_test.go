@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func setupTestEnvironment(tb testing.TB) func() {
@@ -274,23 +275,43 @@ func TestMemoryInfoDestroyReleaseUnavailable(t *testing.T) {
 }
 
 func TestMemoryInfoFinalizer(t *testing.T) {
-	cleanup := setupTestEnvironment(t)
-	defer cleanup()
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
 
-	// Create memory info without explicitly destroying
-	func() {
-		_, err := CreateCpuMemoryInfo(AllocatorTypeArena, MemTypeCPU)
-		if err != nil {
-			t.Fatalf("Failed to create memory info: %v", err)
+	var releaseCount atomic.Int32
+	released := make(chan struct{}, 1)
+	mu.Lock()
+	releaseMemoryInfoFunc = func(handle uintptr) {
+		if handle != 901 {
+			t.Errorf("released handle = %d, want 901", handle)
 		}
-		// Memory info goes out of scope without calling Destroy()
-	}()
+		releaseCount.Add(1)
+		released <- struct{}{}
+	}
+	mu.Unlock()
 
-	// Force GC to run finalizers
-	runtime.GC()
-	runtime.GC() // Call twice to ensure finalizers run
+	abandonMemoryInfoForFinalizerTest(901)
 
-	// If we get here without crashing, the finalizer worked correctly
+	timeout := time.NewTimer(5 * time.Second)
+	defer timeout.Stop()
+	for {
+		runtime.GC()
+		select {
+		case <-released:
+			if got := releaseCount.Load(); got != 1 {
+				t.Fatalf("release count = %d, want 1", got)
+			}
+			return
+		case <-time.After(10 * time.Millisecond):
+		case <-timeout.C:
+			t.Fatalf("finalizer did not release memory info; release count = %d", releaseCount.Load())
+		}
+	}
+}
+
+func abandonMemoryInfoForFinalizerTest(handle uintptr) {
+	memInfo := &MemoryInfo{handle: handle, name: "Cpu"}
+	runtime.SetFinalizer(memInfo, finalizeMemoryInfo)
 }
 
 func TestMemoryInfoBeforeInit(t *testing.T) {
