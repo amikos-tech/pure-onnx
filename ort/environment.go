@@ -143,6 +143,24 @@ func InitializeEnvironment() error {
 // lifecycle transition. An empty path keeps the value configured by
 // SetSharedLibraryPath.
 func initializeEnvironmentAt(path string) (err error) {
+	runtimeVersion, newlyInitialized, err := initializeEnvironmentAtLocked(path)
+	if runtimeVersion == "" {
+		return err
+	}
+
+	if newlyInitialized {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				_ = DestroyEnvironment()
+				panic(recovered)
+			}
+		}()
+	}
+	emitRuntimeVersionWarning(runtimeVersion)
+	return err
+}
+
+func initializeEnvironmentAtLocked(path string) (runtimeVersion string, newlyInitialized bool, err error) {
 	ortCallMu.Lock()
 	defer ortCallMu.Unlock()
 
@@ -151,21 +169,21 @@ func initializeEnvironmentAt(path string) (err error) {
 
 	if refCount > 0 {
 		if path != "" && libPath != path {
-			return fmt.Errorf(
+			return "", false, fmt.Errorf(
 				"cannot change library path after environment is initialized: configured %q, requested %q",
 				libPath,
 				path,
 			)
 		}
 		refCount++
-		return nil
+		return "", false, nil
 	}
 
 	if path != "" {
 		libPath = path
 	}
 	if libPath == "" {
-		return fmt.Errorf(
+		return "", false, fmt.Errorf(
 			"library path not set; call SetSharedLibraryPath or InitializeEnvironmentWithBootstrap: %w",
 			ErrNotInitialized,
 		)
@@ -192,22 +210,22 @@ func initializeEnvironmentAt(path string) (err error) {
 
 	ortLib, err = environmentLoadLibrary(libPath)
 	if err != nil {
-		return fmt.Errorf("failed to load ONNX Runtime library: %w", err)
+		return "", false, fmt.Errorf("failed to load ONNX Runtime library: %w", err)
 	}
 
 	sym, err := environmentGetSymbol(ortLib, "OrtGetApiBase")
 	if err != nil {
-		return fmt.Errorf("failed to get OrtGetApiBase symbol: %w", err)
+		return "", false, fmt.Errorf("failed to get OrtGetApiBase symbol: %w", err)
 	}
 
 	var ortGetApiBase func() *OrtApiBase
 	purego.RegisterFunc(&ortGetApiBase, sym)
 	apiBase := ortGetApiBase()
 	if apiBase == nil {
-		return fmt.Errorf("OrtGetApiBase returned nil: %w", ErrUnsupportedRuntime)
+		return "", false, fmt.Errorf("OrtGetApiBase returned nil: %w", ErrUnsupportedRuntime)
 	}
 	if apiBase.GetApi == 0 {
-		return fmt.Errorf("OrtApiBase.GetApi is nil: %w", ErrUnsupportedRuntime)
+		return "", false, fmt.Errorf("OrtApiBase.GetApi is nil: %w", ErrUnsupportedRuntime)
 	}
 
 	purego.RegisterFunc(&getVersionStringFunc, apiBase.GetVersionString)
@@ -216,7 +234,7 @@ func initializeEnvironmentAt(path string) (err error) {
 	purego.RegisterFunc(&getApi, apiBase.GetApi)
 	apiPtr := getApi(ORT_API_VERSION)
 	if apiPtr == 0 {
-		return fmt.Errorf(
+		return "", false, fmt.Errorf(
 			"runtime does not support ONNX Runtime API version %d: %w",
 			ORT_API_VERSION,
 			ErrUnsupportedRuntime,
@@ -244,8 +262,7 @@ func initializeEnvironmentAt(path string) (err error) {
 	// Validate ONNX Runtime version (warn if mismatch, unless explicitly skipped)
 	if os.Getenv("ONNXRUNTIME_SKIP_VERSION_CHECK") == "" {
 		versionPtr := getVersionStringFunc()
-		version := CstringToGo(versionPtr)
-		emitRuntimeVersionWarning(version)
+		runtimeVersion = CstringToGo(versionPtr)
 	}
 
 	var createEnv func(logLevel int32, logID uintptr, out *uintptr) uintptr
@@ -253,13 +270,13 @@ func initializeEnvironmentAt(path string) (err error) {
 
 	ortEnv, err = createEnvironment(createEnv, logLevel)
 	if err != nil {
-		return err
+		return runtimeVersion, false, err
 	}
 
 	// Success - prevent cleanup
 	cleanupNeeded = false
 	refCount = 1
-	return nil
+	return runtimeVersion, true, nil
 }
 
 // DestroyEnvironment cleans up the ONNX Runtime environment

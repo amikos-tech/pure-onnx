@@ -21,7 +21,10 @@ func newDiagnosticStore() *atomic.Pointer[diagnosticState] {
 // SetDiagnosticHandler installs the process-wide diagnostic handler.
 // The handler is trusted synchronous consumer code and must be safe for
 // concurrent use. Its panics propagate to the caller except at the
-// best-effort finalizer boundary. Passing nil restores silent behavior.
+// best-effort finalizer boundary. Handlers may call read-only runtime queries,
+// including IsInitialized and GetVersionString. They must not call lifecycle
+// mutation or bootstrap APIs because bootstrap diagnostics may be emitted while
+// an interprocess cache lock is held. Passing nil restores silent behavior.
 func SetDiagnosticHandler(handler slog.Handler) {
 	if handler == nil {
 		handler = slog.DiscardHandler

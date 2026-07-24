@@ -2,12 +2,15 @@ package ort
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -439,6 +442,141 @@ func TestDiagnosticRuntimeVersion(t *testing.T) {
 			t.Fatalf("recovered panic = %v, want %q", recovered, panicValue)
 		}
 	})
+}
+
+func TestInitializeEnvironmentDiagnosticHandlerCanQueryRuntime(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+	t.Setenv("ONNXRUNTIME_SKIP_VERSION_CHECK", "")
+
+	versionBytes, versionPtr := GoToCstring("1.21.4")
+	noOp := purego.NewCallback(func() {})
+	api := &OrtApi{
+		GetErrorCode:                   noOp,
+		GetErrorMessage:                noOp,
+		ReleaseStatus:                  noOp,
+		CreateMemoryInfo:               noOp,
+		ReleaseMemoryInfo:              noOp,
+		CreateTensorWithDataAsOrtValue: noOp,
+		ReleaseValue:                   noOp,
+		CreateSessionOptions:           noOp,
+		ReleaseSessionOptions:          noOp,
+		CreateSession:                  noOp,
+		Run:                            noOp,
+		ReleaseSession:                 noOp,
+		ReleaseEnv:                     purego.NewCallback(func(uintptr) {}),
+	}
+	api.CreateEnv = purego.NewCallback(func(_ int32, _ uintptr, out uintptr) uintptr {
+		*(*uintptr)(unsafe.Pointer(out)) = 1001
+		return 0
+	})
+	apiBase := &OrtApiBase{
+		GetApi: purego.NewCallback(func(uint32) uintptr {
+			return uintptr(unsafe.Pointer(api))
+		}),
+		GetVersionString: purego.NewCallback(func() uintptr {
+			return versionPtr
+		}),
+	}
+	getAPIBase := purego.NewCallback(func() uintptr {
+		return uintptr(unsafe.Pointer(apiBase))
+	})
+
+	installEnvironmentLibraryHooks(
+		func(string) (uintptr, error) { return 1002, nil },
+		func(uintptr, string) (uintptr, error) { return getAPIBase, nil },
+		func(uintptr) error { return nil },
+	)
+	if err := SetSharedLibraryPath("reentrant-diagnostic-runtime"); err != nil {
+		t.Fatalf("set shared library path: %v", err)
+	}
+
+	handler := &runtimeQueryDiagnosticHandler{
+		handled:      make(chan struct{}),
+		queryTimeout: time.Second,
+	}
+	SetDiagnosticHandler(handler)
+	t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+	initDone := make(chan error, 1)
+	go func() {
+		initDone <- InitializeEnvironment()
+	}()
+
+	select {
+	case err := <-initDone:
+		if err != nil {
+			t.Fatalf("initialize environment: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("InitializeEnvironment blocked in the diagnostic handler")
+	}
+
+	select {
+	case <-handler.handled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runtime-version diagnostic was not handled")
+	}
+	if handler.queryTimedOut {
+		t.Fatal("diagnostic handler runtime queries blocked on lifecycle locks")
+	}
+	if !handler.initialized {
+		t.Fatal("IsInitialized returned false from the diagnostic handler")
+	}
+	if handler.version != "1.21.4" {
+		t.Fatalf("GetVersionString returned %q from the diagnostic handler, want 1.21.4", handler.version)
+	}
+
+	if err := DestroyEnvironment(); err != nil {
+		t.Fatalf("destroy environment: %v", err)
+	}
+	runtime.KeepAlive(versionBytes)
+	runtime.KeepAlive(api)
+	runtime.KeepAlive(apiBase)
+}
+
+type runtimeQueryDiagnosticHandler struct {
+	handled       chan struct{}
+	queryTimeout  time.Duration
+	queryTimedOut bool
+	initialized   bool
+	version       string
+}
+
+func (*runtimeQueryDiagnosticHandler) Enabled(context.Context, slog.Level) bool {
+	return true
+}
+
+func (h *runtimeQueryDiagnosticHandler) Handle(context.Context, slog.Record) error {
+	type queryResult struct {
+		initialized bool
+		version     string
+	}
+	result := make(chan queryResult, 1)
+	go func() {
+		result <- queryResult{
+			initialized: IsInitialized(),
+			version:     GetVersionString(),
+		}
+	}()
+
+	select {
+	case query := <-result:
+		h.initialized = query.initialized
+		h.version = query.version
+	case <-time.After(h.queryTimeout):
+		h.queryTimedOut = true
+	}
+	close(h.handled)
+	return nil
+}
+
+func (h *runtimeQueryDiagnosticHandler) WithAttrs([]slog.Attr) slog.Handler {
+	return h
+}
+
+func (h *runtimeQueryDiagnosticHandler) WithGroup(string) slog.Handler {
+	return h
 }
 
 func TestIsInitialized(t *testing.T) {
