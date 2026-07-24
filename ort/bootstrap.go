@@ -37,6 +37,8 @@ const (
 	bootstrapGitHubAPIVersion          = "2022-11-28"
 	bootstrapDownloaderUserAgent       = "onnx-purego-bootstrap-downloader"
 	defaultBootstrapDownloadRetryCount = 3
+	bootstrapManifestFilename          = ".onnx-purego-manifest.json"
+	bootstrapManifestVersion           = 1
 
 	secureDirectoryPermission = 0o750
 	secureLockFilePermission  = 0o600
@@ -45,6 +47,7 @@ const (
 	maxExtractedTotalBytes int64 = 4 << 30 // 4 GiB
 	maxDownloadBytes       int64 = 1 << 30 // 1 GiB
 	maxMetadataBytes       int64 = 5 << 20 // 5 MiB
+	maxManifestBytes       int64 = 4 << 20 // 4 MiB
 )
 
 func safeArchiveFileMode(mode os.FileMode) os.FileMode {
@@ -145,6 +148,21 @@ type archiveExtractionReport struct {
 	skippedLinkEntries         int
 	skippedLibraryLinkEntries  int
 	skippedLibraryLinkExamples []string
+}
+
+type bootstrapInstallManifest struct {
+	Version          int                     `json:"version"`
+	RuntimeVersion   string                  `json:"runtime_version"`
+	Platform         string                  `json:"platform"`
+	ArchiveSHA256    string                  `json:"archive_sha256"`
+	ChecksumVerified bool                    `json:"checksum_verified"`
+	Files            []bootstrapManifestFile `json:"files"`
+}
+
+type bootstrapManifestFile struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
 }
 
 // WithBootstrapLibraryPath sets an explicit ONNX Runtime shared library path.
@@ -252,41 +270,48 @@ func EnsureOnnxRuntimeSharedLibrary(opts ...BootstrapOption) (string, error) {
 	}
 
 	installDir := filepath.Join(cfg.cacheDir, artifact.archiveName(cfg.version))
-	if path, resolveErr := resolveExtractedLibraryPath(installDir, artifact); resolveErr == nil {
-		return path, nil
-	} else if !errors.Is(resolveErr, ErrSharedLibraryNotFound) {
-		return "", resolveErr
-	}
-
-	if cfg.disableDownload {
-		return "", fmt.Errorf(
-			"ONNX Runtime library not found in cache and download is disabled at %q: %w",
-			installDir,
-			ErrSharedLibraryNotFound,
-		)
-	}
-
 	if err := os.MkdirAll(cfg.cacheDir, secureDirectoryPermission); err != nil {
 		return "", fmt.Errorf("failed to create bootstrap cache directory %q: %w", cfg.cacheDir, err)
+	}
+	if err := validateBootstrapDirectoryTrust(cfg.cacheDir); err != nil {
+		return "", fmt.Errorf("bootstrap cache directory is not trusted: %w", err)
 	}
 
 	lockPath := filepath.Join(cfg.cacheDir, ".locks", fmt.Sprintf("%s-%s.lock", artifact.platform, cfg.version))
 	var resolvedPath string
 	if err := withProcessFileLock(lockPath, func() error {
-		if path, resolveErr := resolveExtractedLibraryPath(installDir, artifact); resolveErr == nil {
+		if err := validateBootstrapDirectoryTrust(cfg.cacheDir); err != nil {
+			return fmt.Errorf("bootstrap cache directory is not trusted: %w", err)
+		}
+
+		path, cacheErr := validateCachedRuntimeInstall(cfg, artifact, installDir)
+		if cacheErr == nil {
 			resolvedPath = path
 			return nil
-		} else if !errors.Is(resolveErr, ErrSharedLibraryNotFound) {
-			return resolveErr
+		}
+
+		if !errors.Is(cacheErr, ErrSharedLibraryNotFound) {
+			if err := bootstrapRemoveAll(installDir); err != nil {
+				return fmt.Errorf("failed to remove invalid cached ONNX Runtime install at %q: %w", installDir, errors.Join(cacheErr, err))
+			}
+			if cfg.disableDownload {
+				return fmt.Errorf("cached ONNX Runtime install at %q failed integrity validation and download is disabled: %w", installDir, cacheErr)
+			}
+		} else if cfg.disableDownload {
+			return fmt.Errorf(
+				"ONNX Runtime library not found in cache and download is disabled at %q: %w",
+				installDir,
+				ErrSharedLibraryNotFound,
+			)
 		}
 
 		if err := downloadAndInstallRuntime(cfg, artifact, installDir); err != nil {
 			return err
 		}
 
-		path, resolveErr := resolveExtractedLibraryPath(installDir, artifact)
-		if resolveErr != nil {
-			return fmt.Errorf("bootstrap completed but shared library could not be resolved: %w", resolveErr)
+		path, cacheErr = validateCachedRuntimeInstall(cfg, artifact, installDir)
+		if cacheErr != nil {
+			return fmt.Errorf("bootstrap completed but installed runtime failed integrity validation: %w", cacheErr)
 		}
 		resolvedPath = path
 		return nil
@@ -656,6 +681,15 @@ func downloadAndInstallRuntime(cfg bootstrapConfig, artifact runtimeArtifact, in
 			}
 			return fmt.Errorf("%s: %w", errMessage, err)
 		}
+		return err
+	}
+	if err := writeBootstrapInstallManifest(
+		extractedInstallDir,
+		cfg,
+		artifact,
+		checksum,
+		expectedChecksum != "",
+	); err != nil {
 		return err
 	}
 
@@ -1295,6 +1329,251 @@ func extractZIPArchive(archivePath, destinationDir, libraryGlob string) (report 
 	return report, nil
 }
 
+func writeBootstrapInstallManifest(
+	installDir string,
+	cfg bootstrapConfig,
+	artifact runtimeArtifact,
+	archiveChecksum string,
+	checksumVerified bool,
+) error {
+	if !looksLikeSHA256(archiveChecksum) {
+		return fmt.Errorf("cannot write bootstrap manifest with invalid archive checksum %q", archiveChecksum)
+	}
+
+	files, err := collectBootstrapInstallFiles(installDir)
+	if err != nil {
+		return fmt.Errorf("failed to hash extracted ONNX Runtime files: %w", err)
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("cannot write bootstrap manifest for empty install directory %q", installDir)
+	}
+
+	manifest := bootstrapInstallManifest{
+		Version:          bootstrapManifestVersion,
+		RuntimeVersion:   cfg.version,
+		Platform:         artifact.platform,
+		ArchiveSHA256:    archiveChecksum,
+		ChecksumVerified: checksumVerified,
+		Files:            files,
+	}
+	encoded, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to encode bootstrap manifest: %w", err)
+	}
+	encoded = append(encoded, '\n')
+
+	manifestPath := filepath.Join(installDir, bootstrapManifestFilename)
+	// #nosec G304 -- manifestPath is rooted in the internal staging directory.
+	file, err := os.OpenFile(manifestPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, secureLockFilePermission)
+	if err != nil {
+		return fmt.Errorf("failed to create bootstrap manifest %q: %w", manifestPath, err)
+	}
+	if _, err := file.Write(encoded); err != nil {
+		writeErr := fmt.Errorf("failed to write bootstrap manifest %q: %w", manifestPath, err)
+		if closeErr := file.Close(); closeErr != nil {
+			return errors.Join(writeErr, fmt.Errorf("failed to close bootstrap manifest %q: %w", manifestPath, closeErr))
+		}
+		return writeErr
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("failed to close bootstrap manifest %q: %w", manifestPath, err)
+	}
+	return nil
+}
+
+func validateCachedRuntimeInstall(
+	cfg bootstrapConfig,
+	artifact runtimeArtifact,
+	installDir string,
+) (string, error) {
+	info, err := os.Lstat(installDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("cached ONNX Runtime install %q is missing: %w: %w", installDir, ErrSharedLibraryNotFound, err)
+		}
+		return "", fmt.Errorf("failed to inspect cached ONNX Runtime install %q: %w", installDir, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("cached ONNX Runtime install must not be a symbolic link: %q", installDir)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("cached ONNX Runtime install is not a directory: %q", installDir)
+	}
+	if err := validateBootstrapPathOwnershipAndMode(installDir, info); err != nil {
+		return "", err
+	}
+
+	manifest, err := readBootstrapInstallManifest(installDir)
+	if err != nil {
+		return "", err
+	}
+	if manifest.Version != bootstrapManifestVersion {
+		return "", fmt.Errorf("unsupported bootstrap manifest version %d in %q", manifest.Version, installDir)
+	}
+	if manifest.RuntimeVersion != cfg.version {
+		return "", fmt.Errorf("bootstrap manifest runtime version = %q, want %q", manifest.RuntimeVersion, cfg.version)
+	}
+	if manifest.Platform != artifact.platform {
+		return "", fmt.Errorf("bootstrap manifest platform = %q, want %q", manifest.Platform, artifact.platform)
+	}
+	if !looksLikeSHA256(manifest.ArchiveSHA256) {
+		return "", fmt.Errorf("bootstrap manifest contains invalid archive checksum %q", manifest.ArchiveSHA256)
+	}
+	if cfg.expectedSHA256 != "" {
+		if !manifest.ChecksumVerified {
+			return "", fmt.Errorf("cached runtime was installed without a verified archive checksum")
+		}
+		if manifest.ArchiveSHA256 != cfg.expectedSHA256 {
+			return "", fmt.Errorf(
+				"cached runtime archive checksum %s does not match expected checksum %s",
+				manifest.ArchiveSHA256,
+				cfg.expectedSHA256,
+			)
+		}
+	}
+
+	actualFiles, err := collectBootstrapInstallFiles(installDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to verify cached ONNX Runtime files: %w", err)
+	}
+	if err := compareBootstrapManifestFiles(manifest.Files, actualFiles); err != nil {
+		return "", err
+	}
+
+	path, err := resolveExtractedLibraryPath(installDir, artifact)
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func readBootstrapInstallManifest(installDir string) (bootstrapInstallManifest, error) {
+	manifestPath := filepath.Join(installDir, bootstrapManifestFilename)
+	info, err := os.Lstat(manifestPath)
+	if err != nil {
+		return bootstrapInstallManifest{}, fmt.Errorf("failed to inspect bootstrap manifest %q: %w", manifestPath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return bootstrapInstallManifest{}, fmt.Errorf("bootstrap manifest must not be a symbolic link: %q", manifestPath)
+	}
+	if !info.Mode().IsRegular() {
+		return bootstrapInstallManifest{}, fmt.Errorf("bootstrap manifest is not a regular file: %q", manifestPath)
+	}
+	if info.Size() <= 0 || info.Size() > maxManifestBytes {
+		return bootstrapInstallManifest{}, fmt.Errorf("bootstrap manifest size %d is outside the allowed range", info.Size())
+	}
+	if err := validateBootstrapPathOwnershipAndMode(manifestPath, info); err != nil {
+		return bootstrapInstallManifest{}, err
+	}
+
+	// #nosec G304 -- manifestPath is rooted in the configured cache install directory.
+	encoded, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return bootstrapInstallManifest{}, fmt.Errorf("failed to read bootstrap manifest %q: %w", manifestPath, err)
+	}
+	var manifest bootstrapInstallManifest
+	if err := json.Unmarshal(encoded, &manifest); err != nil {
+		return bootstrapInstallManifest{}, fmt.Errorf("failed to parse bootstrap manifest %q: %w", manifestPath, err)
+	}
+	return manifest, nil
+}
+
+func collectBootstrapInstallFiles(installDir string) ([]bootstrapManifestFile, error) {
+	manifestPath := filepath.Join(installDir, bootstrapManifestFilename)
+	files := make([]bootstrapManifestFile, 0)
+
+	err := filepath.WalkDir(installDir, func(filePath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := os.Lstat(filePath)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("cached install contains symbolic link %q", filePath)
+		}
+		if info.IsDir() {
+			return validateBootstrapPathOwnershipAndMode(filePath, info)
+		}
+		if filePath == manifestPath {
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("cached install contains non-regular file %q", filePath)
+		}
+		if err := validateBootstrapPathOwnershipAndMode(filePath, info); err != nil {
+			return err
+		}
+
+		digest, err := sha256File(filePath)
+		if err != nil {
+			return err
+		}
+		relativePath, err := filepath.Rel(installDir, filePath)
+		if err != nil {
+			return fmt.Errorf("failed to resolve manifest path for %q: %w", filePath, err)
+		}
+		files = append(files, bootstrapManifestFile{
+			Path:   filepath.ToSlash(relativePath),
+			SHA256: digest,
+			Size:   info.Size(),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].Path < files[j].Path
+	})
+	return files, nil
+}
+
+func sha256File(filePath string) (digest string, err error) {
+	// #nosec G304 -- callers constrain filePath to the install directory.
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open cached file %q: %w", filePath, err)
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			closeErr = fmt.Errorf("failed to close cached file %q: %w", filePath, closeErr)
+			if err == nil {
+				err = closeErr
+			} else {
+				err = errors.Join(err, closeErr)
+			}
+		}
+	}()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", fmt.Errorf("failed to hash cached file %q: %w", filePath, err)
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func compareBootstrapManifestFiles(expected, actual []bootstrapManifestFile) error {
+	if len(expected) != len(actual) {
+		return fmt.Errorf("bootstrap manifest file count = %d, cached install file count = %d", len(expected), len(actual))
+	}
+	for i := range expected {
+		if expected[i] != actual[i] {
+			return fmt.Errorf(
+				"bootstrap manifest mismatch for cached file %q: expected sha256=%s size=%d, got path=%q sha256=%s size=%d",
+				expected[i].Path,
+				expected[i].SHA256,
+				expected[i].Size,
+				actual[i].Path,
+				actual[i].SHA256,
+				actual[i].Size,
+			)
+		}
+	}
+	return nil
+}
+
 func resolveExtractedLibraryPath(installDir string, artifact runtimeArtifact) (string, error) {
 	libDir := filepath.Join(installDir, "lib")
 
@@ -1336,6 +1615,20 @@ func resolveExtractedLibraryPath(installDir string, artifact runtimeArtifact) (s
 	return "", ErrSharedLibraryNotFound
 }
 
+func validateBootstrapDirectoryTrust(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("failed to inspect bootstrap directory %q: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("bootstrap directory must not be a symbolic link: %q", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("bootstrap path is not a directory: %q", path)
+	}
+	return validateBootstrapPathOwnershipAndMode(path, info)
+}
+
 func validateLibraryFile(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -1347,20 +1640,26 @@ func validateLibraryFile(path string) (string, error) {
 		return "", fmt.Errorf("failed to resolve absolute path for %q: %w", path, err)
 	}
 
-	info, err := os.Stat(absPath)
+	info, err := os.Lstat(absPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf(
-				"failed to stat library file %q: %w: %w",
+				"failed to inspect library file %q: %w: %w",
 				absPath,
 				ErrSharedLibraryNotFound,
 				err,
 			)
 		}
-		return "", fmt.Errorf("failed to stat library file %q: %w", absPath, err)
+		return "", fmt.Errorf("failed to inspect library file %q: %w", absPath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("library path must not be a symbolic link: %q", absPath)
 	}
 	if info.IsDir() {
 		return "", fmt.Errorf("library path points to a directory: %q", absPath)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("library path is not a regular file: %q", absPath)
 	}
 	if info.Size() == 0 {
 		return "", fmt.Errorf("library file is empty: %q", absPath)
@@ -1374,14 +1673,38 @@ func withProcessFileLock(lockPath string, fn func() error) (err error) {
 		return fmt.Errorf("bootstrap lock callback is nil: %w", ErrInvalidArgument)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(lockPath), secureDirectoryPermission); err != nil {
+	lockDir := filepath.Dir(lockPath)
+	if err := os.MkdirAll(lockDir, secureDirectoryPermission); err != nil {
 		return fmt.Errorf("failed to create lock directory for %q: %w", lockPath, err)
+	}
+	if err := validateBootstrapDirectoryTrust(lockDir); err != nil {
+		return fmt.Errorf("bootstrap lock directory is not trusted: %w", err)
+	}
+	if info, err := os.Lstat(lockPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("bootstrap lock file must not be a symbolic link: %q", lockPath)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("bootstrap lock path is not a regular file: %q", lockPath)
+		}
+		if err := validateBootstrapPathOwnershipAndMode(lockPath, info); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to inspect bootstrap lock file %q: %w", lockPath, err)
 	}
 
 	// #nosec G304 -- lockPath is constructed from configured cache directory and fixed internal suffix.
 	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, secureLockFilePermission)
 	if err != nil {
 		return fmt.Errorf("failed to open lock file %q: %w", lockPath, err)
+	}
+	if info, err := os.Lstat(lockPath); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("failed to inspect bootstrap lock file %q after opening: %w", lockPath, err)
+	} else if err := validateBootstrapPathOwnershipAndMode(lockPath, info); err != nil {
+		_ = file.Close()
+		return err
 	}
 
 	start := time.Now()

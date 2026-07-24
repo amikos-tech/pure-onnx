@@ -553,6 +553,135 @@ func TestEnsureOnnxRuntimeSharedLibraryChecksumMatch(t *testing.T) {
 	}
 }
 
+func TestEnsureOnnxRuntimeSharedLibraryReplacesUntrustedCacheEntry(t *testing.T) {
+	clearBootstrapEnv(t)
+
+	artifact, err := resolveRuntimeArtifact(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		t.Skipf("unsupported runtime for bootstrap test: %v", err)
+	}
+
+	cacheDir := t.TempDir()
+	version := "1.99.61"
+	installDir := filepath.Join(cacheDir, artifact.archiveName(version))
+	libDir := filepath.Join(installDir, "lib")
+	if err := os.MkdirAll(libDir, secureDirectoryPermission); err != nil {
+		t.Fatalf("create planted cache: %v", err)
+	}
+	plantedPath := filepath.Join(libDir, artifact.primaryLibrary)
+	if err := os.WriteFile(plantedPath, []byte("planted-library"), 0o600); err != nil {
+		t.Fatalf("write planted library: %v", err)
+	}
+
+	archiveBytes := buildORTArchive(t, artifact, version, true)
+	sum := sha256.Sum256(archiveBytes)
+	server, hits := newArchiveServer(t, artifact, version, archiveBytes)
+
+	resolved, err := EnsureOnnxRuntimeSharedLibrary(
+		WithBootstrapCacheDir(cacheDir),
+		WithBootstrapVersion(version),
+		WithBootstrapExpectedSHA256(hex.EncodeToString(sum[:])),
+		withBootstrapBaseURL(server.URL),
+		withBootstrapHTTPClient(server.Client()),
+	)
+	if err != nil {
+		t.Fatalf("replace planted cache entry: %v", err)
+	}
+	contents, err := os.ReadFile(resolved)
+	if err != nil {
+		t.Fatalf("read resolved library: %v", err)
+	}
+	if string(contents) == "planted-library" {
+		t.Fatal("bootstrap returned the planted cache library")
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("archive download count = %d, want 1", got)
+	}
+}
+
+func TestEnsureOnnxRuntimeSharedLibraryRedownloadsTamperedManifestFile(t *testing.T) {
+	clearBootstrapEnv(t)
+
+	artifact, err := resolveRuntimeArtifact(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		t.Skipf("unsupported runtime for bootstrap test: %v", err)
+	}
+
+	cacheDir := t.TempDir()
+	version := "1.99.62"
+	archiveBytes := buildORTArchive(t, artifact, version, true)
+	sum := sha256.Sum256(archiveBytes)
+	server, hits := newArchiveServer(t, artifact, version, archiveBytes)
+	opts := []BootstrapOption{
+		WithBootstrapCacheDir(cacheDir),
+		WithBootstrapVersion(version),
+		WithBootstrapExpectedSHA256(hex.EncodeToString(sum[:])),
+		withBootstrapBaseURL(server.URL),
+		withBootstrapHTTPClient(server.Client()),
+	}
+
+	resolved, err := EnsureOnnxRuntimeSharedLibrary(opts...)
+	if err != nil {
+		t.Fatalf("initial bootstrap: %v", err)
+	}
+	if err := os.WriteFile(resolved, []byte("tampered-library"), 0o600); err != nil {
+		t.Fatalf("tamper cached library: %v", err)
+	}
+
+	resolved, err = EnsureOnnxRuntimeSharedLibrary(opts...)
+	if err != nil {
+		t.Fatalf("bootstrap after tamper: %v", err)
+	}
+	contents, err := os.ReadFile(resolved)
+	if err != nil {
+		t.Fatalf("read restored library: %v", err)
+	}
+	if string(contents) == "tampered-library" {
+		t.Fatal("bootstrap returned the tampered cached library")
+	}
+	if got := hits.Load(); got != 2 {
+		t.Fatalf("archive download count = %d, want 2 after manifest mismatch", got)
+	}
+}
+
+func TestEnsureOnnxRuntimeSharedLibraryRejectsCachedSymlink(t *testing.T) {
+	clearBootstrapEnv(t)
+
+	artifact, err := resolveRuntimeArtifact(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		t.Skipf("unsupported runtime for bootstrap test: %v", err)
+	}
+
+	cacheDir := t.TempDir()
+	version := "1.99.63"
+	installDir := filepath.Join(cacheDir, artifact.archiveName(version))
+	libDir := filepath.Join(installDir, "lib")
+	if err := os.MkdirAll(libDir, secureDirectoryPermission); err != nil {
+		t.Fatalf("create planted cache: %v", err)
+	}
+	target := filepath.Join(cacheDir, "planted-library")
+	if err := os.WriteFile(target, []byte("planted"), 0o600); err != nil {
+		t.Fatalf("write symlink target: %v", err)
+	}
+	symlink := filepath.Join(libDir, artifact.primaryLibrary)
+	if err := os.Symlink(target, symlink); err != nil {
+		t.Skipf("cannot create symlink on this platform: %v", err)
+	}
+
+	resolved, err := EnsureOnnxRuntimeSharedLibrary(
+		WithBootstrapCacheDir(cacheDir),
+		WithBootstrapVersion(version),
+		WithBootstrapExpectedSHA256(strings.Repeat("a", 64)),
+		WithBootstrapDisableDownload(true),
+	)
+	if err == nil {
+		t.Fatalf("bootstrap returned cached symlink %q", resolved)
+	}
+	if resolved != "" {
+		t.Fatalf("resolved path = %q, want empty on cached symlink rejection", resolved)
+	}
+}
+
 func TestResolveRuntimeArchiveChecksumFromReleaseMetadata(t *testing.T) {
 	artifact, err := resolveRuntimeArtifact("linux", "amd64")
 	if err != nil {
@@ -1631,6 +1760,14 @@ func TestValidateLibraryFile(t *testing.T) {
 	want, _ := filepath.Abs(validPath)
 	if resolved != want {
 		t.Fatalf("unexpected resolved path: got %q, want %q", resolved, want)
+	}
+
+	symlinkPath := filepath.Join(dir, "libonnxruntime-link.so")
+	if err := os.Symlink(validPath, symlinkPath); err != nil {
+		t.Skipf("cannot create symlink on this platform: %v", err)
+	}
+	if _, err := validateLibraryFile(symlinkPath); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("symlink validation error = %v, want symbolic-link rejection", err)
 	}
 }
 
