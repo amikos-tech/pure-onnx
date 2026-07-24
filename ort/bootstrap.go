@@ -46,6 +46,10 @@ const (
 	maxMetadataBytes       int64 = 5 << 20 // 5 MiB
 )
 
+func safeArchiveFileMode(mode os.FileMode) os.FileMode {
+	return mode.Perm() &^ 0o022
+}
+
 var errBootstrapRedirectPolicy = errors.New("bootstrap redirect policy rejection")
 
 // ErrUnsupportedPlatform is returned when resolveRuntimeArtifact cannot resolve a prebuilt ONNX Runtime artifact for the host GOOS/GOARCH combination.
@@ -1077,7 +1081,7 @@ func extractTGZArchive(archivePath, destinationDir, libraryGlob string) (report 
 				return archiveExtractionReport{}, fmt.Errorf("invalid negative tar entry size for %q", header.Name)
 			}
 
-			mode := header.FileInfo().Mode().Perm()
+			mode := safeArchiveFileMode(header.FileInfo().Mode())
 			if mode == 0 {
 				mode = 0o644
 			}
@@ -1188,7 +1192,7 @@ func extractZIPArchive(archivePath, destinationDir, libraryGlob string) (report 
 			return archiveExtractionReport{}, fmt.Errorf("failed to open ZIP entry %q: %w", entry.Name, err)
 		}
 
-		filePerm := mode.Perm()
+		filePerm := safeArchiveFileMode(mode)
 		if filePerm == 0 {
 			filePerm = 0o644
 		}
