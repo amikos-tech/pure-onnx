@@ -1,6 +1,9 @@
 package ort
 
 import (
+	"bytes"
+	"errors"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -30,6 +33,21 @@ func resetEnvironmentState() {
 	createSessionFunc = nil
 	runSessionFunc = nil
 	releaseSessionFunc = nil
+	environmentLoadLibrary = loadLibrary
+	environmentGetSymbol = getSymbol
+	environmentCloseLibrary = closeLibrary
+}
+
+func installEnvironmentLibraryHooks(
+	load func(string) (uintptr, error),
+	symbol func(uintptr, string) (uintptr, error),
+	close func(uintptr) error,
+) {
+	mu.Lock()
+	environmentLoadLibrary = load
+	environmentGetSymbol = symbol
+	environmentCloseLibrary = close
+	mu.Unlock()
 }
 
 func TestEnvironmentErrorFunctionRegistration(t *testing.T) {
@@ -75,6 +93,266 @@ func TestEnvironmentErrorFunctionRegistration(t *testing.T) {
 	assertRegistered(false)
 }
 
+func TestEnvironmentErrorChains(t *testing.T) {
+	t.Run("load failure preserves OS cause", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		handler := &diagnosticCountingHandler{}
+		SetDiagnosticHandler(handler)
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+		loadCause := &os.PathError{
+			Op:   "dlopen",
+			Path: "/missing/libonnxruntime.so",
+			Err:  os.ErrNotExist,
+		}
+		installEnvironmentLibraryHooks(
+			func(string) (uintptr, error) { return 0, loadCause },
+			func(uintptr, string) (uintptr, error) {
+				t.Fatal("symbol lookup called after load failure")
+				return 0, nil
+			},
+			func(uintptr) error {
+				t.Fatal("close called after load failure")
+				return nil
+			},
+		)
+
+		if err := SetSharedLibraryPath(loadCause.Path); err != nil {
+			t.Fatalf("set library path: %v", err)
+		}
+		err := InitializeEnvironment()
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("initialization error = %v, want os.ErrNotExist", err)
+		}
+		var pathErr *os.PathError
+		if !errors.As(err, &pathErr) {
+			t.Fatalf("initialization error = %v, want *os.PathError", err)
+		}
+		if pathErr != loadCause {
+			t.Fatalf("path error = %p, want original cause %p", pathErr, loadCause)
+		}
+		if got := handler.count.Load(); got != 0 {
+			t.Fatalf("returned load error emitted %d diagnostics, want 0", got)
+		}
+	})
+
+	t.Run("symbol failure preserves cause and closes library", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		handler := &diagnosticCountingHandler{}
+		SetDiagnosticHandler(handler)
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+		symbolCause := errors.New("symbol resolution failed")
+		var closes int
+		installEnvironmentLibraryHooks(
+			func(string) (uintptr, error) { return 101, nil },
+			func(handle uintptr, symbol string) (uintptr, error) {
+				if handle != 101 || symbol != "OrtGetApiBase" {
+					t.Errorf("symbol lookup = (%d, %q), want (101, OrtGetApiBase)", handle, symbol)
+				}
+				return 0, symbolCause
+			},
+			func(handle uintptr) error {
+				if handle != 101 {
+					t.Errorf("close handle = %d, want 101", handle)
+				}
+				closes++
+				return nil
+			},
+		)
+
+		if err := SetSharedLibraryPath("fake-runtime"); err != nil {
+			t.Fatalf("set library path: %v", err)
+		}
+		err := InitializeEnvironment()
+		if !errors.Is(err, symbolCause) {
+			t.Fatalf("initialization error = %v, want symbol cause", err)
+		}
+		if closes != 1 {
+			t.Fatalf("library close count = %d, want 1", closes)
+		}
+		if got := handler.count.Load(); got != 0 {
+			t.Fatalf("returned symbol error emitted %d diagnostics, want 0", got)
+		}
+	})
+
+	t.Run("primary and cleanup failures remain independently reachable", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		handler := &diagnosticCountingHandler{}
+		SetDiagnosticHandler(handler)
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+		primaryCause := errors.New("primary initialization failure")
+		cleanupCause := errors.New("library cleanup failure")
+		installEnvironmentLibraryHooks(
+			func(string) (uintptr, error) { return 202, nil },
+			func(uintptr, string) (uintptr, error) { return 0, primaryCause },
+			func(uintptr) error { return cleanupCause },
+		)
+
+		if err := SetSharedLibraryPath("fake-runtime"); err != nil {
+			t.Fatalf("set library path: %v", err)
+		}
+		err := InitializeEnvironment()
+		if !errors.Is(err, primaryCause) {
+			t.Fatalf("joined error = %v, want primary cause", err)
+		}
+		if !errors.Is(err, cleanupCause) {
+			t.Fatalf("joined error = %v, want cleanup cause", err)
+		}
+		if got := handler.count.Load(); got != 0 {
+			t.Fatalf("returned joined error emitted %d diagnostics, want 0", got)
+		}
+	})
+}
+
+func TestEnvironmentStatusConversion(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	handler := &diagnosticCountingHandler{}
+	SetDiagnosticHandler(handler)
+	t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+	const statusHandle = uintptr(303)
+	messageBacking, messagePointer := GoToCstring("environment creation failed")
+	var releases int
+	mu.Lock()
+	getErrorCodeFunc = func(status uintptr) ErrorCode {
+		if status != statusHandle {
+			t.Errorf("GetErrorCode status = %d, want %d", status, statusHandle)
+		}
+		return ErrorCodeRuntimeException
+	}
+	getErrorMessageFunc = func(status uintptr) uintptr {
+		if status != statusHandle {
+			t.Errorf("GetErrorMessage status = %d, want %d", status, statusHandle)
+		}
+		return messagePointer
+	}
+	releaseStatusFunc = func(status uintptr) {
+		if status != statusHandle {
+			t.Errorf("ReleaseStatus status = %d, want %d", status, statusHandle)
+		}
+		for i := range messageBacking {
+			messageBacking[i] = 'x'
+		}
+		releases++
+	}
+	mu.Unlock()
+
+	ortCallMu.RLock()
+	handle, err := createEnvironment(
+		func(level int32, logID uintptr, out *uintptr) uintptr {
+			if level != int32(LoggingLevelWarning) {
+				t.Errorf("log level = %d, want %d", level, LoggingLevelWarning)
+			}
+			if got := CstringToGo(logID); got != defaultLogID {
+				t.Errorf("log ID = %q, want %q", got, defaultLogID)
+			}
+			if out == nil {
+				t.Error("environment output pointer is nil")
+			}
+			return statusHandle
+		},
+		LoggingLevelWarning,
+	)
+	ortCallMu.RUnlock()
+
+	if handle != 0 {
+		t.Fatalf("environment handle = %d, want 0 on status failure", handle)
+	}
+	var nativeErr *ORTError
+	if !errors.As(err, &nativeErr) {
+		t.Fatalf("errors.As(%v, *ORTError) = false", err)
+	}
+	if nativeErr.Operation != "create ONNX Runtime environment" {
+		t.Fatalf("operation = %q, want create ONNX Runtime environment", nativeErr.Operation)
+	}
+	if nativeErr.Code != ErrorCodeRuntimeException {
+		t.Fatalf("code = %d, want %d", nativeErr.Code, ErrorCodeRuntimeException)
+	}
+	if nativeErr.Message != "environment creation failed" {
+		t.Fatalf("message = %q, want environment creation failed", nativeErr.Message)
+	}
+	if releases != 1 {
+		t.Fatalf("status release count = %d, want 1", releases)
+	}
+	if got := handler.count.Load(); got != 0 {
+		t.Fatalf("returned status error emitted %d diagnostics, want 0", got)
+	}
+}
+
+func TestDiagnosticRuntimeVersion(t *testing.T) {
+	t.Run("old runtime emits one structured warning", func(t *testing.T) {
+		var output bytes.Buffer
+		SetDiagnosticHandler(slog.NewJSONHandler(&output, nil))
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+		emitRuntimeVersionWarning("1.21.4")
+
+		record := decodeDiagnosticRecord(t, &output)
+		if got := record["level"]; got != "WARN" {
+			t.Fatalf("level = %v, want WARN", got)
+		}
+		if got := record["runtime_version"]; got != "1.21.4" {
+			t.Fatalf("runtime_version = %v, want 1.21.4", got)
+		}
+		if got := record["api_version"]; got != float64(ORT_API_VERSION) {
+			t.Fatalf("api_version = %v, want %d", got, ORT_API_VERSION)
+		}
+	})
+
+	t.Run("supported runtime emits nothing", func(t *testing.T) {
+		handler := &diagnosticCountingHandler{}
+		SetDiagnosticHandler(handler)
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+		emitRuntimeVersionWarning("1.22.0")
+
+		if got := handler.count.Load(); got != 0 {
+			t.Fatalf("supported runtime emitted %d diagnostics, want 0", got)
+		}
+	})
+
+	t.Run("nil handler is silent", func(t *testing.T) {
+		handler := &diagnosticCountingHandler{}
+		SetDiagnosticHandler(handler)
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+		SetDiagnosticHandler(nil)
+
+		emitRuntimeVersionWarning("1.21.4")
+
+		if got := handler.count.Load(); got != 0 {
+			t.Fatalf("nil handler emitted %d diagnostics, want 0", got)
+		}
+	})
+
+	t.Run("consumer handler panic propagates synchronously", func(t *testing.T) {
+		const panicValue = "runtime warning handler panic"
+		SetDiagnosticHandler(diagnosticPanicHandler{value: panicValue})
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+		var recovered any
+		func() {
+			defer func() {
+				recovered = recover()
+			}()
+			emitRuntimeVersionWarning("1.21.4")
+		}()
+
+		if recovered != panicValue {
+			t.Fatalf("recovered panic = %v, want %q", recovered, panicValue)
+		}
+	})
+}
+
 func TestIsInitialized(t *testing.T) {
 	resetEnvironmentState()
 
@@ -97,6 +375,10 @@ func TestIsInitialized(t *testing.T) {
 
 func TestSetSharedLibraryPath(t *testing.T) {
 	resetEnvironmentState()
+
+	if err := SetSharedLibraryPath(""); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("empty path error = %v, want ErrInvalidArgument", err)
+	}
 
 	path := "/test/path/libonnxruntime.so"
 	err := SetSharedLibraryPath(path)
@@ -132,6 +414,10 @@ func TestSetSharedLibraryPath(t *testing.T) {
 
 func TestSetLogLevel(t *testing.T) {
 	resetEnvironmentState()
+
+	if err := SetLogLevel(LoggingLevel(-1)); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("invalid log level error = %v, want ErrInvalidArgument", err)
+	}
 
 	tests := []LoggingLevel{
 		LoggingLevelVerbose,
@@ -190,17 +476,26 @@ func TestGetVersionStringWhenNotInitialized(t *testing.T) {
 
 func TestInitializeEnvironmentWithoutLibraryPath(t *testing.T) {
 	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	handler := &diagnosticCountingHandler{}
+	SetDiagnosticHandler(handler)
+	t.Cleanup(func() { SetDiagnosticHandler(nil) })
 
 	err := InitializeEnvironment()
 	if err == nil {
 		t.Error("expected error when library path not set")
 	}
 
-	if err.Error() != "library path not set, call SetSharedLibraryPath first" {
-		t.Errorf("unexpected error message: %v", err)
+	if !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("initialization error = %v, want ErrNotInitialized", err)
 	}
-
-	resetEnvironmentState()
+	if !strings.Contains(err.Error(), "SetSharedLibraryPath") {
+		t.Fatalf("initialization error = %v, want SetSharedLibraryPath guidance", err)
+	}
+	if got := handler.count.Load(); got != 0 {
+		t.Fatalf("returned initialization error emitted %d diagnostics, want 0", got)
+	}
 }
 
 func TestReferenceCountingLogic(t *testing.T) {
