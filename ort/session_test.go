@@ -1584,28 +1584,17 @@ func TestAdvancedSessionRunConcurrent(t *testing.T) {
 
 	const runCalls = 32
 
-	var (
-		calls       int32
-		inFlight    int32
-		maxInFlight int32
-	)
+	var calls int32
+	firstEntered := make(chan struct{})
+	allowFirstReturn := make(chan struct{})
 
 	mu.Lock()
 	ortAPI = &OrtApi{}
 	runSessionFunc = func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr {
-		atomic.AddInt32(&calls, 1)
-		current := atomic.AddInt32(&inFlight, 1)
-		for {
-			seen := atomic.LoadInt32(&maxInFlight)
-			if current <= seen {
-				break
-			}
-			if atomic.CompareAndSwapInt32(&maxInFlight, seen, current) {
-				break
-			}
+		if atomic.AddInt32(&calls, 1) == 1 {
+			close(firstEntered)
+			<-allowFirstReturn
 		}
-		time.Sleep(1 * time.Millisecond)
-		atomic.AddInt32(&inFlight, -1)
 		return 0
 	}
 	mu.Unlock()
@@ -1618,32 +1607,45 @@ func TestAdvancedSessionRunConcurrent(t *testing.T) {
 		outputValues: []Value{&fakeValue{handle: 2}},
 	}
 
-	start := make(chan struct{})
 	errCh := make(chan error, runCalls)
-	var wg sync.WaitGroup
-	for i := 0; i < runCalls; i++ {
-		wg.Add(1)
+	go func() {
+		errCh <- session.Run()
+	}()
+
+	select {
+	case <-firstEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Run call did not enter the native callback")
+	}
+
+	runMuWasHeld := !session.runMu.TryLock()
+	if !runMuWasHeld {
+		session.runMu.Unlock()
+	}
+
+	for i := 1; i < runCalls; i++ {
 		go func() {
-			defer wg.Done()
-			<-start
 			errCh <- session.Run()
 		}()
 	}
-	close(start)
-	wg.Wait()
-	close(errCh)
 
-	for err := range errCh {
-		if err != nil {
-			t.Fatalf("concurrent run failed: %v", err)
+	close(allowFirstReturn)
+	for i := 0; i < runCalls; i++ {
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("concurrent run failed: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for Run call %d of %d", i+1, runCalls)
 		}
 	}
 
+	if !runMuWasHeld {
+		t.Fatal("session run mutex was not held while the native callback was in flight")
+	}
 	if got := atomic.LoadInt32(&calls); got != runCalls {
 		t.Fatalf("expected %d Run() calls to reach runtime, got %d", runCalls, got)
-	}
-	if got := atomic.LoadInt32(&maxInFlight); got != 1 {
-		t.Fatalf("expected Run() calls to be serialized per session, max in-flight=%d", got)
 	}
 }
 
