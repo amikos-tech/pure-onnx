@@ -79,9 +79,10 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 	} else {
 		status := createSessionOptions(&sessionOptionsHandle)
 		if status != 0 {
-			errMsg := getErrorMessage(status)
-			releaseStatus(status)
-			return nil, fmt.Errorf("failed to create session options: %s", errMsg)
+			return nil, fmt.Errorf(
+				"failed to create session options: %w",
+				statusToError(status, "create session options"),
+			)
 		}
 		releaseCreatedOptions = true
 	}
@@ -100,9 +101,10 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 	// Keep it alive until createSession returns.
 	runtime.KeepAlive(modelPathBacking)
 	if status != 0 {
-		errMsg := getErrorMessage(status)
-		releaseStatus(status)
-		return nil, fmt.Errorf("failed to create session: %s", errMsg)
+		return nil, fmt.Errorf(
+			"failed to create session: %w",
+			statusToError(status, "create session"),
+		)
 	}
 
 	session := &AdvancedSession{
@@ -113,13 +115,15 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 		outputValues: cloneValueSlice(outputValues),
 	}
 
-	runtime.SetFinalizer(session, func(s *AdvancedSession) {
-		if err := s.Destroy(); err != nil {
-			logFinalizerWarning("WARNING: session finalizer destroy failed: %v", err)
-		}
-	})
+	runtime.SetFinalizer(session, finalizeAdvancedSession)
 
 	return session, nil
+}
+
+func finalizeAdvancedSession(session *AdvancedSession) {
+	if err := session.Destroy(); err != nil {
+		emitFinalizerDiagnostic("session", err)
+	}
 }
 
 // Run executes inference with the input and output values bound at construction.
@@ -226,9 +230,10 @@ func (s *AdvancedSession) run(inputs, outputs []Value, useBoundValues bool) erro
 	runtime.KeepAlive(inputValues)
 	runtime.KeepAlive(outputValues)
 	if status != 0 {
-		errMsg := getErrorMessage(status)
-		releaseStatus(status)
-		return fmt.Errorf("failed to run inference: %s", errMsg)
+		return fmt.Errorf(
+			"failed to run inference: %w",
+			statusToError(status, "run inference"),
+		)
 	}
 
 	return nil
