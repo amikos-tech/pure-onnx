@@ -1,9 +1,10 @@
 package ort
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"runtime"
 	"strconv"
@@ -49,6 +50,9 @@ var (
 	createSessionFunc                  func(env uintptr, modelPath uintptr, sessionOptions uintptr, out *uintptr) uintptr
 	runSessionFunc                     func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr
 	releaseSessionFunc                 func(uintptr)
+	environmentLoadLibrary             = loadLibrary
+	environmentGetSymbol               = getSymbol
+	environmentCloseLibrary            = closeLibrary
 )
 
 func clearORTGlobalsLocked() {
@@ -89,6 +93,43 @@ func releaseStatus(status uintptr) {
 	releaseStatusFunc(status)
 }
 
+func emitRuntimeVersionWarning(version string) {
+	parts := strings.Split(version, ".")
+	if len(parts) < 2 {
+		return
+	}
+
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil || minor >= 22 {
+		return
+	}
+
+	emitDiagnostic(
+		context.Background(),
+		slog.LevelWarn,
+		"ONNX Runtime version is older than the supported runtime",
+		slog.String("runtime_version", version),
+		slog.Int("api_version", int(ORT_API_VERSION)),
+	)
+}
+
+func createEnvironment(
+	createEnv func(logLevel int32, logID uintptr, out *uintptr) uintptr,
+	level LoggingLevel,
+) (uintptr, error) {
+	logIDBytes, logIDPtr := GoToCstring(defaultLogID)
+
+	var environment uintptr
+	// #nosec G115 -- LoggingLevel values are validated to the native 0-4 range.
+	status := createEnv(int32(level), logIDPtr, &environment)
+	runtime.KeepAlive(logIDBytes)
+	if err := statusToError(status, "create ONNX Runtime environment"); err != nil {
+		return 0, err
+	}
+
+	return environment, nil
+}
+
 // InitializeEnvironment initializes the ONNX Runtime environment
 func InitializeEnvironment() (err error) {
 	ortCallMu.Lock()
@@ -103,7 +144,10 @@ func InitializeEnvironment() (err error) {
 	}
 
 	if libPath == "" {
-		return fmt.Errorf("library path not set, call SetSharedLibraryPath first")
+		return fmt.Errorf(
+			"library path not set; call SetSharedLibraryPath or InitializeEnvironmentWithBootstrap: %w",
+			ErrNotInitialized,
+		)
 	}
 
 	// Setup centralized cleanup for error paths
@@ -111,7 +155,7 @@ func InitializeEnvironment() (err error) {
 	defer func() {
 		if cleanupNeeded {
 			if ortLib != 0 {
-				if closeErr := closeLibrary(ortLib); closeErr != nil {
+				if closeErr := environmentCloseLibrary(ortLib); closeErr != nil {
 					closeErr = fmt.Errorf("failed to close ONNX Runtime library during initialization cleanup: %w", closeErr)
 					if err == nil {
 						err = closeErr
@@ -125,12 +169,12 @@ func InitializeEnvironment() (err error) {
 		}
 	}()
 
-	ortLib, err = loadLibrary(libPath)
+	ortLib, err = environmentLoadLibrary(libPath)
 	if err != nil {
 		return fmt.Errorf("failed to load ONNX Runtime library: %w", err)
 	}
 
-	sym, err := getSymbol(ortLib, "OrtGetApiBase")
+	sym, err := environmentGetSymbol(ortLib, "OrtGetApiBase")
 	if err != nil {
 		return fmt.Errorf("failed to get OrtGetApiBase symbol: %w", err)
 	}
@@ -167,30 +211,15 @@ func InitializeEnvironment() (err error) {
 	if os.Getenv("ONNXRUNTIME_SKIP_VERSION_CHECK") == "" {
 		versionPtr := getVersionStringFunc()
 		version := CstringToGo(versionPtr)
-
-		// Parse version string (format: "1.XX.Y")
-		parts := strings.Split(version, ".")
-		if len(parts) >= 2 {
-			minor, err := strconv.Atoi(parts[1])
-			if err == nil && minor < 22 {
-				log.Printf("WARNING: ONNX Runtime version %s is older than 1.22.0 (API version %d). "+
-					"This package was built against 1.22.0+. You may encounter compatibility issues. "+
-					"To suppress this warning, set ONNXRUNTIME_SKIP_VERSION_CHECK=1", version, ORT_API_VERSION)
-			}
-		}
+		emitRuntimeVersionWarning(version)
 	}
 
 	var createEnv func(logLevel int32, logID uintptr, out *uintptr) uintptr
 	purego.RegisterFunc(&createEnv, ortAPI.CreateEnv)
 
-	logIDBytes, logIDPtr := GoToCstring(defaultLogID)
-	// #nosec G115 -- LoggingLevel values are constrained to 0-4 by type definition, no overflow possible
-	status := createEnv(int32(logLevel), logIDPtr, &ortEnv)
-	runtime.KeepAlive(logIDBytes) // Prevent GC from collecting bytes during C call
-	if status != 0 {
-		errMsg := getErrorMessage(status)
-		releaseStatus(status)
-		return fmt.Errorf("failed to create ONNX Runtime environment: %s", errMsg)
+	ortEnv, err = createEnvironment(createEnv, logLevel)
+	if err != nil {
+		return err
 	}
 
 	// Success - prevent cleanup
@@ -227,7 +256,7 @@ func DestroyEnvironment() error {
 
 	var closeErr error
 	if ortLib != 0 {
-		if err := closeLibrary(ortLib); err != nil {
+		if err := environmentCloseLibrary(ortLib); err != nil {
 			closeErr = fmt.Errorf("failed to close ONNX Runtime library: %w", err)
 		}
 		// Clear the handle even when close fails to avoid reusing stale symbols.
@@ -251,6 +280,10 @@ func IsInitialized() bool {
 // This must be called before InitializeEnvironment().
 // Returns an error if the environment is already initialized.
 func SetSharedLibraryPath(path string) error {
+	if path == "" {
+		return fmt.Errorf("set shared library path: %w", ErrInvalidArgument)
+	}
+
 	mu.Lock()
 	defer mu.Unlock()
 	if refCount > 0 {
@@ -266,6 +299,10 @@ func SetSharedLibraryPath(path string) error {
 // Default is LoggingLevelWarning.
 // Returns an error if the environment is already initialized.
 func SetLogLevel(level LoggingLevel) error {
+	if level < LoggingLevelVerbose || level > LoggingLevelFatal {
+		return fmt.Errorf("set log level %d: %w", level, ErrInvalidArgument)
+	}
+
 	mu.Lock()
 	defer mu.Unlock()
 	if refCount > 0 {
