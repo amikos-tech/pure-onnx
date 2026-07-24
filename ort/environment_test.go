@@ -704,39 +704,6 @@ func TestInitializeWithActualLibrary(t *testing.T) {
 	resetEnvironmentState()
 }
 
-func TestGetErrorMessageWithNullStatus(t *testing.T) {
-	result := getErrorMessage(0)
-	if result != "" {
-		t.Errorf("expected empty string for null status, got %q", result)
-	}
-}
-
-func TestGetErrorMessageWhenNotInitialized(t *testing.T) {
-	resetEnvironmentState()
-
-	// When getErrorMessageFunc is nil, should return empty string
-	result := getErrorMessage(1234)
-	if result != "" {
-		t.Errorf("expected empty string when not initialized, got %q", result)
-	}
-
-	resetEnvironmentState()
-}
-
-func TestReleaseStatusWithNullStatus(t *testing.T) {
-	// Should not panic
-	releaseStatus(0)
-}
-
-func TestReleaseStatusWhenNotInitialized(t *testing.T) {
-	resetEnvironmentState()
-
-	// When releaseStatusFunc is nil, should not panic
-	releaseStatus(1234)
-
-	resetEnvironmentState()
-}
-
 func TestErrorMessageIntegrationWithFailedInit(t *testing.T) {
 	// Test that error messages are properly extracted during failed initialization
 	resetEnvironmentState()

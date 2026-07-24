@@ -73,26 +73,6 @@ func clearORTGlobalsLocked() {
 	releaseSessionFunc = nil
 }
 
-// getErrorMessage extracts the error message from an ORT status code.
-// Returns empty string if status is 0 (success) or if the function is not initialized.
-func getErrorMessage(status uintptr) string {
-	if status == 0 || getErrorMessageFunc == nil {
-		return ""
-	}
-
-	msgPtr := getErrorMessageFunc(status)
-	return CstringToGo(msgPtr)
-}
-
-// releaseStatus releases an ORT status object to prevent memory leaks.
-func releaseStatus(status uintptr) {
-	if status == 0 || releaseStatusFunc == nil {
-		return
-	}
-
-	releaseStatusFunc(status)
-}
-
 func emitRuntimeVersionWarning(version string) {
 	parts := strings.Split(version, ".")
 	if len(parts) < 2 {
