@@ -32,6 +32,10 @@ var (
 	// ErrSharedLibraryNotFound identifies a supported-platform lookup that
 	// completed without finding a usable ONNX Runtime shared library.
 	ErrSharedLibraryNotFound = errors.New("ONNX Runtime shared library not found")
+
+	// ErrUnsupportedRuntime identifies an ONNX Runtime library that does not
+	// expose the API version required by this package.
+	ErrUnsupportedRuntime = errors.New("unsupported ONNX Runtime API")
 )
 
 type statusOps struct {

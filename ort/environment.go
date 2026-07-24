@@ -162,12 +162,25 @@ func InitializeEnvironment() (err error) {
 	var ortGetApiBase func() *OrtApiBase
 	purego.RegisterFunc(&ortGetApiBase, sym)
 	apiBase := ortGetApiBase()
+	if apiBase == nil {
+		return fmt.Errorf("OrtGetApiBase returned nil: %w", ErrUnsupportedRuntime)
+	}
+	if apiBase.GetApi == 0 {
+		return fmt.Errorf("OrtApiBase.GetApi is nil: %w", ErrUnsupportedRuntime)
+	}
 
 	purego.RegisterFunc(&getVersionStringFunc, apiBase.GetVersionString)
 
 	var getApi func(uint32) uintptr
 	purego.RegisterFunc(&getApi, apiBase.GetApi)
 	apiPtr := getApi(ORT_API_VERSION)
+	if apiPtr == 0 {
+		return fmt.Errorf(
+			"runtime does not support ONNX Runtime API version %d: %w",
+			ORT_API_VERSION,
+			ErrUnsupportedRuntime,
+		)
+	}
 	// #nosec G103 -- This unsafe conversion is required for purego FFI.
 	// The OrtApi struct layout exactly matches the C API struct returned by GetApi.
 	// This pattern is the standard way to use purego for calling C libraries without CGO.

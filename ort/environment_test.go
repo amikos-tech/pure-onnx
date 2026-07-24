@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unsafe"
+
+	"github.com/ebitengine/purego"
 )
 
 // resetEnvironmentState resets global state for testing
@@ -210,6 +213,53 @@ func TestEnvironmentErrorChains(t *testing.T) {
 			t.Fatalf("returned joined error emitted %d diagnostics, want 0", got)
 		}
 	})
+}
+
+func TestInitializeEnvironmentRejectsUnsupportedAPIVersion(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	apiBase := &OrtApiBase{
+		GetApi: purego.NewCallback(func(uint32) uintptr {
+			return 0
+		}),
+		GetVersionString: purego.NewCallback(func() uintptr {
+			return 0
+		}),
+	}
+	getAPIBase := purego.NewCallback(func() uintptr {
+		return uintptr(unsafe.Pointer(apiBase))
+	})
+
+	var closes int
+	installEnvironmentLibraryHooks(
+		func(string) (uintptr, error) { return 404, nil },
+		func(handle uintptr, symbol string) (uintptr, error) {
+			if handle != 404 || symbol != "OrtGetApiBase" {
+				t.Fatalf("symbol lookup = (%d, %q), want (404, OrtGetApiBase)", handle, symbol)
+			}
+			return getAPIBase, nil
+		},
+		func(handle uintptr) error {
+			if handle != 404 {
+				t.Fatalf("close handle = %d, want 404", handle)
+			}
+			closes++
+			return nil
+		},
+	)
+
+	if err := SetSharedLibraryPath("unsupported-runtime"); err != nil {
+		t.Fatalf("set shared library path: %v", err)
+	}
+
+	err := InitializeEnvironment()
+	if !errors.Is(err, ErrUnsupportedRuntime) {
+		t.Fatalf("initialization error = %v, want ErrUnsupportedRuntime", err)
+	}
+	if closes != 1 {
+		t.Fatalf("library close count = %d, want 1", closes)
+	}
 }
 
 func TestEnvironmentStatusConversion(t *testing.T) {
