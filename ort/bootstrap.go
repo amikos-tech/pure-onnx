@@ -308,18 +308,7 @@ func InitializeEnvironmentWithBootstrap(opts ...BootstrapOption) error {
 	bootstrapInitMu.Lock()
 	defer bootstrapInitMu.Unlock()
 
-	if err := SetSharedLibraryPath(path); err != nil {
-		// Another goroutine may have initialized after path resolution.
-		mu.Lock()
-		alreadyInitialized := refCount > 0
-		currentPath := libPath
-		mu.Unlock()
-		if !alreadyInitialized || currentPath != path {
-			return fmt.Errorf("set bootstrap shared library path %q: %w", path, err)
-		}
-	}
-
-	if err := InitializeEnvironment(); err != nil {
+	if err := initializeEnvironmentAt(path); err != nil {
 		return fmt.Errorf("initialize environment with bootstrap library %q: %w", path, err)
 	}
 	return nil

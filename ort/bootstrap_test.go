@@ -26,6 +26,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
+
+	"github.com/ebitengine/purego"
 )
 
 func TestResolveRuntimeArtifact(t *testing.T) {
@@ -2470,6 +2473,104 @@ func TestInitializeEnvironmentWithBootstrapInitializedDifferentPath(t *testing.T
 	}
 	if !strings.Contains(err.Error(), "cannot change library path") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestInitializeEnvironmentWithBootstrapLoadsSelectedPathAtomically(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+	clearBootstrapEnv(t)
+	t.Setenv("ONNXRUNTIME_SKIP_VERSION_CHECK", "1")
+
+	dir := t.TempDir()
+	bootstrapLib := filepath.Join(dir, "lib-bootstrap.so")
+	if err := os.WriteFile(bootstrapLib, []byte("bootstrap"), 0o600); err != nil {
+		t.Fatalf("write bootstrap library: %v", err)
+	}
+	otherLib := filepath.Join(dir, "lib-other.so")
+	if err := os.WriteFile(otherLib, []byte("other"), 0o600); err != nil {
+		t.Fatalf("write competing library: %v", err)
+	}
+	bootstrapLib, _ = filepath.Abs(bootstrapLib)
+	otherLib, _ = filepath.Abs(otherLib)
+
+	noOp := purego.NewCallback(func() {})
+	api := &OrtApi{
+		GetErrorCode:                   noOp,
+		GetErrorMessage:                noOp,
+		ReleaseStatus:                  noOp,
+		CreateMemoryInfo:               noOp,
+		ReleaseMemoryInfo:              noOp,
+		CreateTensorWithDataAsOrtValue: noOp,
+		ReleaseValue:                   noOp,
+		CreateSessionOptions:           noOp,
+		ReleaseSessionOptions:          noOp,
+		CreateSession:                  noOp,
+		Run:                            noOp,
+		ReleaseSession:                 noOp,
+		ReleaseEnv:                     purego.NewCallback(func(uintptr) {}),
+	}
+	api.CreateEnv = purego.NewCallback(func(_ int32, _ uintptr, out uintptr) uintptr {
+		*(*uintptr)(unsafe.Pointer(out)) = 707
+		return 0
+	})
+	apiBase := &OrtApiBase{
+		GetApi: purego.NewCallback(func(uint32) uintptr {
+			return uintptr(unsafe.Pointer(api))
+		}),
+		GetVersionString: noOp,
+	}
+	getAPIBase := purego.NewCallback(func() uintptr {
+		return uintptr(unsafe.Pointer(apiBase))
+	})
+
+	loadEntered := make(chan string, 1)
+	allowLoad := make(chan struct{})
+	installEnvironmentLibraryHooks(
+		func(path string) (uintptr, error) {
+			loadEntered <- path
+			<-allowLoad
+			return 606, nil
+		},
+		func(uintptr, string) (uintptr, error) {
+			return getAPIBase, nil
+		},
+		func(uintptr) error { return nil },
+	)
+
+	initDone := make(chan error, 1)
+	go func() {
+		initDone <- InitializeEnvironmentWithBootstrap(WithBootstrapLibraryPath(bootstrapLib))
+	}()
+
+	select {
+	case loadedPath := <-loadEntered:
+		if loadedPath != bootstrapLib {
+			t.Fatalf("loaded path = %q, want bootstrap path %q", loadedPath, bootstrapLib)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("bootstrap initialization did not reach the library loader")
+	}
+
+	setPathDone := make(chan error, 1)
+	go func() {
+		setPathDone <- SetSharedLibraryPath(otherLib)
+	}()
+	select {
+	case err := <-setPathDone:
+		t.Fatalf("competing path mutation completed during bootstrap load: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(allowLoad)
+	if err := <-initDone; err != nil {
+		t.Fatalf("bootstrap initialization failed: %v", err)
+	}
+	if err := <-setPathDone; err == nil || !strings.Contains(err.Error(), "environment is initialized") {
+		t.Fatalf("competing path mutation error = %v, want initialized-environment rejection", err)
+	}
+	if err := DestroyEnvironment(); err != nil {
+		t.Fatalf("destroy environment: %v", err)
 	}
 }
 

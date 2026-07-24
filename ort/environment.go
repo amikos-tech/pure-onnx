@@ -110,8 +110,15 @@ func createEnvironment(
 	return environment, nil
 }
 
-// InitializeEnvironment initializes the ONNX Runtime environment
-func InitializeEnvironment() (err error) {
+// InitializeEnvironment initializes the ONNX Runtime environment.
+func InitializeEnvironment() error {
+	return initializeEnvironmentAt("")
+}
+
+// initializeEnvironmentAt initializes the runtime with path as one atomic
+// lifecycle transition. An empty path keeps the value configured by
+// SetSharedLibraryPath.
+func initializeEnvironmentAt(path string) (err error) {
 	ortCallMu.Lock()
 	defer ortCallMu.Unlock()
 
@@ -119,10 +126,20 @@ func InitializeEnvironment() (err error) {
 	defer mu.Unlock()
 
 	if refCount > 0 {
+		if path != "" && libPath != path {
+			return fmt.Errorf(
+				"cannot change library path after environment is initialized: configured %q, requested %q",
+				libPath,
+				path,
+			)
+		}
 		refCount++
 		return nil
 	}
 
+	if path != "" {
+		libPath = path
+	}
 	if libPath == "" {
 		return fmt.Errorf(
 			"library path not set; call SetSharedLibraryPath or InitializeEnvironmentWithBootstrap: %w",
