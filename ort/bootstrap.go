@@ -4,13 +4,14 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -65,6 +66,9 @@ var (
 	bootstrapLockAcquireTimeout = 2 * time.Minute
 	bootstrapLockRetryInterval  = 200 * time.Millisecond
 	bootstrapLockLogInterval    = 5 * time.Second
+	bootstrapRemove             = os.Remove
+	bootstrapRemoveAll          = os.RemoveAll
+	bootstrapUserCacheDir       = os.UserCacheDir
 )
 
 // permanentBootstrapError marks errors that should abort retry loops immediately.
@@ -565,18 +569,25 @@ func (a runtimeArtifact) downloadURL(baseURL, version string) string {
 }
 
 func downloadAndInstallRuntime(cfg bootstrapConfig, artifact runtimeArtifact, installDir string) error {
-	url := artifact.downloadURL(cfg.baseURL, cfg.version)
+	downloadURL := artifact.downloadURL(cfg.baseURL, cfg.version)
 	expectedChecksum, err := resolveRuntimeArchiveChecksum(cfg, artifact)
 	if err != nil {
 		return err
 	}
-	archivePath, checksum, err := downloadRuntimeArchive(cfg, url)
+	archivePath, checksum, err := downloadRuntimeArchive(cfg, downloadURL)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		if removeErr := os.Remove(archivePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			log.Printf("WARNING: failed to remove temporary ONNX Runtime archive %q: %v", archivePath, removeErr)
+		if removeErr := bootstrapRemove(archivePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			emitDiagnostic(
+				context.Background(),
+				slog.LevelWarn,
+				"temporary bootstrap archive cleanup failed",
+				slog.String("operation", "remove temporary archive"),
+				slog.String("path", archivePath),
+				slog.Any("error", removeErr),
+			)
 		}
 	}()
 
@@ -584,25 +595,33 @@ func downloadAndInstallRuntime(cfg bootstrapConfig, artifact runtimeArtifact, in
 		return fmt.Errorf("download checksum mismatch: expected %s, got %s", expectedChecksum, checksum)
 	}
 	if expectedChecksum == "" {
-		log.Printf(
-			"WARNING: ONNX Runtime bootstrap downloaded archive from %q without checksum verification; observed SHA256=%s. "+
-				"Pin this value with WithBootstrapExpectedSHA256(%q) when downloading from non-official mirrors.",
-			url,
-			checksum,
-			checksum,
+		emitDiagnostic(
+			context.Background(),
+			slog.LevelWarn,
+			"bootstrap download continued without checksum verification",
+			slog.String("url", redactedBootstrapURL(downloadURL)),
+			slog.Bool("checksum_verified", false),
+			slog.String("observed_sha256", checksum),
 		)
 	}
 
 	stagingRoot := installDir + fmt.Sprintf(".staging-%d", time.Now().UnixNano())
-	if err := os.RemoveAll(stagingRoot); err != nil {
+	if err := bootstrapRemoveAll(stagingRoot); err != nil {
 		return fmt.Errorf("failed to clean bootstrap staging directory %q: %w", stagingRoot, err)
 	}
 	if err := os.MkdirAll(stagingRoot, secureDirectoryPermission); err != nil {
 		return fmt.Errorf("failed to create bootstrap staging directory %q: %w", stagingRoot, err)
 	}
 	defer func() {
-		if removeErr := os.RemoveAll(stagingRoot); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			log.Printf("WARNING: failed to remove bootstrap staging directory %q: %v", stagingRoot, removeErr)
+		if removeErr := bootstrapRemoveAll(stagingRoot); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			emitDiagnostic(
+				context.Background(),
+				slog.LevelWarn,
+				"bootstrap staging cleanup failed",
+				slog.String("operation", "remove staging directory"),
+				slog.String("path", stagingRoot),
+				slog.Any("error", removeErr),
+			)
 		}
 	}()
 
@@ -651,7 +670,7 @@ func downloadAndInstallRuntime(cfg bootstrapConfig, artifact runtimeArtifact, in
 		return err
 	}
 
-	if err := os.RemoveAll(installDir); err != nil {
+	if err := bootstrapRemoveAll(installDir); err != nil {
 		return fmt.Errorf("failed to remove previous ONNX Runtime install at %q: %w", installDir, err)
 	}
 
@@ -686,7 +705,13 @@ func resolveRuntimeArchiveChecksum(cfg bootstrapConfig, artifact runtimeArtifact
 			if pinnedChecksum == "" {
 				return "", err
 			}
-			log.Printf("WARNING: failed to resolve ONNX Runtime checksum from release metadata: %v; falling back to explicitly configured checksum", err)
+			emitDiagnostic(
+				context.Background(),
+				slog.LevelWarn,
+				"bootstrap checksum metadata lookup failed; using pinned checksum",
+				slog.String("operation", "resolve release metadata checksum"),
+				slog.Any("error", err),
+			)
 			return pinnedChecksum, nil
 		}
 		officialChecksum = checksum
@@ -1109,7 +1134,14 @@ func extractTGZArchive(archivePath, destinationDir, libraryGlob string) (report 
 				baseName := path.Base(header.Name)
 				matched, matchErr := path.Match(libraryGlob, baseName)
 				if matchErr != nil {
-					log.Printf("WARNING: failed to match library glob %q against tar entry %q: %v", libraryGlob, baseName, matchErr)
+					emitDiagnostic(
+						context.Background(),
+						slog.LevelWarn,
+						"bootstrap tar library glob match failed",
+						slog.String("archive_entry", header.Name),
+						slog.String("library_glob", libraryGlob),
+						slog.Any("error", matchErr),
+					)
 				} else if matched {
 					report.skippedLibraryLinkEntries++
 					if len(report.skippedLibraryLinkExamples) < 3 {
@@ -1117,11 +1149,23 @@ func extractTGZArchive(archivePath, destinationDir, libraryGlob string) (report 
 					}
 				}
 			}
-			log.Printf("WARNING: skipping link archive entry %q (type=%d) during ONNX Runtime bootstrap extraction", header.Name, header.Typeflag)
+			emitDiagnostic(
+				context.Background(),
+				slog.LevelWarn,
+				"bootstrap tar link entry skipped",
+				slog.String("archive_entry", header.Name),
+				slog.Int("entry_type", int(header.Typeflag)),
+			)
 			continue
 		default:
 			// Skip non-regular archive entries (device files, FIFOs, etc.) for safety.
-			log.Printf("WARNING: skipping unsupported archive entry %q (type=%d) during ONNX Runtime bootstrap extraction", header.Name, header.Typeflag)
+			emitDiagnostic(
+				context.Background(),
+				slog.LevelWarn,
+				"bootstrap tar archive entry skipped",
+				slog.String("archive_entry", header.Name),
+				slog.Int("entry_type", int(header.Typeflag)),
+			)
 			continue
 		}
 	}
@@ -1171,7 +1215,14 @@ func extractZIPArchive(archivePath, destinationDir, libraryGlob string) (report 
 				baseName := path.Base(entry.Name)
 				matched, matchErr := path.Match(libraryGlob, baseName)
 				if matchErr != nil {
-					log.Printf("WARNING: failed to match library glob %q against zip entry %q: %v", libraryGlob, baseName, matchErr)
+					emitDiagnostic(
+						context.Background(),
+						slog.LevelWarn,
+						"bootstrap ZIP library glob match failed",
+						slog.String("archive_entry", entry.Name),
+						slog.String("library_glob", libraryGlob),
+						slog.Any("error", matchErr),
+					)
 				} else if matched {
 					report.skippedLibraryLinkEntries++
 					if len(report.skippedLibraryLinkExamples) < 3 {
@@ -1179,7 +1230,13 @@ func extractZIPArchive(archivePath, destinationDir, libraryGlob string) (report 
 					}
 				}
 			}
-			log.Printf("WARNING: skipping symlink ZIP entry %q during ONNX Runtime bootstrap extraction", entry.Name)
+			emitDiagnostic(
+				context.Background(),
+				slog.LevelWarn,
+				"bootstrap ZIP symlink entry skipped",
+				slog.String("archive_entry", entry.Name),
+				slog.String("entry_type", "symlink"),
+			)
 			continue
 		}
 
@@ -1361,7 +1418,13 @@ func withProcessFileLock(lockPath string, fn func() error) (err error) {
 			return timeoutErr
 		}
 		if time.Now().After(nextLogAt) {
-			log.Printf("INFO: waiting for ONNX Runtime bootstrap lock %q (%s elapsed)", lockPath, waited.Round(time.Second))
+			emitDiagnostic(
+				context.Background(),
+				slog.LevelInfo,
+				"waiting for bootstrap lock",
+				slog.String("path", lockPath),
+				slog.Duration("wait_duration", waited),
+			)
 			nextLogAt = time.Now().Add(bootstrapLockLogInterval)
 		}
 		time.Sleep(bootstrapLockRetryInterval)
@@ -1417,7 +1480,7 @@ func secureArchiveJoin(baseDir, archivePath string) (string, error) {
 }
 
 func defaultBootstrapCacheDir() string {
-	cacheDir, err := os.UserCacheDir()
+	cacheDir, err := bootstrapUserCacheDir()
 	if err == nil && cacheDir != "" {
 		return filepath.Join(cacheDir, "onnx-purego", "onnxruntime")
 	}
@@ -1425,12 +1488,31 @@ func defaultBootstrapCacheDir() string {
 	fallback := filepath.Join(os.TempDir(), "onnx-purego", "onnxruntime")
 	bootstrapCacheFallbackWarnOnce.Do(func() {
 		if err != nil {
-			log.Printf("WARNING: failed to resolve user cache directory (%v); using temporary ONNX Runtime cache at %q. Set ONNXRUNTIME_CACHE_DIR for a persistent cache.", err, fallback)
+			emitDiagnostic(
+				context.Background(),
+				slog.LevelWarn,
+				"bootstrap user cache lookup failed; using temporary cache",
+				slog.String("path", fallback),
+				slog.Any("error", err),
+			)
 			return
 		}
-		log.Printf("WARNING: user cache directory is empty; using temporary ONNX Runtime cache at %q. Set ONNXRUNTIME_CACHE_DIR for a persistent cache.", fallback)
+		emitDiagnostic(
+			context.Background(),
+			slog.LevelWarn,
+			"bootstrap user cache path empty; using temporary cache",
+			slog.String("path", fallback),
+		)
 	})
 	return fallback
+}
+
+func redactedBootstrapURL(rawURL string) string {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return "<invalid URL>"
+	}
+	return parsedURL.Redacted()
 }
 
 func normalizeRuntimeVersion(version string) (string, error) {
