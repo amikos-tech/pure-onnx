@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
+	"sort"
 	"sync"
 	"unsafe"
 )
@@ -198,17 +199,20 @@ func (s *AdvancedSession) run(inputs, outputs []Value, useBoundValues bool) erro
 	inputNameBackings, inputNamePtrs := makeCStringPointerArray(inputNames)
 	outputNameBackings, outputNamePtrs := makeCStringPointerArray(outputNames)
 
-	inputValueHandles, releaseInputValueHandles, err := valuesToHandles(inputValues, "input")
+	valueLeases, err := acquireUniqueValueLeases(inputValues, outputValues)
 	if err != nil {
 		return err
 	}
-	defer releaseInputValueHandles()
+	defer valueLeases.Release()
 
-	outputValueHandles, releaseOutputValueHandles, err := valuesToHandles(outputValues, "output")
+	inputValueHandles, err := handlesFromLeasedValues(inputValues, "input", valueLeases)
 	if err != nil {
 		return err
 	}
-	defer releaseOutputValueHandles()
+	outputValueHandles, err := handlesFromLeasedValues(outputValues, "output", valueLeases)
+	if err != nil {
+		return err
+	}
 
 	status := run(
 		sessionHandle,
@@ -326,64 +330,147 @@ func validateSessionValue(v Value, role string, index int) error {
 	return fmt.Errorf("invalid %s value at index %d: %v: %w", role, index, err, ErrInvalidArgument)
 }
 
-func valuesToHandles(values []Value, role string) ([]uintptr, func(), error) {
-	noOpRelease := func() {}
-	if len(values) == 0 {
-		return nil, noOpRelease, nil
-	}
-	handles := make([]uintptr, len(values))
-	unlockFns := make([]func(), 0, len(values))
-	leasedLockables := make(map[any]int, len(values))
-	release := func() {
-		for i := len(unlockFns) - 1; i >= 0; i-- {
-			unlockFns[i]()
-		}
-	}
+type valueRoleValues struct {
+	role   string
+	values []Value
+}
 
-	for i, v := range values {
-		if lockable, ok := v.(valueRunLockable); ok {
-			key, keyOk := comparableIdentityKey(lockable)
-			if !keyOk {
-				release()
-				return nil, noOpRelease, fmt.Errorf("%s value at index %d is invalid: lockable value type %T must be comparable: %w", role, i, v, ErrInvalidArgument)
-			}
+type valueLeaseCandidate struct {
+	key       any
+	orderKey  uintptr
+	lockable  valueRunLockable
+	role      string
+	roleIndex int
+}
 
-			// Lease each comparable lockable only once per Run(). This avoids a deadlock
-			// when the same value is bound multiple times and Destroy() queues on the
-			// writer side of that value's RWMutex.
-			if leasedIndex, exists := leasedLockables[key]; exists {
-				handles[i] = handles[leasedIndex]
+type valueLeaseSet struct {
+	handles   map[any]uintptr
+	unlockFns []func()
+}
+
+func (l *valueLeaseSet) Release() {
+	if l == nil {
+		return
+	}
+	for i := len(l.unlockFns) - 1; i >= 0; i-- {
+		l.unlockFns[i]()
+	}
+	l.unlockFns = nil
+}
+
+func acquireUniqueValueLeases(inputValues, outputValues []Value) (*valueLeaseSet, error) {
+	return acquireValueLeases(
+		valueRoleValues{role: "input", values: inputValues},
+		valueRoleValues{role: "output", values: outputValues},
+	)
+}
+
+func acquireValueLeases(groups ...valueRoleValues) (*valueLeaseSet, error) {
+	leases := &valueLeaseSet{handles: make(map[any]uintptr)}
+	candidates := make([]valueLeaseCandidate, 0)
+	seen := make(map[any]struct{})
+
+	for _, group := range groups {
+		for i, v := range group.values {
+			lockable, ok := v.(valueRunLockable)
+			if !ok {
+				if _, err := valueHandle(v); err != nil {
+					return nil, sessionValueLeaseError(group.role, i, err)
+				}
 				continue
 			}
 
-			handle, err := lockable.lockForRun()
-			if err != nil {
-				release()
-				if errors.Is(err, errValueDestroyed) {
-					return nil, noOpRelease, fmt.Errorf("%s value at index %d has been destroyed: %w", role, i, ErrDestroyed)
-				}
-				return nil, noOpRelease, fmt.Errorf("%s value at index %d is invalid: %v: %w", role, i, err, ErrInvalidArgument)
+			key, keyOk := comparableIdentityKey(lockable)
+			if !keyOk {
+				return nil, fmt.Errorf("%s value at index %d is invalid: lockable value type %T must be comparable: %w", group.role, i, v, ErrInvalidArgument)
+			}
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			orderKey, orderKeyOK := valueLeaseOrderKey(lockable)
+			if !orderKeyOK {
+				return nil, fmt.Errorf("%s value at index %d is invalid: lockable value type %T must have pointer identity: %w", group.role, i, v, ErrInvalidArgument)
+			}
+			seen[key] = struct{}{}
+			candidates = append(candidates, valueLeaseCandidate{
+				key:       key,
+				orderKey:  orderKey,
+				lockable:  lockable,
+				role:      group.role,
+				roleIndex: i,
+			})
+		}
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].orderKey != candidates[j].orderKey {
+			return candidates[i].orderKey < candidates[j].orderKey
+		}
+		return reflect.TypeOf(candidates[i].lockable).String() <
+			reflect.TypeOf(candidates[j].lockable).String()
+	})
+
+	for _, candidate := range candidates {
+		handle, err := candidate.lockable.lockForRun()
+		if err != nil {
+			leases.Release()
+			return nil, sessionValueLeaseError(candidate.role, candidate.roleIndex, err)
+		}
+		leases.handles[candidate.key] = handle
+		leases.unlockFns = append(leases.unlockFns, candidate.lockable.unlockForRun)
+	}
+
+	return leases, nil
+}
+
+func handlesFromLeasedValues(values []Value, role string, leases *valueLeaseSet) ([]uintptr, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+
+	handles := make([]uintptr, len(values))
+	for i, v := range values {
+		if lockable, ok := v.(valueRunLockable); ok {
+			key, keyOK := comparableIdentityKey(lockable)
+			if !keyOK {
+				return nil, fmt.Errorf("%s value at index %d is invalid: lockable value type %T must be comparable: %w", role, i, v, ErrInvalidArgument)
+			}
+			handle, exists := leases.handles[key]
+			if !exists {
+				return nil, fmt.Errorf("%s value at index %d has no active run lease: %w", role, i, ErrInvalidArgument)
 			}
 			handles[i] = handle
-			unlockFns = append(unlockFns, lockable.unlockForRun)
-			leasedLockables[key] = i
 			continue
 		}
 
-		// Non-lockable values are a compatibility fallback for package-local test doubles.
-		// Production Value implementations should provide valueRunLockable leases.
 		handle, err := valueHandle(v)
 		if err != nil {
-			release()
-			if errors.Is(err, errValueDestroyed) {
-				return nil, noOpRelease, fmt.Errorf("%s value at index %d has been destroyed: %w", role, i, ErrDestroyed)
-			}
-			return nil, noOpRelease, fmt.Errorf("%s value at index %d is invalid: %v: %w", role, i, err, ErrInvalidArgument)
+			return nil, sessionValueLeaseError(role, i, err)
 		}
-
 		handles[i] = handle
 	}
-	return handles, release, nil
+	return handles, nil
+}
+
+func sessionValueLeaseError(role string, index int, err error) error {
+	if errors.Is(err, errValueDestroyed) {
+		return fmt.Errorf("%s value at index %d has been destroyed: %w", role, index, ErrDestroyed)
+	}
+	return fmt.Errorf("%s value at index %d is invalid: %v: %w", role, index, err, ErrInvalidArgument)
+}
+
+func valuesToHandles(values []Value, role string) ([]uintptr, func(), error) {
+	noOpRelease := func() {}
+	leases, err := acquireValueLeases(valueRoleValues{role: role, values: values})
+	if err != nil {
+		return nil, noOpRelease, err
+	}
+	handles, err := handlesFromLeasedValues(values, role, leases)
+	if err != nil {
+		leases.Release()
+		return nil, noOpRelease, err
+	}
+	return handles, leases.Release, nil
 }
 
 func comparableIdentityKey(v any) (any, bool) {
@@ -395,6 +482,16 @@ func comparableIdentityKey(v any) (any, bool) {
 		return nil, false
 	}
 	return v, true
+}
+
+func valueLeaseOrderKey(v any) (uintptr, bool) {
+	value := reflect.ValueOf(v)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Pointer, reflect.UnsafePointer:
+		return value.Pointer(), true
+	default:
+		return 0, false
+	}
 }
 
 func cloneStringSlice(input []string) []string {

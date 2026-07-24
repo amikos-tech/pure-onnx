@@ -331,6 +331,68 @@ func TestValuesToHandlesRejectsNonComparableLockable(t *testing.T) {
 	release()
 }
 
+func TestAdvancedSessionRunSharedInputOutputDoesNotDeadlockDestroy(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	runSessionFunc = func(_ uintptr, _ uintptr, _ *uintptr, inputValues *uintptr, _ uintptr, _ *uintptr, _ uintptr, outputValues *uintptr) uintptr {
+		if *inputValues != 42 || *outputValues != 42 {
+			t.Errorf("run handles = (%d, %d), want (42, 42)", *inputValues, *outputValues)
+		}
+		return 0
+	}
+	mu.Unlock()
+
+	value := newBlockingLeaseValue(42)
+	session := &AdvancedSession{
+		handle:       700,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{value},
+		outputValues: []Value{value},
+	}
+
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- session.Run()
+	}()
+	<-value.firstLeaseAcquired
+
+	destroyDone := make(chan error, 1)
+	go func() {
+		destroyDone <- value.Destroy()
+	}()
+
+	require.Eventually(t, func() bool {
+		if value.runMu.TryRLock() {
+			value.runMu.RUnlock()
+			return false
+		}
+		return true
+	}, 2*time.Second, 10*time.Millisecond, "Destroy did not queue for the value write lock")
+
+	close(value.allowFirstLeaseReturn)
+
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run deadlocked while the same value was used for input and output")
+	}
+	select {
+	case err := <-destroyDone:
+		if err != nil {
+			t.Fatalf("Destroy failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Destroy did not complete after Run released the unique value lease")
+	}
+}
+
 func TestNewAdvancedSessionValidation(t *testing.T) {
 	validValue := &fakeValue{handle: 1}
 
@@ -908,7 +970,7 @@ func TestAdvancedSessionRunWithValues(t *testing.T) {
 		}
 	})
 
-	t.Run("deduplicates within each role and releases in reverse order", func(t *testing.T) {
+	t.Run("deduplicates across roles and releases in reverse order", func(t *testing.T) {
 		resetEnvironmentState()
 		t.Cleanup(resetEnvironmentState)
 
@@ -919,7 +981,7 @@ func TestAdvancedSessionRunWithValues(t *testing.T) {
 		}
 		mu.Unlock()
 
-		released := make(chan uintptr, 4)
+		released := make(chan uintptr, 3)
 		shared := &countingLeaseValue{handle: 91, released: released}
 		inputOnly := &countingLeaseValue{handle: 92, released: released}
 		outputOnly := &countingLeaseValue{handle: 93, released: released}
@@ -937,11 +999,11 @@ func TestAdvancedSessionRunWithValues(t *testing.T) {
 			t.Fatalf("RunWithValues failed: %v", err)
 		}
 
-		if got := shared.lockCalls.Load(); got != 2 {
-			t.Fatalf("shared value lease count = %d, want one per role", got)
+		if got := shared.lockCalls.Load(); got != 1 {
+			t.Fatalf("shared value lease count = %d, want one across both roles", got)
 		}
-		if got := shared.unlockCalls.Load(); got != 2 {
-			t.Fatalf("shared value unlock count = %d, want one per role", got)
+		if got := shared.unlockCalls.Load(); got != 1 {
+			t.Fatalf("shared value unlock count = %d, want one across both roles", got)
 		}
 		if got := inputOnly.lockCalls.Load(); got != 1 {
 			t.Fatalf("input-only lease count = %d, want 1", got)
@@ -949,8 +1011,31 @@ func TestAdvancedSessionRunWithValues(t *testing.T) {
 		if got := outputOnly.lockCalls.Load(); got != 1 {
 			t.Fatalf("output-only lease count = %d, want 1", got)
 		}
-		gotReleaseOrder := []uintptr{<-released, <-released, <-released, <-released}
-		wantReleaseOrder := []uintptr{93, 91, 92, 91}
+		ordered := []struct {
+			value  *countingLeaseValue
+			handle uintptr
+		}{
+			{value: shared, handle: 91},
+			{value: inputOnly, handle: 92},
+			{value: outputOnly, handle: 93},
+		}
+		slices.SortFunc(ordered, func(a, b struct {
+			value  *countingLeaseValue
+			handle uintptr
+		}) int {
+			aKey, _ := valueLeaseOrderKey(a.value)
+			bKey, _ := valueLeaseOrderKey(b.value)
+			switch {
+			case aKey < bKey:
+				return -1
+			case aKey > bKey:
+				return 1
+			default:
+				return 0
+			}
+		})
+		gotReleaseOrder := []uintptr{<-released, <-released, <-released}
+		wantReleaseOrder := []uintptr{ordered[2].handle, ordered[1].handle, ordered[0].handle}
 		if !slices.Equal(gotReleaseOrder, wantReleaseOrder) {
 			t.Fatalf("release order = %v, want %v", gotReleaseOrder, wantReleaseOrder)
 		}
