@@ -1,8 +1,8 @@
 # Phase 2: Core API — Errors & Values - Pattern Map
 
 **Mapped:** 2026-07-23  
-**Files analyzed:** 19 new/modified files  
-**Analogs found:** 19 / 19  
+**Files analyzed:** 21 new/modified files
+**Analogs found:** 21 / 21
 **Primary analog families:** 5
 
 ## Scope Extracted from Phase Inputs
@@ -21,6 +21,8 @@ The file set below comes from the recommended project structure, integration poi
 ### Existing files to edit
 
 - `ort/types.go`
+- `ort/shape_parse.go`
+- `ort/shape_test.go`
 - `ort/tensor.go`
 - `ort/session.go`
 - `ort/memory.go`
@@ -46,6 +48,8 @@ No example or embedder source change is implied. Their existing constructor-boun
 | `ort/diagnostics.go` | provider | event-driven | `.planning/spikes/002-b-slog-handler-sink/diagnostic.go` | exact prototype |
 | `ort/diagnostics_test.go` | test | event-driven + concurrent reconfiguration | `.planning/spikes/002-b-slog-handler-sink/diagnostic_test.go` | exact prototype |
 | `ort/types.go` | model | transform/type inspection | `ort/types.go` + `ort/tensor.go` | self-extension |
+| `ort/shape_parse.go` | utility | transform (shape text → validated Shape) | current `ort/shape_parse.go` + Phase 2 sentinel pattern | self-extension |
+| `ort/shape_test.go` | test | transform/error-chain inspection | current `TestParseShape` and `TestShapeElementCountExported` | self-extension |
 | `ort/value_test.go` | test | transform/type inspection | `ort/session_test.go` in-package value doubles | role/data-flow |
 | `ort/tensor.go` | model | CRUD/resource lifecycle | `ort/tensor.go` | self-extension |
 | `ort/session.go` | service | request-response | `ort/session.go` | self-extension |
@@ -309,6 +313,8 @@ func emitDiagnostic(ctx context.Context, level slog.Level, message string, attrs
 
 This is the complete concurrency/configuration pattern. Keep emission private and accept only standard `slog.Handler`, `slog.Level`, and `slog.Attr`. Do not create package-owned logger, field, or level types.
 
+The general emitter deliberately has no recovery boundary: installing a handler is an explicit trusted synchronous callback decision, and a consumer panic propagates under accepted T-02-06. Preserve panic recovery only in the finalizer-specific wrapper under mitigated T-02-11; environment and bootstrap call sites must not invent per-site recovery.
+
 No authentication pattern applies. The relevant guards are atomic configuration, a silent default, and call-site policy.
 
 ---
@@ -422,6 +428,28 @@ Cover:
 - `IsTensor` kind check independent from exact element type.
 
 Assert the boolean/result, not exact error text. There is no conversion behavior to test.
+
+---
+
+### `ort/shape_parse.go` and `ort/shape_test.go` (utility/test, public shape validation)
+
+**Primary analogs:** the current `ParseShape` implementation and `TestParseShape` / `TestShapeElementCountExported` tables.
+
+Keep the public signatures unchanged:
+
+```go
+func ParseShape(raw string) (Shape, error)
+func ShapeElementCount(shape Shape) (int, error)
+```
+
+Apply the Phase 2 local-error contract comprehensively:
+
+- empty input, empty dimensions, negative dimensions, integer parse failures, oversized dimensions, and product overflow match `ErrInvalidArgument` through `errors.Is`;
+- the `strconv.ParseInt` failure remains in the same error chain, so callers can also use `errors.As` to reach `*strconv.NumError`;
+- retain the raw dimension, index, and shape context needed to correct the input;
+- do not replace the underlying strconv error with text or turn exact English wording into the compatibility contract.
+
+Extend the existing exact top-level `TestParseShape` and `TestShapeElementCountExported` tables. The exported count test must call `ShapeElementCount`, not only the private helper. Keep `TestShapeElementCount` in `ort/tensor_test.go` as constructor-helper coverage, and use separate `go doc` checks for both exported functions.
 
 ---
 
@@ -705,7 +733,7 @@ func CreateMemoryInfo(
 }
 ```
 
-Replace the status block at lines 24-29 with the central converter and wrap uninitialized/local validation states with sentinels. Preserve the existing mutex scope and `KeepAlive`.
+Replace the status block at lines 24-29 with the central converter and wrap uninitialized/local validation states with sentinels. The current construction scope is not lifecycle-safe because it holds only `mu`: adapt it to acquire `ortCallMu.RLock` before `mu`, snapshot `createMemoryInfoFunc`, release `mu`, and retain the read lock through the native call, `runtime.KeepAlive(nameBytes)`, status accessors, and converter-owned release. `DestroyEnvironment` takes the exclusive `ortCallMu` lock before clearing those function pointers.
 
 **Destroy pattern** — lines 57-86:
 
@@ -818,6 +846,8 @@ if err := memInfo.Destroy(); err != nil {
 ```
 
 Keep the state-transition assertions but replace the substring-only category check with `errors.Is(err, ErrNotInitialized)` or `errors.Is(err, ErrDestroyed)` as appropriate. Add a fake nonzero status case asserting `errors.As(err, *ORTError)` and exactly one release.
+
+Add exact top-level `TestCreateMemoryInfoBlocksEnvironmentTeardown` using channels and `ortCallMu.TryLock`: while the fake native callback is blocked and again while a fake status accessor is blocked, the exclusive lock must be unavailable; after conversion/release finishes, it must be available. This deterministically proves the complete native/status lifetime is protected without sleeps, polling, or a real runtime.
 
 ---
 
@@ -1098,6 +1128,8 @@ After migration, production call sites should not mention `getErrorMessage(statu
 - Use Info and Warn unless a concrete need proves another level.
 - Emit only notices/failures that cannot be returned.
 - Never emit an error that is also returned.
+- Treat a handler explicitly installed through `SetDiagnosticHandler` as trusted synchronous consumer code: a panic propagates from general environment/bootstrap diagnostics as normal slog behavior (accepted MEDIUM T-02-06).
+- Recover consumer-handler panics only at the library-owned best-effort finalizer boundary, and keep atomic reconfiguration/finalizer containment under mitigated HIGH T-02-11.
 
 ### Test state isolation
 
@@ -1134,11 +1166,14 @@ These are partial semantic gaps, not invitations for a new abstraction. The rese
 9. Anchor `TestBootstrapCreatedFilePermissions` in Plan 07 and canonical T-02-10 evidence, with Unix mode assertions and a Windows-safe skip.
 10. Keep Task 02-08-02 feedback static/focused; run comprehensive suites at wave/phase scope, use `make precommit-lint-new`, and leave the full-tree lint gate to Phase 5.
 11. Treat unchanged `.github/workflows/ci.yml` `uses:` lines as T-02-SC evidence alongside unchanged `go.mod`/`go.sum`.
+12. Include exported `ParseShape` and `ShapeElementCount` in the API-02 sentinel/cause map and final `go doc` surface checks.
+13. Require `CreateMemoryInfo` to hold `ortCallMu.RLock` before `mu` and through its native call plus status conversion; prove it with the deterministic teardown-lock test.
+14. Keep non-finalizer handler panic propagation as one explicit trusted-callback policy across environment/bootstrap call sites, and use the finalizer-only containment wrapper everywhere else.
 
 ## Metadata
 
 **Analog search scope:** `ort/`, `.planning/spikes/`, `.github/workflows/`  
 **Candidates indexed:** 58 Go/workflow files  
-**Code/test/workflow files inspected:** 18  
+**Code/test/workflow files inspected:** 20
 **Primary analog families inspected:** 5 (session/value leases, resource lifecycle, bootstrap errors, status spike, diagnostics spike/CI lanes)  
 **Pattern extraction date:** 2026-07-23
