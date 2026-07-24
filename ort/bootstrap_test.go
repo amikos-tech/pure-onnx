@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -1705,6 +1706,80 @@ func TestWithProcessFileLockRejectsNilCallback(t *testing.T) {
 	}
 }
 
+func TestBootstrapCreatedFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file mode assertions are not portable to Windows ACLs")
+	}
+
+	t.Run("bootstrap cache install and lock paths", func(t *testing.T) {
+		clearBootstrapEnv(t)
+
+		artifact, err := resolveRuntimeArtifact(runtime.GOOS, runtime.GOARCH)
+		if err != nil {
+			t.Skipf("unsupported runtime for bootstrap permission test: %v", err)
+		}
+
+		const version = "1.99.13"
+		archiveRoot := artifact.archiveName(version)
+		libraryEntry := path.Join(archiveRoot, "lib", artifact.primaryLibrary)
+		archiveBytes := buildArchiveWithFileMode(
+			t,
+			artifact.archiveExtension,
+			libraryEntry,
+			0o777,
+		)
+		sum := sha256.Sum256(archiveBytes)
+		server, _ := newArchiveServer(t, artifact, version, archiveBytes)
+		cacheDir := filepath.Join(t.TempDir(), "cache")
+
+		libraryPath, err := EnsureOnnxRuntimeSharedLibrary(
+			WithBootstrapCacheDir(cacheDir),
+			WithBootstrapVersion(version),
+			WithBootstrapExpectedSHA256(hex.EncodeToString(sum[:])),
+			withBootstrapBaseURL(server.URL),
+			withBootstrapHTTPClient(server.Client()),
+		)
+		if err != nil {
+			t.Fatalf("unexpected bootstrap error: %v", err)
+		}
+
+		installDir := filepath.Join(cacheDir, artifact.archiveName(version))
+		lockDir := filepath.Join(cacheDir, ".locks")
+		lockPath := filepath.Join(lockDir, fmt.Sprintf("%s-%s.lock", artifact.platform, version))
+		for _, dir := range []string{cacheDir, installDir, lockDir} {
+			assertBootstrapDirectoryMode(t, dir)
+		}
+		assertBootstrapLibraryMode(t, libraryPath)
+		assertBootstrapLockMode(t, lockPath)
+	})
+
+	for _, extension := range []string{"tgz", "zip"} {
+		t.Run(extension+" permissive library entry", func(t *testing.T) {
+			const entryName = "onnxruntime-test/lib/libonnxruntime-test"
+			archivePath := filepath.Join(t.TempDir(), "runtime."+extension)
+			archiveBytes := buildArchiveWithFileMode(t, extension, entryName, 0o777)
+			if err := os.WriteFile(archivePath, archiveBytes, 0o600); err != nil {
+				t.Fatalf("failed to write %s archive: %v", extension, err)
+			}
+
+			destinationDir := filepath.Join(t.TempDir(), "extract")
+			if _, err := extractArchiveFile(archivePath, destinationDir, extension, ""); err != nil {
+				t.Fatalf("failed to extract %s archive: %v", extension, err)
+			}
+
+			assertBootstrapDirectoryMode(t, filepath.Join(destinationDir, "onnxruntime-test", "lib"))
+			assertBootstrapLibraryMode(t, filepath.Join(destinationDir, filepath.FromSlash(entryName)))
+		})
+	}
+
+	if got, want := safeArchiveFileMode(0o777), os.FileMode(0o755); got != want {
+		t.Fatalf("safe archive mode = %#o, want %#o", got, want)
+	}
+	if got, want := safeArchiveFileMode(0o644), os.FileMode(0o644); got != want {
+		t.Fatalf("safe archive mode changed ordinary file mode: got %#o, want %#o", got, want)
+	}
+}
+
 func TestSecureArchiveJoin(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -2106,6 +2181,102 @@ func buildZIPArchive(t *testing.T, files map[string]string) []byte {
 	}
 
 	return buf.Bytes()
+}
+
+func buildArchiveWithFileMode(t *testing.T, extension, name string, mode os.FileMode) []byte {
+	t.Helper()
+
+	const content = "synthetic library"
+	var buf bytes.Buffer
+	switch extension {
+	case "tgz":
+		gz := gzip.NewWriter(&buf)
+		tw := tar.NewWriter(gz)
+		if err := tw.WriteHeader(&tar.Header{
+			Name: name,
+			Mode: int64(mode.Perm()),
+			Size: int64(len(content)),
+		}); err != nil {
+			t.Fatalf("failed to write tar header: %v", err)
+		}
+		if _, err := tw.Write([]byte(content)); err != nil {
+			t.Fatalf("failed to write tar content: %v", err)
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatalf("failed to close tar writer: %v", err)
+		}
+		if err := gz.Close(); err != nil {
+			t.Fatalf("failed to close gzip writer: %v", err)
+		}
+	case "zip":
+		zw := zip.NewWriter(&buf)
+		header := &zip.FileHeader{Name: name, Method: zip.Deflate}
+		header.SetMode(mode)
+		entry, err := zw.CreateHeader(header)
+		if err != nil {
+			t.Fatalf("failed to create zip entry: %v", err)
+		}
+		if _, err := entry.Write([]byte(content)); err != nil {
+			t.Fatalf("failed to write zip content: %v", err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatalf("failed to close zip writer: %v", err)
+		}
+	default:
+		t.Fatalf("unsupported archive extension %q", extension)
+	}
+	return buf.Bytes()
+}
+
+func assertBootstrapDirectoryMode(t *testing.T, path string) {
+	t.Helper()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("failed to stat directory %q: %v", path, err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("expected directory at %q", path)
+	}
+	perm := info.Mode().Perm()
+	if perm&0o700 != 0o700 {
+		t.Fatalf("directory %q mode %#o does not retain owner access", path, perm)
+	}
+	if perm&0o027 != 0 {
+		t.Fatalf("directory %q mode %#o grants group write or other-user access", path, perm)
+	}
+}
+
+func assertBootstrapLibraryMode(t *testing.T, path string) {
+	t.Helper()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("failed to stat library %q: %v", path, err)
+	}
+	perm := info.Mode().Perm()
+	if perm&0o500 != 0o500 {
+		t.Fatalf("library %q mode %#o does not retain owner read/execute", path, perm)
+	}
+	if perm&0o022 != 0 {
+		t.Fatalf("library %q mode %#o grants group/other write", path, perm)
+	}
+}
+
+func assertBootstrapLockMode(t *testing.T, path string) {
+	t.Helper()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("failed to stat lock file %q: %v", path, err)
+	}
+	perm := info.Mode().Perm()
+	if perm&0o600 != 0o600 {
+		t.Fatalf("lock file %q mode %#o does not retain owner read/write", path, perm)
+	}
+	if perm&0o077 != 0 {
+		t.Fatalf("lock file %q mode %#o grants group/other access", path, perm)
+	}
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
