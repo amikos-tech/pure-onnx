@@ -5,12 +5,15 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -2004,6 +2007,443 @@ func TestExtractZIPArchiveSkipsSymlinkEntries(t *testing.T) {
 	}
 }
 
+func TestDiagnosticCallSites(t *testing.T) {
+	var legacyOutput bytes.Buffer
+	previousLogWriter := log.Writer()
+	previousLogFlags := log.Flags()
+	previousLogPrefix := log.Prefix()
+	log.SetOutput(&legacyOutput)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(previousLogWriter)
+		log.SetFlags(previousLogFlags)
+		log.SetPrefix(previousLogPrefix)
+	})
+
+	handler := &bootstrapDiagnosticRecordingHandler{}
+	t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+	t.Run("temporary archive cleanup failure", func(t *testing.T) {
+		cfg, artifact, installDir, checksum := newBootstrapDiagnosticDownloadFixture(t, false)
+		cfg.expectedSHA256 = checksum
+		removeErr := errors.New("synthetic archive removal failure")
+		previousRemove := bootstrapRemove
+		bootstrapRemove = func(string) error { return removeErr }
+		t.Cleanup(func() { bootstrapRemove = previousRemove })
+
+		assertBootstrapDiagnosticCase(t, &legacyOutput, handler, func(t *testing.T) {
+			if err := downloadAndInstallRuntime(cfg, artifact, installDir); err != nil {
+				t.Fatalf("downloadAndInstallRuntime: %v", err)
+			}
+		}, []bootstrapDiagnosticExpectation{{
+			level:   slog.LevelWarn,
+			message: "temporary bootstrap archive cleanup failed",
+			attrs: map[string]string{
+				"operation": "remove temporary archive",
+				"path":      "",
+				"error":     "",
+			},
+		}})
+	})
+
+	t.Run("download without checksum redacts URL", func(t *testing.T) {
+		cfg, artifact, installDir, checksum := newBootstrapDiagnosticDownloadFixture(t, true)
+		parsedURL, err := url.Parse(cfg.baseURL)
+		if err != nil {
+			t.Fatalf("parse fixture URL: %v", err)
+		}
+		wantURL := parsedURL.Redacted() + "/v" + cfg.version + "/" + artifact.archiveFilename(cfg.version)
+
+		assertBootstrapDiagnosticCase(t, &legacyOutput, handler, func(t *testing.T) {
+			if err := downloadAndInstallRuntime(cfg, artifact, installDir); err != nil {
+				t.Fatalf("downloadAndInstallRuntime: %v", err)
+			}
+		}, []bootstrapDiagnosticExpectation{{
+			level:   slog.LevelWarn,
+			message: "bootstrap download continued without checksum verification",
+			attrs: map[string]string{
+				"url":               wantURL,
+				"checksum_verified": "false",
+				"observed_sha256":   checksum,
+			},
+			forbidden: []string{"bootstrap-secret"},
+		}})
+	})
+
+	t.Run("staging cleanup failure", func(t *testing.T) {
+		cfg, artifact, installDir, checksum := newBootstrapDiagnosticDownloadFixture(t, false)
+		cfg.expectedSHA256 = checksum
+		removeErr := errors.New("synthetic staging removal failure")
+		previousRemoveAll := bootstrapRemoveAll
+		removeCalls := 0
+		bootstrapRemoveAll = func(path string) error {
+			removeCalls++
+			if removeCalls == 3 {
+				return removeErr
+			}
+			return os.RemoveAll(path)
+		}
+		t.Cleanup(func() { bootstrapRemoveAll = previousRemoveAll })
+
+		assertBootstrapDiagnosticCase(t, &legacyOutput, handler, func(t *testing.T) {
+			removeCalls = 0
+			if err := downloadAndInstallRuntime(cfg, artifact, installDir); err != nil {
+				t.Fatalf("downloadAndInstallRuntime: %v", err)
+			}
+		}, []bootstrapDiagnosticExpectation{{
+			level:   slog.LevelWarn,
+			message: "bootstrap staging cleanup failed",
+			attrs: map[string]string{
+				"operation": "remove staging directory",
+				"path":      "",
+				"error":     "",
+			},
+		}})
+	})
+
+	t.Run("metadata checksum fallback", func(t *testing.T) {
+		artifact, err := resolveRuntimeArtifact("linux", "amd64")
+		if err != nil {
+			t.Fatalf("resolveRuntimeArtifact: %v", err)
+		}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte("rate limited"))
+		}))
+		t.Cleanup(server.Close)
+		cfg := bootstrapConfig{
+			version:            "1.99.15",
+			baseURL:            defaultBootstrapBaseURL,
+			releaseMetadataURL: server.URL,
+			expectedSHA256:     strings.Repeat("b", 64),
+			httpClient:         server.Client(),
+			retryAttempts:      1,
+		}
+
+		assertBootstrapDiagnosticCase(t, &legacyOutput, handler, func(t *testing.T) {
+			if _, err := resolveRuntimeArchiveChecksum(cfg, artifact); err != nil {
+				t.Fatalf("resolveRuntimeArchiveChecksum: %v", err)
+			}
+		}, []bootstrapDiagnosticExpectation{{
+			level:   slog.LevelWarn,
+			message: "bootstrap checksum metadata lookup failed; using pinned checksum",
+			attrs: map[string]string{
+				"operation": "resolve release metadata checksum",
+				"error":     "",
+			},
+		}})
+	})
+
+	t.Run("tar glob failure and link skip", func(t *testing.T) {
+		const (
+			regularEntry = "runtime/lib/libonnxruntime-real.so"
+			linkEntry    = "runtime/lib/libonnxruntime.so"
+			invalidGlob  = "["
+		)
+		archivePath := writeBootstrapDiagnosticTGZ(t, []bootstrapDiagnosticArchiveEntry{
+			{name: regularEntry, mode: 0o644, content: "library"},
+			{name: linkEntry, mode: 0o777, typeflag: tar.TypeSymlink, linkname: "libonnxruntime-real.so"},
+		})
+
+		assertBootstrapDiagnosticCase(t, &legacyOutput, handler, func(t *testing.T) {
+			if _, err := extractTGZArchive(archivePath, t.TempDir(), invalidGlob); err != nil {
+				t.Fatalf("extractTGZArchive: %v", err)
+			}
+		}, []bootstrapDiagnosticExpectation{
+			{
+				level:   slog.LevelWarn,
+				message: "bootstrap tar library glob match failed",
+				attrs: map[string]string{
+					"archive_entry": linkEntry,
+					"library_glob":  invalidGlob,
+					"error":         "",
+				},
+			},
+			{
+				level:   slog.LevelWarn,
+				message: "bootstrap tar link entry skipped",
+				attrs: map[string]string{
+					"archive_entry": linkEntry,
+					"entry_type":    fmt.Sprint(tar.TypeSymlink),
+				},
+			},
+		})
+	})
+
+	t.Run("tar unsupported entry skip", func(t *testing.T) {
+		const unsupportedEntry = "runtime/lib/pipe"
+		archivePath := writeBootstrapDiagnosticTGZ(t, []bootstrapDiagnosticArchiveEntry{
+			{name: "runtime/lib/libonnxruntime.so", mode: 0o644, content: "library"},
+			{name: unsupportedEntry, mode: 0o600, typeflag: tar.TypeFifo},
+		})
+
+		assertBootstrapDiagnosticCase(t, &legacyOutput, handler, func(t *testing.T) {
+			if _, err := extractTGZArchive(archivePath, t.TempDir(), ""); err != nil {
+				t.Fatalf("extractTGZArchive: %v", err)
+			}
+		}, []bootstrapDiagnosticExpectation{{
+			level:   slog.LevelWarn,
+			message: "bootstrap tar archive entry skipped",
+			attrs: map[string]string{
+				"archive_entry": unsupportedEntry,
+				"entry_type":    fmt.Sprint(tar.TypeFifo),
+			},
+		}})
+	})
+
+	t.Run("zip glob failure and symlink skip", func(t *testing.T) {
+		const (
+			regularEntry = "runtime/lib/onnxruntime-real.dll"
+			linkEntry    = "runtime/lib/onnxruntime.dll"
+			invalidGlob  = "["
+		)
+		archivePath := writeBootstrapDiagnosticZIP(t, []bootstrapDiagnosticArchiveEntry{
+			{name: regularEntry, mode: 0o644, content: "library"},
+			{name: linkEntry, mode: os.ModeSymlink | 0o777, content: "onnxruntime-real.dll"},
+		})
+
+		assertBootstrapDiagnosticCase(t, &legacyOutput, handler, func(t *testing.T) {
+			if _, err := extractZIPArchive(archivePath, t.TempDir(), invalidGlob); err != nil {
+				t.Fatalf("extractZIPArchive: %v", err)
+			}
+		}, []bootstrapDiagnosticExpectation{
+			{
+				level:   slog.LevelWarn,
+				message: "bootstrap ZIP library glob match failed",
+				attrs: map[string]string{
+					"archive_entry": linkEntry,
+					"library_glob":  invalidGlob,
+					"error":         "",
+				},
+			},
+			{
+				level:   slog.LevelWarn,
+				message: "bootstrap ZIP symlink entry skipped",
+				attrs: map[string]string{
+					"archive_entry": linkEntry,
+					"entry_type":    "symlink",
+				},
+			},
+		})
+	})
+
+	t.Run("lock wait", func(t *testing.T) {
+		previousTimeout := bootstrapLockAcquireTimeout
+		previousRetry := bootstrapLockRetryInterval
+		previousLogInterval := bootstrapLockLogInterval
+		bootstrapLockAcquireTimeout = 45 * time.Millisecond
+		bootstrapLockRetryInterval = 5 * time.Millisecond
+		bootstrapLockLogInterval = 25 * time.Millisecond
+		t.Cleanup(func() {
+			bootstrapLockAcquireTimeout = previousTimeout
+			bootstrapLockRetryInterval = previousRetry
+			bootstrapLockLogInterval = previousLogInterval
+		})
+
+		assertBootstrapDiagnosticCase(t, &legacyOutput, handler, func(t *testing.T) {
+			lockPath := filepath.Join(t.TempDir(), "bootstrap.lock")
+			locked := make(chan struct{})
+			release := make(chan struct{})
+			holderErr := make(chan error, 1)
+			go func() {
+				holderErr <- withProcessFileLock(lockPath, func() error {
+					close(locked)
+					<-release
+					return nil
+				})
+			}()
+			select {
+			case <-locked:
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for lock holder")
+			}
+
+			err := withProcessFileLock(lockPath, func() error { return nil })
+			if err == nil || !strings.Contains(err.Error(), "timed out acquiring lock") {
+				t.Fatalf("lock wait: got %v, want timeout", err)
+			}
+			close(release)
+			if err := <-holderErr; err != nil {
+				t.Fatalf("lock holder: %v", err)
+			}
+		}, []bootstrapDiagnosticExpectation{{
+			level:   slog.LevelInfo,
+			message: "waiting for bootstrap lock",
+			attrs: map[string]string{
+				"path":          "",
+				"wait_duration": "",
+			},
+		}})
+	})
+
+	t.Run("user cache lookup failure fallback", func(t *testing.T) {
+		previousUserCacheDir := bootstrapUserCacheDir
+		cacheErr := errors.New("synthetic user cache lookup failure")
+		bootstrapUserCacheDir = func() (string, error) { return "", cacheErr }
+		t.Cleanup(func() {
+			bootstrapUserCacheDir = previousUserCacheDir
+			bootstrapCacheFallbackWarnOnce = sync.Once{}
+		})
+		fallback := filepath.Join(os.TempDir(), "onnx-purego", "onnxruntime")
+
+		assertBootstrapDiagnosticCase(t, &legacyOutput, handler, func(t *testing.T) {
+			bootstrapCacheFallbackWarnOnce = sync.Once{}
+			if got := defaultBootstrapCacheDir(); got != fallback {
+				t.Fatalf("defaultBootstrapCacheDir = %q, want %q", got, fallback)
+			}
+		}, []bootstrapDiagnosticExpectation{{
+			level:   slog.LevelWarn,
+			message: "bootstrap user cache lookup failed; using temporary cache",
+			attrs: map[string]string{
+				"path":  fallback,
+				"error": "",
+			},
+		}})
+	})
+
+	t.Run("empty user cache fallback", func(t *testing.T) {
+		previousUserCacheDir := bootstrapUserCacheDir
+		bootstrapUserCacheDir = func() (string, error) { return "", nil }
+		t.Cleanup(func() {
+			bootstrapUserCacheDir = previousUserCacheDir
+			bootstrapCacheFallbackWarnOnce = sync.Once{}
+		})
+		fallback := filepath.Join(os.TempDir(), "onnx-purego", "onnxruntime")
+
+		assertBootstrapDiagnosticCase(t, &legacyOutput, handler, func(t *testing.T) {
+			bootstrapCacheFallbackWarnOnce = sync.Once{}
+			if got := defaultBootstrapCacheDir(); got != fallback {
+				t.Fatalf("defaultBootstrapCacheDir = %q, want %q", got, fallback)
+			}
+		}, []bootstrapDiagnosticExpectation{{
+			level:   slog.LevelWarn,
+			message: "bootstrap user cache path empty; using temporary cache",
+			attrs: map[string]string{
+				"path": fallback,
+			},
+		}})
+	})
+
+	t.Run("consumer handler panic propagates", func(t *testing.T) {
+		const panicValue = "bootstrap diagnostic handler panic"
+		previousUserCacheDir := bootstrapUserCacheDir
+		bootstrapUserCacheDir = func() (string, error) { return "", nil }
+		bootstrapCacheFallbackWarnOnce = sync.Once{}
+		SetDiagnosticHandler(diagnosticPanicHandler{value: panicValue})
+		t.Cleanup(func() {
+			SetDiagnosticHandler(nil)
+			bootstrapUserCacheDir = previousUserCacheDir
+			bootstrapCacheFallbackWarnOnce = sync.Once{}
+		})
+
+		var recovered any
+		func() {
+			defer func() { recovered = recover() }()
+			_ = defaultBootstrapCacheDir()
+		}()
+		if recovered != panicValue {
+			t.Fatalf("recovered panic = %v, want %q", recovered, panicValue)
+		}
+	})
+}
+
+func TestReturnedErrorsDoNotEmit(t *testing.T) {
+	handler := &bootstrapDiagnosticRecordingHandler{}
+	SetDiagnosticHandler(handler)
+	t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+	assertNoDiagnostic := func(t *testing.T, operation func() error) {
+		t.Helper()
+		handler.reset()
+		if err := operation(); err == nil {
+			t.Fatal("operation returned nil, want error")
+		}
+		if records := handler.snapshot(); len(records) != 0 {
+			t.Fatalf("returned error emitted %d diagnostics: %+v", len(records), records)
+		}
+	}
+
+	t.Run("validation", func(t *testing.T) {
+		assertNoDiagnostic(t, func() error {
+			return WithBootstrapVersion("")(&bootstrapConfig{})
+		})
+	})
+
+	t.Run("network", func(t *testing.T) {
+		networkErr := errors.New("synthetic network failure")
+		cfg := bootstrapConfig{
+			cacheDir: t.TempDir(),
+			httpClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return nil, networkErr
+			})},
+			retryAttempts: 1,
+		}
+		assertNoDiagnostic(t, func() error {
+			_, _, err := downloadRuntimeArchive(cfg, "https://example.invalid/runtime.tgz")
+			return err
+		})
+	})
+
+	t.Run("checksum", func(t *testing.T) {
+		cfg, artifact, installDir, _ := newBootstrapDiagnosticDownloadFixture(t, false)
+		cfg.expectedSHA256 = strings.Repeat("0", 64)
+		assertNoDiagnostic(t, func() error {
+			return downloadAndInstallRuntime(cfg, artifact, installDir)
+		})
+	})
+
+	t.Run("archive", func(t *testing.T) {
+		archivePath := filepath.Join(t.TempDir(), "runtime.tgz")
+		if err := os.WriteFile(archivePath, []byte("not a gzip archive"), 0o600); err != nil {
+			t.Fatalf("write invalid archive: %v", err)
+		}
+		assertNoDiagnostic(t, func() error {
+			_, err := extractArchiveFile(archivePath, t.TempDir(), "tgz", "")
+			return err
+		})
+	})
+
+	t.Run("lock timeout before notice interval", func(t *testing.T) {
+		previousTimeout := bootstrapLockAcquireTimeout
+		previousRetry := bootstrapLockRetryInterval
+		previousLogInterval := bootstrapLockLogInterval
+		bootstrapLockAcquireTimeout = 30 * time.Millisecond
+		bootstrapLockRetryInterval = 5 * time.Millisecond
+		bootstrapLockLogInterval = time.Second
+		t.Cleanup(func() {
+			bootstrapLockAcquireTimeout = previousTimeout
+			bootstrapLockRetryInterval = previousRetry
+			bootstrapLockLogInterval = previousLogInterval
+		})
+
+		lockPath := filepath.Join(t.TempDir(), "bootstrap.lock")
+		locked := make(chan struct{})
+		release := make(chan struct{})
+		holderErr := make(chan error, 1)
+		go func() {
+			holderErr <- withProcessFileLock(lockPath, func() error {
+				close(locked)
+				<-release
+				return nil
+			})
+		}()
+		select {
+		case <-locked:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for lock holder")
+		}
+
+		assertNoDiagnostic(t, func() error {
+			return withProcessFileLock(lockPath, func() error { return nil })
+		})
+		close(release)
+		if err := <-holderErr; err != nil {
+			t.Fatalf("lock holder: %v", err)
+		}
+	})
+}
+
 func TestInitializeEnvironmentWithBootstrapInitializedDifferentPath(t *testing.T) {
 	resetEnvironmentState()
 	defer resetEnvironmentState()
@@ -2277,6 +2717,235 @@ func assertBootstrapLockMode(t *testing.T, path string) {
 	if perm&0o077 != 0 {
 		t.Fatalf("lock file %q mode %#o grants group/other access", path, perm)
 	}
+}
+
+type bootstrapDiagnosticExpectation struct {
+	level     slog.Level
+	message   string
+	attrs     map[string]string
+	forbidden []string
+}
+
+type bootstrapDiagnosticRecord struct {
+	level   slog.Level
+	message string
+	attrs   map[string]any
+}
+
+type bootstrapDiagnosticRecordingHandler struct {
+	mu      sync.Mutex
+	records []bootstrapDiagnosticRecord
+}
+
+func (*bootstrapDiagnosticRecordingHandler) Enabled(context.Context, slog.Level) bool {
+	return true
+}
+
+func (h *bootstrapDiagnosticRecordingHandler) Handle(_ context.Context, record slog.Record) error {
+	attrs := make(map[string]any, record.NumAttrs())
+	record.Attrs(func(attr slog.Attr) bool {
+		attrs[attr.Key] = attr.Value.Resolve().Any()
+		return true
+	})
+
+	h.mu.Lock()
+	h.records = append(h.records, bootstrapDiagnosticRecord{
+		level:   record.Level,
+		message: record.Message,
+		attrs:   attrs,
+	})
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *bootstrapDiagnosticRecordingHandler) WithAttrs([]slog.Attr) slog.Handler {
+	return h
+}
+
+func (h *bootstrapDiagnosticRecordingHandler) WithGroup(string) slog.Handler {
+	return h
+}
+
+func (h *bootstrapDiagnosticRecordingHandler) reset() {
+	h.mu.Lock()
+	h.records = nil
+	h.mu.Unlock()
+}
+
+func (h *bootstrapDiagnosticRecordingHandler) snapshot() []bootstrapDiagnosticRecord {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	records := make([]bootstrapDiagnosticRecord, len(h.records))
+	copy(records, h.records)
+	return records
+}
+
+func assertBootstrapDiagnosticCase(
+	t *testing.T,
+	legacyOutput *bytes.Buffer,
+	handler *bootstrapDiagnosticRecordingHandler,
+	exercise func(*testing.T),
+	want []bootstrapDiagnosticExpectation,
+) {
+	t.Helper()
+
+	SetDiagnosticHandler(nil)
+	legacyOutput.Reset()
+	exercise(t)
+	if output := legacyOutput.String(); output != "" {
+		t.Fatalf("nil diagnostic handler produced legacy output: %q", output)
+	}
+
+	handler.reset()
+	SetDiagnosticHandler(handler)
+	exercise(t)
+	got := handler.snapshot()
+	if len(got) != len(want) {
+		t.Fatalf("diagnostic count = %d, want %d: %+v", len(got), len(want), got)
+	}
+	for index, expectation := range want {
+		record := got[index]
+		if record.level != expectation.level {
+			t.Errorf("record %d level = %s, want %s", index, record.level, expectation.level)
+		}
+		if record.message != expectation.message {
+			t.Errorf("record %d message = %q, want %q", index, record.message, expectation.message)
+		}
+		if len(record.attrs) != len(expectation.attrs) {
+			t.Errorf("record %d attrs = %+v, want keys %+v", index, record.attrs, expectation.attrs)
+		}
+		for key, wantValue := range expectation.attrs {
+			gotValue, ok := record.attrs[key]
+			if !ok {
+				t.Errorf("record %d missing attr %q", index, key)
+				continue
+			}
+			if wantValue != "" && fmt.Sprint(gotValue) != wantValue {
+				t.Errorf("record %d attr %q = %v, want %q", index, key, gotValue, wantValue)
+			}
+		}
+		serialized := fmt.Sprint(record)
+		for _, forbidden := range expectation.forbidden {
+			if strings.Contains(serialized, forbidden) {
+				t.Errorf("record %d contains forbidden value %q: %s", index, forbidden, serialized)
+			}
+		}
+	}
+	SetDiagnosticHandler(nil)
+}
+
+func newBootstrapDiagnosticDownloadFixture(
+	t *testing.T,
+	withCredentials bool,
+) (bootstrapConfig, runtimeArtifact, string, string) {
+	t.Helper()
+
+	artifact, err := resolveRuntimeArtifact("linux", "amd64")
+	if err != nil {
+		t.Fatalf("resolveRuntimeArtifact: %v", err)
+	}
+	const version = "1.99.14"
+	archive := buildORTArchive(t, artifact, version, true)
+	sum := sha256.Sum256(archive)
+	checksum := hex.EncodeToString(sum[:])
+	server, _ := newArchiveServer(t, artifact, version, archive)
+	baseURL := server.URL
+	if withCredentials {
+		parsedURL, err := url.Parse(baseURL)
+		if err != nil {
+			t.Fatalf("parse archive server URL: %v", err)
+		}
+		parsedURL.User = url.UserPassword("bootstrap-user", "bootstrap-secret")
+		baseURL = parsedURL.String()
+	}
+
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	return bootstrapConfig{
+		cacheDir:      cacheDir,
+		version:       version,
+		baseURL:       baseURL,
+		httpClient:    server.Client(),
+		retryAttempts: 1,
+	}, artifact, filepath.Join(cacheDir, artifact.archiveName(version)), checksum
+}
+
+type bootstrapDiagnosticArchiveEntry struct {
+	name     string
+	mode     os.FileMode
+	typeflag byte
+	linkname string
+	content  string
+}
+
+func writeBootstrapDiagnosticTGZ(t *testing.T, entries []bootstrapDiagnosticArchiveEntry) string {
+	t.Helper()
+
+	var buffer bytes.Buffer
+	gzipWriter := gzip.NewWriter(&buffer)
+	tarWriter := tar.NewWriter(gzipWriter)
+	for _, entry := range entries {
+		typeflag := entry.typeflag
+		if typeflag == 0 {
+			typeflag = tar.TypeReg
+		}
+		header := &tar.Header{
+			Name:     entry.name,
+			Mode:     int64(entry.mode.Perm()),
+			Typeflag: typeflag,
+			Linkname: entry.linkname,
+		}
+		if typeflag == tar.TypeReg {
+			header.Size = int64(len(entry.content))
+		}
+		if err := tarWriter.WriteHeader(header); err != nil {
+			t.Fatalf("write tar header %q: %v", entry.name, err)
+		}
+		if typeflag == tar.TypeReg {
+			if _, err := tarWriter.Write([]byte(entry.content)); err != nil {
+				t.Fatalf("write tar content %q: %v", entry.name, err)
+			}
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatalf("close tar writer: %v", err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatalf("close gzip writer: %v", err)
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "diagnostic.tgz")
+	if err := os.WriteFile(archivePath, buffer.Bytes(), 0o600); err != nil {
+		t.Fatalf("write diagnostic tgz: %v", err)
+	}
+	return archivePath
+}
+
+func writeBootstrapDiagnosticZIP(t *testing.T, entries []bootstrapDiagnosticArchiveEntry) string {
+	t.Helper()
+
+	var buffer bytes.Buffer
+	zipWriter := zip.NewWriter(&buffer)
+	for _, entry := range entries {
+		header := &zip.FileHeader{Name: entry.name, Method: zip.Deflate}
+		header.SetMode(entry.mode)
+		writer, err := zipWriter.CreateHeader(header)
+		if err != nil {
+			t.Fatalf("create ZIP entry %q: %v", entry.name, err)
+		}
+		if _, err := writer.Write([]byte(entry.content)); err != nil {
+			t.Fatalf("write ZIP entry %q: %v", entry.name, err)
+		}
+	}
+	if err := zipWriter.Close(); err != nil {
+		t.Fatalf("close ZIP writer: %v", err)
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "diagnostic.zip")
+	if err := os.WriteFile(archivePath, buffer.Bytes(), 0o600); err != nil {
+		t.Fatalf("write diagnostic zip: %v", err)
+	}
+	return archivePath
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
