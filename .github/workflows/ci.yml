@@ -383,10 +383,9 @@ jobs:
           cache: true
 
       - name: Check ONNX Runtime versions
-        run: |
-          make list-ort-versions || echo "Make target not available"
+        run: make list-ort-versions
 
       - name: Verify constants match latest ONNX Runtime
         run: |
           echo "Checking ORT_API_VERSION constant..."
-          grep -n "ORT_API_VERSION" ort/constants.go || echo "Constants file structure may have changed"
+          grep -nE '^[[:space:]]*ORT_API_VERSION[[:space:]]*=' ort/constants.go
