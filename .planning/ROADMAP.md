@@ -60,7 +60,7 @@ Plans:
 - [x] 02-04-PLAN.md — Add RunWithValues through the shared session run/error/lifetime core
 - [x] 02-05-PLAN.md — Migrate tensor validation, native errors, and finalizer diagnostics
 - [x] 02-06-PLAN.md — Migrate environment and MemoryInfo errors/diagnostics
-- [ ] 02-07-PLAN.md — Preserve bootstrap causes, isolate permission hardening, and migrate audited structured notices
+- [x] 02-07-PLAN.md — Preserve bootstrap causes, isolate permission hardening, and migrate audited structured notices
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -115,7 +115,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. DX & Test Hardening | 3/3 | Complete   | 2026-07-22 |
-| 2. Core API — Errors & Values | 6/8 | In Progress|  |
+| 2. Core API — Errors & Values | 7/8 | In Progress|  |
 | 3. Generalized Embedder API | 0/TBD | Not started | - |
 | 4. Documentation | 0/TBD | Not started | - |
 | 5. Full Lint Gate | 0/TBD | Not started | - |

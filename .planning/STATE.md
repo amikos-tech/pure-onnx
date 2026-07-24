@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.1.0
 milestone_name: "**Goal**: v0.1.0 is cut as a tagged, documented release with CI green across all supported platforms and every milestone issue closed."
 status: executing
-stopped_at: Completed 02-06-PLAN.md
-last_updated: "2026-07-24T13:31:07.156Z"
+stopped_at: Completed 02-07-PLAN.md
+last_updated: "2026-07-24T13:59:06.969Z"
 last_activity: 2026-07-24
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 11
-  completed_plans: 9
+  completed_plans: 10
   percent: 17
 ---
 
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-07-21)
 ## Current Position
 
 Phase: 02 (core-api-errors-values) — EXECUTING
-Plan: 7 of 8
+Plan: 8 of 8
 Status: Ready to execute
 Last activity: 2026-07-24
 
-Progress: [████████░░] 82%
+Progress: [█████████░] 91%
 
 ## Performance Metrics
 
@@ -58,6 +58,7 @@ Progress: [████████░░] 82%
 | Phase 02 P04 | 18min | 2 tasks | 2 files |
 | Phase 02 P05 | 12min | 1 tasks | 4 files |
 | Phase 02 P06 | 18min | 2 tasks | 4 files |
+| Phase 02 P07 | 23min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -84,6 +85,9 @@ Recent decisions affecting current work:
 - [Phase 02]: Use private environment loader seams for exact cause-chain tests — This proves load, symbol, and cleanup identity without invoking purego on fake symbols
 - [Phase 02]: Keep race-lane environment and MemoryInfo status probes null-message — The central converter test proves non-empty copying without sending Go heap pointers through uintptr
 - [Phase 02]: Require the complete MemoryInfo create, release, and status callback set before native creation — Partial registration cannot safely convert failures or release a successful handle
+- [Phase 02]: Keep unsupported platforms distinct from supported-platform library absence — ErrUnsupportedPlatform and ErrSharedLibraryNotFound remain independently actionable
+- [Phase 02]: Clamp only group and other write bits from archive-derived file modes — Owner execute permissions survive while archive-supplied writable permissions are removed
+- [Phase 02]: Allowlist structured bootstrap attributes and redact URLs before emission — Returned errors stay diagnostic-free and trusted synchronous handler panics continue to propagate
 
 ### Pending Todos
 
@@ -105,6 +109,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-24T13:31:07.151Z
-Stopped at: Completed 02-06-PLAN.md
+Last session: 2026-07-24T13:59:06.964Z
+Stopped at: Completed 02-07-PLAN.md
 Resume file: None
