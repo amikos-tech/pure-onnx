@@ -3,6 +3,7 @@ package ort
 import (
 	"fmt"
 	"runtime"
+	"slices"
 	"sync"
 	"unsafe"
 )
@@ -181,7 +182,7 @@ func (t *Tensor[T]) Shape() Shape {
 		return nil
 	}
 	t.runMu.RLock()
-	shape := t.shape
+	shape := slices.Clone(t.shape)
 	t.runMu.RUnlock()
 	return shape
 }

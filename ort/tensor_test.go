@@ -324,6 +324,18 @@ func TestTensorAccessorsNilReceiver(t *testing.T) {
 	}
 }
 
+func TestTensorShapeReturnsCopy(t *testing.T) {
+	tensor := &Tensor[float32]{shape: Shape{2, 3}}
+
+	shape := tensor.Shape()
+	shape[0] = 99
+
+	got := tensor.Shape()
+	if !reflect.DeepEqual(got, Shape{2, 3}) {
+		t.Fatalf("tensor shape mutated through returned slice: %v", got)
+	}
+}
+
 func TestTensorDestroyDoubleWithoutORT(t *testing.T) {
 	resetEnvironmentState()
 
