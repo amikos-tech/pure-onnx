@@ -55,12 +55,12 @@ func TestStatus_IsOK(t *testing.T) {
 	}{
 		{
 			name:   "status is OK when handle is 0",
-			status: Status{handle: 0},
+			status: Status(0),
 			want:   true,
 		},
 		{
 			name:   "status is not OK when handle is non-zero",
-			status: Status{handle: 1},
+			status: Status(1),
 			want:   false,
 		},
 	}
@@ -71,6 +71,20 @@ func TestStatus_IsOK(t *testing.T) {
 				t.Errorf("Status.IsOK() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPublicHandleTypesRemainUintptrConvertible(t *testing.T) {
+	const handle = uintptr(42)
+
+	if uintptr(Status(handle)) != handle {
+		t.Fatal("Status handle conversion changed")
+	}
+	if uintptr(Environment(handle)) != handle {
+		t.Fatal("Environment handle conversion changed")
+	}
+	if uintptr(Session(handle)) != handle {
+		t.Fatal("Session handle conversion changed")
 	}
 }
 
@@ -108,16 +122,16 @@ func TestStatusNativeErrorAccessors(t *testing.T) {
 		wantCode    ErrorCode
 		wantMessage string
 	}{
-		{status: Status{}, wantCode: ErrorCodeOK, wantMessage: ""},
-		{status: Status{handle: 11}, wantCode: ErrorCodeInvalidGraph, wantMessage: "invalid graph"},
-		{status: Status{handle: 12}, wantCode: ErrorCodeRuntimeException, wantMessage: "runtime failure"},
+		{status: Status(0), wantCode: ErrorCodeOK, wantMessage: ""},
+		{status: Status(11), wantCode: ErrorCodeInvalidGraph, wantMessage: "invalid graph"},
+		{status: Status(12), wantCode: ErrorCodeRuntimeException, wantMessage: "runtime failure"},
 	}
 	for _, test := range tests {
 		if got := test.status.GetErrorCode(); got != test.wantCode {
-			t.Errorf("Status(%d).GetErrorCode() = %v, want %v", test.status.handle, got, test.wantCode)
+			t.Errorf("Status(%d).GetErrorCode() = %v, want %v", test.status, got, test.wantCode)
 		}
 		if got := test.status.GetErrorMessage(); got != test.wantMessage {
-			t.Errorf("Status(%d).GetErrorMessage() = %q, want %q", test.status.handle, got, test.wantMessage)
+			t.Errorf("Status(%d).GetErrorMessage() = %q, want %q", test.status, got, test.wantMessage)
 		}
 	}
 

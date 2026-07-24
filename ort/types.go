@@ -10,19 +10,17 @@ type OrtApiBase struct {
 
 // OrtApi is defined in ortapi_generated.go (auto-generated from C header)
 
-// Status represents an ONNX Runtime status
-// Thread-safe: Status can be shared across goroutines for read operations
-type Status struct {
-	handle uintptr // Pointer to OrtStatus
-}
+// Status represents a borrowed native OrtStatus handle.
+// Thread-safe: Status can be shared across goroutines for read operations.
+type Status uintptr
 
 // IsOK returns true if the status represents success
-func (s *Status) IsOK() bool {
-	return s.handle == 0
+func (s Status) IsOK() bool {
+	return s == 0
 }
 
 // GetErrorCode returns the error code from the status
-func (s *Status) GetErrorCode() ErrorCode {
+func (s Status) GetErrorCode() ErrorCode {
 	if s.IsOK() {
 		return ErrorCodeOK
 	}
@@ -36,11 +34,11 @@ func (s *Status) GetErrorCode() ErrorCode {
 	if getErrorCode == nil {
 		return ErrorCodeFail
 	}
-	return getErrorCode(s.handle)
+	return getErrorCode(uintptr(s))
 }
 
 // GetErrorMessage returns the error message from the status
-func (s *Status) GetErrorMessage() string {
+func (s Status) GetErrorMessage() string {
 	if s.IsOK() {
 		return ""
 	}
@@ -54,26 +52,14 @@ func (s *Status) GetErrorMessage() string {
 	if getErrorMessage == nil {
 		return ""
 	}
-	return CstringToGo(getErrorMessage(s.handle))
+	return CstringToGo(getErrorMessage(uintptr(s)))
 }
 
-// Environment represents an ONNX Runtime environment
-// Thread-safe: Environment is thread-safe and can be shared across multiple sessions
-type Environment struct {
-	handle       uintptr // Pointer to OrtEnv
-	loggingLevel LoggingLevel
-	logID        string
-}
+// Environment represents a borrowed native OrtEnv handle.
+type Environment uintptr
 
-// Session represents an ONNX Runtime session for model inference
-// Thread-safe: Session.Run() is thread-safe, multiple threads can call Run() simultaneously
-type Session struct {
-	handle      uintptr // Pointer to OrtSession
-	inputNames  []string
-	outputNames []string
-	inputCount  int
-	outputCount int
-}
+// Session represents a borrowed native OrtSession handle.
+type Session uintptr
 
 // Value represents an ONNX Runtime value created by this package.
 //
