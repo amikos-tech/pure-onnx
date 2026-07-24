@@ -50,6 +50,7 @@ func TestNativeORTStatusRoundTrip(t *testing.T) {
 		t.Fatalf("GetApi(%d) returned nil", ORT_API_VERSION)
 	}
 	// #nosec G103 -- purego returns the C API table as an integer address.
+	//nolint:govet // Native ABI verification requires converting that address to the C API table.
 	api := (*OrtApi)(unsafe.Pointer(apiPointer))
 
 	var createStatus func(ErrorCode, uintptr) uintptr

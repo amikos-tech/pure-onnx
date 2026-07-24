@@ -42,6 +42,7 @@ func TestDiagnostic(t *testing.T) {
 		SetDiagnosticHandler(slog.NewJSONHandler(&output, nil))
 		t.Cleanup(func() { SetDiagnosticHandler(nil) })
 
+		//nolint:staticcheck // A nil context intentionally verifies emitDiagnostic's fallback.
 		emitDiagnostic(
 			nil,
 			slog.LevelWarn,
