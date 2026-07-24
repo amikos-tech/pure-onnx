@@ -971,7 +971,11 @@ func downloadRuntimeArchiveOnce(cfg bootstrapConfig, url string) (archivePath st
 		}
 		return "", "", requestErr
 	}
+	responseClosed := false
 	defer func() {
+		if responseClosed {
+			return
+		}
 		if closeErr := resp.Body.Close(); closeErr != nil {
 			closeErr = fmt.Errorf("failed to close download response body for %q: %w", url, closeErr)
 			if err == nil {
@@ -1010,12 +1014,14 @@ func downloadRuntimeArchiveOnce(cfg bootstrapConfig, url string) (archivePath st
 	}
 	tmpPath := tmpFile.Name()
 	archivePath = tmpPath
-	success := false
+	tmpFileClosed := false
 	defer func() {
-		if closeErr := tmpFile.Close(); closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("failed to close temporary archive file %q: %w", tmpPath, closeErr))
+		if !tmpFileClosed {
+			if closeErr := tmpFile.Close(); closeErr != nil {
+				err = errors.Join(err, fmt.Errorf("failed to close temporary archive file %q: %w", tmpPath, closeErr))
+			}
 		}
-		if !success {
+		if err != nil {
 			if removeErr := os.Remove(tmpPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 				err = errors.Join(err, fmt.Errorf("failed to remove temporary archive %q: %w", tmpPath, removeErr))
 			}
@@ -1049,7 +1055,18 @@ func downloadRuntimeArchiveOnce(cfg bootstrapConfig, url string) (archivePath st
 	}
 
 	checksum = hex.EncodeToString(hasher.Sum(nil))
-	success = true
+	closeErr := tmpFile.Close()
+	tmpFileClosed = true
+	if closeErr != nil {
+		err = fmt.Errorf("failed to close temporary archive file %q: %w", tmpPath, closeErr)
+		return "", "", err
+	}
+	closeErr = resp.Body.Close()
+	responseClosed = true
+	if closeErr != nil {
+		err = fmt.Errorf("failed to close download response body for %q: %w", url, closeErr)
+		return "", "", err
+	}
 	return archivePath, checksum, nil
 }
 

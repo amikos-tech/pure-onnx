@@ -1292,6 +1292,41 @@ func TestDownloadRuntimeArchiveCleansTempFileOnError(t *testing.T) {
 	}
 }
 
+func TestDownloadRuntimeArchiveCleansTempFileOnResponseCloseError(t *testing.T) {
+	clearBootstrapEnv(t)
+
+	cacheDir := t.TempDir()
+	closeCause := errors.New("synthetic response close failure")
+	payload := []byte("onnxruntime-archive")
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        make(http.Header),
+			Body:          &closeErrorReadCloser{Reader: bytes.NewReader(payload), closeErr: closeCause},
+			ContentLength: int64(len(payload)),
+			Request:       req,
+		}, nil
+	})}
+	cfg := bootstrapConfig{
+		cacheDir:        cacheDir,
+		httpClient:      client,
+		maxDownloadSize: 1024,
+		retryAttempts:   1,
+	}
+
+	_, _, err := downloadRuntimeArchive(cfg, "https://example.invalid/archive")
+	if !errors.Is(err, closeCause) {
+		t.Fatalf("download error = %v, want response close cause", err)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(cacheDir, "onnxruntime-*.archive"))
+	if globErr != nil {
+		t.Fatalf("glob temporary archives: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary archives remained after response close failure: %v", matches)
+	}
+}
+
 func TestDownloadRuntimeArchiveHTTPStatusError(t *testing.T) {
 	clearBootstrapEnv(t)
 
@@ -3202,5 +3237,14 @@ func (r *failingReadCloser) Read([]byte) (int, error) {
 }
 
 func (r *failingReadCloser) Close() error {
+	return r.closeErr
+}
+
+type closeErrorReadCloser struct {
+	io.Reader
+	closeErr error
+}
+
+func (r *closeErrorReadCloser) Close() error {
 	return r.closeErr
 }
