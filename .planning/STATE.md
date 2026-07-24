@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.1.0
 milestone_name: "**Goal**: v0.1.0 is cut as a tagged, documented release with CI green across all supported platforms and every milestone issue closed."
 status: executing
-stopped_at: Completed 02-03-PLAN.md
-last_updated: "2026-07-24T12:25:19.956Z"
+stopped_at: Completed 02-04-PLAN.md
+last_updated: "2026-07-24T12:51:25.982Z"
 last_activity: 2026-07-24
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 11
-  completed_plans: 6
+  completed_plans: 7
   percent: 17
 ---
 
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-07-21)
 ## Current Position
 
 Phase: 02 (core-api-errors-values) — EXECUTING
-Plan: 4 of 8
+Plan: 5 of 8
 Status: Ready to execute
 Last activity: 2026-07-24
 
-Progress: [██████░░░░] 55%
+Progress: [██████░░░░] 64%
 
 ## Performance Metrics
 
@@ -55,6 +55,7 @@ Progress: [██████░░░░] 55%
 | Phase 02 P01 | 14 min | 2 tasks | 5 files |
 | Phase 02 P02 | 4min | 1 tasks | 4 files |
 | Phase 02 P03 | 4min | 1 tasks | 2 files |
+| Phase 02 P04 | 18min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -73,6 +74,8 @@ Recent decisions affecting current work:
 - [Phase 02]: Keep IsTensor kind-only and make AsTensor exact and non-nil — Exact extraction preserves ownership and avoids coercion, copying, reflection, and allocation
 - [Phase 02]: Keep diagnostics silent until a standard slog handler is explicitly installed — nil installs slog.DiscardHandler and restores the package default
 - [Phase 02]: Treat consumer diagnostic handlers as trusted synchronous callbacks — general handler panics propagate, while best-effort finalizer diagnostics recover them
+- [Phase 02]: Keep NewAdvancedSession and Run constructor bindings intact while selecting RunWithValues arguments only inside the shared locked core
+- [Phase 02]: Use stable native operation names and emit diagnostics only when a session finalizer cannot return its Destroy error
 
 ### Pending Todos
 
@@ -94,6 +97,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-24T12:25:19.949Z
-Stopped at: Completed 02-03-PLAN.md
+Last session: 2026-07-24T12:51:25.019Z
+Stopped at: Completed 02-04-PLAN.md
 Resume file: None
