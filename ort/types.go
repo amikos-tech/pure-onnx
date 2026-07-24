@@ -57,13 +57,30 @@ type Session struct {
 	outputCount int
 }
 
-// Value represents an ONNX Runtime value (tensor, sequence, map, etc.).
-// Sessions currently only accept Value implementations created by this package.
+// Value represents an ONNX Runtime value created by this package.
+//
+// Value is intentionally sealed: external implementations are unsupported because
+// native handles and their run-lifetime protocol remain package-owned.
 type Value interface {
 	// Destroy releases the underlying resources
 	Destroy() error
 	// Type returns the type of the value
 	Type() ValueType
+	ortValue()
+}
+
+// IsTensor reports whether value has the ONNX tensor kind.
+func IsTensor(value Value) bool {
+	return value != nil && value.Type() == ValueTypeTensor
+}
+
+// AsTensor returns value as an exact, non-nil *Tensor[T].
+func AsTensor[T any](value Value) (*Tensor[T], bool) {
+	tensor, ok := value.(*Tensor[T])
+	if !ok || tensor == nil {
+		return nil, false
+	}
+	return tensor, true
 }
 
 // ValueType represents the type of an ONNX Runtime value

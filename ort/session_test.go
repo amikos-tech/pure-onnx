@@ -18,6 +18,7 @@ type fakeValue struct {
 
 func (f *fakeValue) Destroy() error          { return nil }
 func (f *fakeValue) Type() ValueType         { return ValueTypeTensor }
+func (f *fakeValue) ortValue()               {}
 func (f *fakeValue) ortValueHandle() uintptr { return f.handle }
 func (f *fakeValue) lockForRun() (uintptr, error) {
 	if f.handle == 0 {
@@ -31,6 +32,7 @@ type unsupportedValue struct{}
 
 func (u *unsupportedValue) Destroy() error  { return nil }
 func (u *unsupportedValue) Type() ValueType { return ValueTypeTensor }
+func (u *unsupportedValue) ortValue()       {}
 
 type blockingLeaseValue struct {
 	handle uintptr
@@ -57,6 +59,7 @@ func (v *blockingLeaseValue) Destroy() error {
 }
 
 func (v *blockingLeaseValue) Type() ValueType { return ValueTypeTensor }
+func (v *blockingLeaseValue) ortValue()       {}
 
 func (v *blockingLeaseValue) ortValueHandle() uintptr {
 	v.runMu.RLock()
@@ -96,6 +99,7 @@ type nonComparableLeaseValue struct {
 
 func (v nonComparableLeaseValue) Destroy() error          { return nil }
 func (v nonComparableLeaseValue) Type() ValueType         { return ValueTypeTensor }
+func (v nonComparableLeaseValue) ortValue()               {}
 func (v nonComparableLeaseValue) ortValueHandle() uintptr { return v.handle }
 func (v nonComparableLeaseValue) lockForRun() (uintptr, error) {
 	if v.handle == 0 {

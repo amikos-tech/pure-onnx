@@ -16,6 +16,8 @@ type Tensor[T any] struct {
 	runMu  sync.RWMutex    // Coordinates Run() handle leases with Destroy().
 }
 
+func (*Tensor[T]) ortValue() {}
+
 func (t *Tensor[T]) ortValueHandle() uintptr {
 	if t == nil {
 		return 0
