@@ -1998,11 +1998,15 @@ func TestNormalizeRuntimeVersion(t *testing.T) {
 		{name: "plain", in: "1.23.1", want: "1.23.1"},
 		{name: "prefixed", in: "v1.23.1", want: "1.23.1"},
 		{name: "trimmed", in: " 1.2.3 ", want: "1.2.3"},
+		{name: "canonicalizes segments", in: "v01.002.0003", want: "1.2.3"},
 		{name: "empty", in: "", expectErr: true},
 		{name: "too few segments", in: "1.2", expectErr: true},
 		{name: "too many segments", in: "1.2.3.4", expectErr: true},
 		{name: "empty segment", in: "1..3", expectErr: true},
 		{name: "non-numeric", in: "1.a.3", expectErr: true},
+		{name: "negative major", in: "-1.23.1", expectErr: true},
+		{name: "negative minor", in: "1.-23.1", expectErr: true},
+		{name: "negative patch", in: "1.23.-1", expectErr: true},
 	}
 
 	for _, tc := range tests {
@@ -2011,6 +2015,9 @@ func TestNormalizeRuntimeVersion(t *testing.T) {
 			if tc.expectErr {
 				if err == nil {
 					t.Fatalf("expected error for %q", tc.in)
+				}
+				if !errors.Is(err, ErrInvalidArgument) {
+					t.Fatalf("normalizeRuntimeVersion(%q) error = %v, want ErrInvalidArgument", tc.in, err)
 				}
 				return
 			}

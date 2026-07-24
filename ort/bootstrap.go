@@ -1856,16 +1856,22 @@ func normalizeRuntimeVersion(version string) (string, error) {
 		return "", fmt.Errorf("ONNX Runtime version must have format x.y.z, got %q: %w", version, ErrInvalidArgument)
 	}
 
-	for _, part := range parts {
+	canonicalParts := make([]string, len(parts))
+	for i, part := range parts {
 		if part == "" {
 			return "", fmt.Errorf("ONNX Runtime version must have format x.y.z, got %q: %w", version, ErrInvalidArgument)
 		}
-		if _, err := strconv.Atoi(part); err != nil {
+		value, err := strconv.Atoi(part)
+		if err != nil {
 			return "", fmt.Errorf("ONNX Runtime version must have numeric segments, got %q: %w", version, ErrInvalidArgument)
 		}
+		if value < 0 {
+			return "", fmt.Errorf("ONNX Runtime version segments must be nonnegative, got %q: %w", version, ErrInvalidArgument)
+		}
+		canonicalParts[i] = strconv.Itoa(value)
 	}
 
-	return version, nil
+	return strings.Join(canonicalParts, "."), nil
 }
 
 func parseBootstrapBoolEnv(name string) (bool, error) {
