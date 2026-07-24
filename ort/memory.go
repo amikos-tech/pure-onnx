@@ -8,24 +8,42 @@ import (
 // CreateMemoryInfo creates a memory info structure with specified parameters.
 // Maps to OrtApi::CreateMemoryInfo in the ONNX Runtime C API.
 func CreateMemoryInfo(name string, allocatorType AllocatorType, deviceID int, memType MemType) (*MemoryInfo, error) {
-	mu.Lock()
-	defer mu.Unlock()
-
-	if createMemoryInfoFunc == nil {
-		return nil, fmt.Errorf("ONNX Runtime not initialized")
+	if name == "" {
+		return nil, fmt.Errorf("create memory info: allocator name is empty: %w", ErrInvalidArgument)
 	}
 
-	// Convert the name string to C string
+	ortCallMu.RLock()
+	defer ortCallMu.RUnlock()
+
+	mu.Lock()
+	if ortAPI == nil ||
+		createMemoryInfoFunc == nil ||
+		releaseMemoryInfoFunc == nil ||
+		getErrorCodeFunc == nil ||
+		getErrorMessageFunc == nil ||
+		releaseStatusFunc == nil {
+		mu.Unlock()
+		return nil, fmt.Errorf(
+			"create memory info %q: required ONNX Runtime functions are unavailable: %w",
+			name,
+			ErrNotInitialized,
+		)
+	}
+	createMemoryInfo := createMemoryInfoFunc
+	mu.Unlock()
+
 	nameBytes, namePtr := GoToCstring(name)
-	defer runtime.KeepAlive(nameBytes)
 
 	var handle uintptr
 	// #nosec G115 -- deviceID is validated by ONNX Runtime, conversion is safe
-	status := createMemoryInfoFunc(namePtr, allocatorType, int32(deviceID), memType, &handle)
+	status := createMemoryInfo(namePtr, allocatorType, int32(deviceID), memType, &handle)
+	runtime.KeepAlive(nameBytes)
 	if status != 0 {
-		errMsg := getErrorMessage(status)
-		releaseStatus(status)
-		return nil, fmt.Errorf("failed to create memory info: %s", errMsg)
+		return nil, fmt.Errorf(
+			"failed to create memory info %q: %w",
+			name,
+			statusToError(status, "create memory info"),
+		)
 	}
 
 	memInfo := &MemoryInfo{
@@ -37,13 +55,15 @@ func CreateMemoryInfo(name string, allocatorType AllocatorType, deviceID int, me
 	}
 
 	// Set finalizer to ensure cleanup even if Destroy() is not called
-	runtime.SetFinalizer(memInfo, func(m *MemoryInfo) {
-		if err := m.Destroy(); err != nil {
-			logFinalizerWarning("WARNING: memory info finalizer destroy failed: %v", err)
-		}
-	})
+	runtime.SetFinalizer(memInfo, finalizeMemoryInfo)
 
 	return memInfo, nil
+}
+
+func finalizeMemoryInfo(memInfo *MemoryInfo) {
+	if err := memInfo.Destroy(); err != nil {
+		emitFinalizerDiagnostic("memory_info", err)
+	}
 }
 
 // CreateCpuMemoryInfo creates a memory info structure for CPU memory.
@@ -80,7 +100,12 @@ func (m *MemoryInfo) Destroy() error {
 	}
 
 	if releaseMemoryInfo == nil {
-		return fmt.Errorf("cannot destroy memory info: ONNX Runtime release function unavailable (environment may already be destroyed); ensure all tensors, sessions, and memory infos are destroyed before calling DestroyEnvironment()")
+		return fmt.Errorf(
+			"cannot destroy memory info %q: ONNX Runtime release function unavailable; "+
+				"destroy all tensors, sessions, and memory infos before DestroyEnvironment: %w",
+			m.name,
+			ErrNotInitialized,
+		)
 	}
 	releaseMemoryInfo(handle)
 	return nil

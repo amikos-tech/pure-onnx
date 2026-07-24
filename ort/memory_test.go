@@ -318,6 +318,9 @@ func TestMemoryInfoStatusConversion(t *testing.T) {
 		// call-site probe null avoids a Go-pointer uintptr round trip under -race.
 		return 0
 	}
+	releaseMemoryInfoFunc = func(uintptr) {
+		t.Fatal("ReleaseMemoryInfo called after creation status failure")
+	}
 	releaseStatusFunc = func(status uintptr) {
 		if status != statusHandle {
 			t.Errorf("ReleaseStatus status = %d, want %d", status, statusHandle)
@@ -384,6 +387,9 @@ func TestCreateMemoryInfoBlocksEnvironmentTeardown(t *testing.T) {
 		return ErrorCodeFail
 	}
 	getErrorMessageFunc = func(uintptr) uintptr { return 0 }
+	releaseMemoryInfoFunc = func(uintptr) {
+		t.Fatal("ReleaseMemoryInfo called after creation status failure")
+	}
 	releaseStatusFunc = func(status uintptr) {
 		if status != statusHandle {
 			t.Errorf("ReleaseStatus status = %d, want %d", status, statusHandle)
