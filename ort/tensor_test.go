@@ -155,6 +155,16 @@ func TestShapeElementCount(t *testing.T) {
 			wantCount: 0,
 		},
 		{
+			name:      "zero before otherwise overflowing dimensions",
+			shape:     Shape{0, int64(int(^uint(0) >> 1)), 2},
+			wantCount: 0,
+		},
+		{
+			name:      "zero after otherwise overflowing dimensions",
+			shape:     Shape{int64(int(^uint(0) >> 1)), 2, 0},
+			wantCount: 0,
+		},
+		{
 			name:    "negative dimension",
 			shape:   Shape{2, -1},
 			wantErr: "must be >= 0",

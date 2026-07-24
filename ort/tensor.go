@@ -281,7 +281,7 @@ func cloneShape(shape Shape) Shape {
 func shapeElementCount(shape Shape) (int, error) {
 	maxInt := int(^uint(0) >> 1)
 
-	count := 1
+	hasZero := false
 	for i, dim := range shape {
 		if dim < 0 {
 			return 0, fmt.Errorf(
@@ -302,15 +302,15 @@ func shapeElementCount(shape Shape) (int, error) {
 		}
 
 		if dim == 0 {
-			// Continue scanning to validate remaining dimensions (for example reject {0, -1}).
-			count = 0
-			continue
+			hasZero = true
 		}
+	}
+	if hasZero {
+		return 0, nil
+	}
 
-		if count == 0 {
-			continue
-		}
-
+	count := 1
+	for _, dim := range shape {
 		dimInt := int(dim)
 		if count > maxInt/dimInt {
 			return 0, fmt.Errorf(
