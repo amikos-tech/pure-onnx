@@ -31,7 +31,7 @@
 ### Public API
 
 - [ ] **API-01**: A generalized embedder API supports both dense and sparse embeddings, including SPLADE (#49)
-- [ ] **API-02**: The public API returns comprehensive, wrapped errors with actionable context across environment, tensor, session, and bootstrap flows (#7)
+- [x] **API-02**: The public API returns comprehensive, wrapped errors with actionable context across environment, tensor, session, and bootstrap flows (#7)
 - [ ] **API-03**: A `Value` interface enables polymorphic tensor handling for session inputs and outputs (#6)
 
 ### Release
@@ -70,7 +70,7 @@ Each requirement maps to exactly one phase.
 | DX-01 | Phase 1 | Pending |
 | TST-01 | Phase 1 | Pending |
 | TST-02 | Phase 1 | Pending |
-| API-02 | Phase 2 | Pending |
+| API-02 | Phase 2 | Complete |
 | API-03 | Phase 2 | Pending |
 | API-01 | Phase 3 | Pending |
 | DOC-01 | Phase 4 | Pending |

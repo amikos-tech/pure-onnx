@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.1.0
 milestone_name: "**Goal**: v0.1.0 is cut as a tagged, documented release with CI green across all supported platforms and every milestone issue closed."
 status: executing
-stopped_at: Phase 2 spike findings folded into context
-last_updated: "2026-07-24T09:14:20.430Z"
-last_activity: 2026-07-24 -- Phase 2 planning complete
+stopped_at: Completed 02-01-PLAN.md
+last_updated: "2026-07-24T12:08:57.333Z"
+last_activity: 2026-07-24
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 11
-  completed_plans: 3
+  completed_plans: 4
   percent: 17
 ---
 
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-21)
 
 **Core value:** Run ONNX Runtime inference from Go with zero CGO — if that stops working, nothing else matters.
-**Current focus:** Phase 2 — core api — errors & values
+**Current focus:** Phase 02 — core-api-errors-values
 
 ## Current Position
 
-Phase: 2
-Plan: Not started
+Phase: 02 (core-api-errors-values) — EXECUTING
+Plan: 2 of 8
 Status: Ready to execute
-Last activity: 2026-07-24 -- Phase 2 planning complete
+Last activity: 2026-07-24
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [████░░░░░░] 36%
 
 ## Performance Metrics
 
@@ -52,6 +52,7 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: —
 
 *Updated after each plan completion*
+| Phase 02 P01 | 14 min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -63,6 +64,9 @@ Recent decisions affecting current work:
 - v0.1.0 = full hardening milestone (all 12 requirements), not a feature-tight subset
 - Definition of Done = tagged + documented release with full lint gate green and CI green on all platforms
 - DX-01 (#42) fix stays in the example, not `ort/` — issue is scoped example-UX only
+- [Phase 02]: Keep native ErrorCode values on ORTError instead of mapping them to local sentinels — errors.As preserves native detail while errors.Is remains reserved for local lifecycle categories
+- [Phase 02]: Require callers to hold ortCallMu through status conversion — the converter avoids changing the established lock hierarchy while reset cannot clear live function pointers
+- [Phase 02]: Use ONNXRUNTIME_LIB_PATH for the optional Unix ABI test — the test stays portable and Windows evidence remains registration/reset plus package compilation
 
 ### Pending Todos
 
@@ -84,6 +88,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-23T10:23:17.473Z
-Stopped at: Phase 2 spike findings folded into context
-Resume file: .planning/phases/02-core-api-errors-values/02-CONTEXT.md
+Last session: 2026-07-24T12:08:57.326Z
+Stopped at: Completed 02-01-PLAN.md
+Resume file: None
