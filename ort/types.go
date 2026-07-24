@@ -125,6 +125,7 @@ func NewShape(dims ...int64) Shape {
 // It is not safe to mutate a SessionOptions instance concurrently with session creation.
 type SessionOptions struct {
 	handle                 uintptr // Pointer to OrtSessionOptions
+	handleMu               sync.RWMutex
 	graphOptimizationLevel GraphOptimizationLevel
 	executionMode          ExecutionMode
 	interOpNumThreads      int

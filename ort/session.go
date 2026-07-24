@@ -20,6 +20,83 @@ type AdvancedSession struct {
 	runMu        sync.Mutex
 }
 
+// NewSessionOptions creates a native ONNX Runtime session-options object.
+func NewSessionOptions() (*SessionOptions, error) {
+	ortCallMu.RLock()
+	defer ortCallMu.RUnlock()
+
+	mu.Lock()
+	if ortAPI == nil ||
+		createSessionOptionsFunc == nil ||
+		releaseSessionOptionsFunc == nil ||
+		getErrorCodeFunc == nil ||
+		getErrorMessageFunc == nil ||
+		releaseStatusFunc == nil {
+		mu.Unlock()
+		return nil, fmt.Errorf("create session options: required ONNX Runtime functions are unavailable: %w", ErrNotInitialized)
+	}
+	createSessionOptions := createSessionOptionsFunc
+	mu.Unlock()
+
+	var handle uintptr
+	if err := statusToError(createSessionOptions(&handle), "create session options"); err != nil {
+		return nil, fmt.Errorf("failed to create session options: %w", err)
+	}
+	if handle == 0 {
+		return nil, fmt.Errorf("create session options returned a nil handle")
+	}
+
+	options := &SessionOptions{handle: handle}
+	runtime.SetFinalizer(options, finalizeSessionOptions)
+	return options, nil
+}
+
+func finalizeSessionOptions(options *SessionOptions) {
+	if err := options.Destroy(); err != nil {
+		emitFinalizerDiagnostic("session_options", err)
+	}
+}
+
+// Destroy releases the native session-options object. Repeated calls are safe.
+func (o *SessionOptions) Destroy() error {
+	if o == nil {
+		return nil
+	}
+
+	ortCallMu.RLock()
+	defer ortCallMu.RUnlock()
+
+	mu.Lock()
+	releaseSessionOptions := releaseSessionOptionsFunc
+	mu.Unlock()
+
+	o.handleMu.Lock()
+	handle := o.handle
+	o.handle = 0
+	runtime.SetFinalizer(o, nil)
+	o.handleMu.Unlock()
+
+	if handle == 0 {
+		return nil
+	}
+	if releaseSessionOptions == nil {
+		return fmt.Errorf("cannot destroy session options: ONNX Runtime release function unavailable: %w", ErrNotInitialized)
+	}
+	releaseSessionOptions(handle)
+	return nil
+}
+
+// IsValid reports whether the session options still own a native handle.
+func (o *SessionOptions) IsValid() bool {
+	if o == nil {
+		return false
+	}
+	o.handleMu.RLock()
+	valid := o.handle != 0
+	o.handleMu.RUnlock()
+	return valid
+}
+
 // NewAdvancedSession creates a new session with specified inputs and outputs.
 // Callers retain ownership of input/output values and must keep them alive.
 // Values must not be Destroy()'d while this session may still Run().
@@ -54,12 +131,18 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 	if len(outputNames) != len(outputValues) {
 		return nil, fmt.Errorf("output names/values count mismatch: got %d names and %d values: %w", len(outputNames), len(outputValues), ErrInvalidArgument)
 	}
-	if options != nil && options.handle == 0 {
-		return nil, fmt.Errorf("session options handle is not initialized: %w", ErrInvalidArgument)
-	}
-
 	ortCallMu.RLock()
 	defer ortCallMu.RUnlock()
+
+	sessionOptionsHandle := uintptr(0)
+	if options != nil {
+		options.handleMu.RLock()
+		defer options.handleMu.RUnlock()
+		sessionOptionsHandle = options.handle
+		if sessionOptionsHandle == 0 {
+			return nil, fmt.Errorf("session options handle is not initialized: %w", ErrInvalidArgument)
+		}
+	}
 
 	// Validate values while ortCallMu is held so handles cannot be released concurrently.
 	for i, v := range inputValues {
@@ -86,11 +169,8 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 	createSession := createSessionFunc
 	mu.Unlock()
 
-	sessionOptionsHandle := uintptr(0)
 	releaseCreatedOptions := false
-	if options != nil {
-		sessionOptionsHandle = options.handle
-	} else {
+	if options == nil {
 		status := createSessionOptions(&sessionOptionsHandle)
 		if status != 0 {
 			return nil, fmt.Errorf(
