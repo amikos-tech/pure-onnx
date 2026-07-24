@@ -1,7 +1,9 @@
 package ort
 
 import (
+	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -100,10 +102,11 @@ func TestStatus_GetErrorCode(t *testing.T) {
 
 func TestParseShape(t *testing.T) {
 	tests := []struct {
-		name    string
-		raw     string
-		want    Shape
-		wantErr string
+		name         string
+		raw          string
+		want         Shape
+		wantErr      string
+		wantNumError bool
 	}{
 		{
 			name: "standard",
@@ -136,9 +139,10 @@ func TestParseShape(t *testing.T) {
 			wantErr: "negative dimension",
 		},
 		{
-			name:    "invalid integer",
-			raw:     "1,a,3",
-			wantErr: "failed to parse dimension",
+			name:         "invalid integer",
+			raw:          "1,a,3",
+			wantErr:      "failed to parse dimension",
+			wantNumError: true,
 		},
 	}
 
@@ -151,6 +155,13 @@ func TestParseShape(t *testing.T) {
 				}
 				if !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+				}
+				if !errors.Is(err, ErrInvalidArgument) {
+					t.Fatalf("ParseShape(%q) error = %v, want ErrInvalidArgument", tt.raw, err)
+				}
+				var numErr *strconv.NumError
+				if got := errors.As(err, &numErr); got != tt.wantNumError {
+					t.Fatalf("errors.As(%v, *strconv.NumError) = %t, want %t", err, got, tt.wantNumError)
 				}
 				return
 			}
@@ -165,12 +176,18 @@ func TestParseShape(t *testing.T) {
 }
 
 func TestShapeElementCountExported(t *testing.T) {
+	maxInt := int64(int(^uint(0) >> 1))
 	tests := []struct {
 		name      string
 		shape     Shape
 		wantCount int
 		wantErr   string
 	}{
+		{
+			name:      "scalar",
+			shape:     Shape{},
+			wantCount: 1,
+		},
 		{
 			name:      "standard",
 			shape:     Shape{2, 3, 4},
@@ -186,6 +203,23 @@ func TestShapeElementCountExported(t *testing.T) {
 			shape:   Shape{2, -1},
 			wantErr: "must be >= 0",
 		},
+		{
+			name:    "product overflow",
+			shape:   Shape{maxInt, 2},
+			wantErr: "exceeds maximum supported element count",
+		},
+	}
+	if strconv.IntSize < 64 {
+		tests = append(tests, struct {
+			name      string
+			shape     Shape
+			wantCount int
+			wantErr   string
+		}{
+			name:    "single dimension too large",
+			shape:   Shape{maxInt + 1},
+			wantErr: "too large",
+		})
 	}
 
 	for _, tt := range tests {
@@ -197,6 +231,9 @@ func TestShapeElementCountExported(t *testing.T) {
 				}
 				if !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+				}
+				if !errors.Is(err, ErrInvalidArgument) {
+					t.Fatalf("ShapeElementCount(%v) error = %v, want ErrInvalidArgument", tt.shape, err)
 				}
 				return
 			}

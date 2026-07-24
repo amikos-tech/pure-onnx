@@ -1,6 +1,9 @@
 package ort
 
 import (
+	"bytes"
+	"errors"
+	"log/slog"
 	"reflect"
 	"strings"
 	"sync"
@@ -65,6 +68,9 @@ func TestTensorElementType(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected error, got nil")
 				}
+				if !errors.Is(err, ErrInvalidArgument) {
+					t.Fatalf("tensorElementType error = %v, want ErrInvalidArgument", err)
+				}
 				if !strings.Contains(err.Error(), "unsupported tensor element type") {
 					t.Fatalf("unexpected error: %v", err)
 				}
@@ -125,6 +131,9 @@ func TestShapeElementCount(t *testing.T) {
 				if !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
 				}
+				if !errors.Is(err, ErrInvalidArgument) {
+					t.Fatalf("shapeElementCount(%v) error = %v, want ErrInvalidArgument", tt.shape, err)
+				}
 				return
 			}
 
@@ -147,33 +156,75 @@ func TestTensorDataByteSizeOverflow(t *testing.T) {
 	if !strings.Contains(err.Error(), "overflow") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("tensorDataByteSize error = %v, want ErrInvalidArgument", err)
+	}
 }
 
 func TestNewTensorValidationErrorsWithoutORT(t *testing.T) {
 	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
 
 	_, err := NewTensor[float32](Shape{2, 2}, []float32{1, 2, 3})
 	if err == nil || !strings.Contains(err.Error(), "data length mismatch") {
 		t.Fatalf("expected data length mismatch error, got: %v", err)
+	}
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("data length mismatch error = %v, want ErrInvalidArgument", err)
 	}
 
 	_, err = NewTensor[uint16](Shape{1}, []uint16{1})
 	if err == nil || !strings.Contains(err.Error(), "unsupported tensor element type") {
 		t.Fatalf("expected unsupported type error, got: %v", err)
 	}
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("unsupported type error = %v, want ErrInvalidArgument", err)
+	}
+
+	_, err = NewTensor[float32](Shape{-1}, nil)
+	if err == nil || !strings.Contains(err.Error(), "must be >= 0") {
+		t.Fatalf("expected invalid shape error, got: %v", err)
+	}
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("invalid shape error = %v, want ErrInvalidArgument", err)
+	}
+
+	maxInt := int64(int(^uint(0) >> 1))
+	_, err = NewTensor[float32](Shape{maxInt, 2}, nil)
+	if err == nil || !strings.Contains(err.Error(), "exceeds maximum supported element count") {
+		t.Fatalf("expected shape overflow error, got: %v", err)
+	}
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("shape overflow error = %v, want ErrInvalidArgument", err)
+	}
 
 	_, err = NewTensor[float32](Shape{1}, []float32{1})
 	if err == nil || !strings.Contains(err.Error(), "ONNX Runtime not initialized") {
 		t.Fatalf("expected not initialized error, got: %v", err)
 	}
+	if !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("uninitialized NewTensor error = %v, want ErrNotInitialized", err)
+	}
+
+	var nilTensor *Tensor[float32]
+	if _, err = nilTensor.lockForRun(); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("nil lockForRun error = %v, want ErrInvalidArgument", err)
+	}
+	if _, err = (&Tensor[float32]{}).lockForRun(); !errors.Is(err, ErrDestroyed) {
+		t.Fatalf("destroyed lockForRun error = %v, want ErrDestroyed", err)
+	}
 }
 
 func TestNewEmptyTensorWithoutORT(t *testing.T) {
 	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
 
 	_, err := NewEmptyTensor[float32](Shape{2, 2})
 	if err == nil || !strings.Contains(err.Error(), "ONNX Runtime not initialized") {
 		t.Fatalf("expected not initialized error, got: %v", err)
+	}
+	if !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("uninitialized NewEmptyTensor error = %v, want ErrNotInitialized", err)
 	}
 }
 
@@ -207,6 +258,9 @@ func TestTensorDestroyDoubleWithoutORT(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "release function unavailable") {
 		t.Fatalf("expected first destroy to fail with release-unavailable error, got: %v", err)
 	}
+	if !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("first destroy error = %v, want ErrNotInitialized", err)
+	}
 	if tensor.handle != 0 {
 		t.Fatalf("expected handle to be reset")
 	}
@@ -218,6 +272,170 @@ func TestTensorDestroyDoubleWithoutORT(t *testing.T) {
 	if err := tensor.Destroy(); err != nil {
 		t.Fatalf("second destroy should be no-op, got: %v", err)
 	}
+}
+
+func TestTensorStatusConversion(t *testing.T) {
+	t.Run("CreateMemoryInfo status", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		probe := installSessionStatusProbe(t, ErrorCodeInvalidArgument, "invalid memory info")
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		createMemoryInfoFunc = func(_ uintptr, _ AllocatorType, _ int32, _ MemType, _ *uintptr) uintptr {
+			return probe.handle
+		}
+		releaseMemoryInfoFunc = func(uintptr) {
+			t.Fatal("ReleaseMemoryInfo called after CreateMemoryInfo failed")
+		}
+		createTensorWithDataAsOrtValueFunc = func(_ uintptr, _ uintptr, _ uintptr, _ *int64, _ uintptr, _ TensorElementDataType, _ *uintptr) uintptr {
+			t.Fatal("CreateTensorWithDataAsOrtValue called after CreateMemoryInfo failed")
+			return 0
+		}
+		mu.Unlock()
+
+		_, err := NewTensor[float32](Shape{1}, []float32{1})
+		requireSessionORTError(
+			t,
+			err,
+			"create CPU memory info",
+			ErrorCodeInvalidArgument,
+			"invalid memory info",
+			&probe.releases,
+		)
+	})
+
+	t.Run("CreateTensorWithDataAsOrtValue status", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		probe := installSessionStatusProbe(t, ErrorCodeRuntimeException, "tensor creation failed")
+		var memoryInfoReleases atomic.Int32
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		createMemoryInfoFunc = func(_ uintptr, _ AllocatorType, _ int32, _ MemType, out *uintptr) uintptr {
+			*out = 700
+			return 0
+		}
+		releaseMemoryInfoFunc = func(handle uintptr) {
+			if handle != 700 {
+				t.Errorf("ReleaseMemoryInfo handle = %d, want 700", handle)
+			}
+			memoryInfoReleases.Add(1)
+		}
+		createTensorWithDataAsOrtValueFunc = func(
+			memoryInfo uintptr,
+			data uintptr,
+			dataBytes uintptr,
+			shape *int64,
+			shapeLen uintptr,
+			elementType TensorElementDataType,
+			out *uintptr,
+		) uintptr {
+			if memoryInfo != 700 || data == 0 || dataBytes != unsafe.Sizeof(float32(0)) ||
+				shape == nil || shapeLen != 1 || elementType != TensorElementDataTypeFloat || out == nil {
+				t.Errorf(
+					"unexpected tensor creation args: memoryInfo=%d data=%d bytes=%d shape=%p shapeLen=%d type=%d out=%p",
+					memoryInfo,
+					data,
+					dataBytes,
+					shape,
+					shapeLen,
+					elementType,
+					out,
+				)
+			}
+			return probe.handle
+		}
+		mu.Unlock()
+
+		data := []float32{1}
+		_, err := NewTensor[float32](Shape{1}, data)
+		requireSessionORTError(
+			t,
+			err,
+			"create tensor with data",
+			ErrorCodeRuntimeException,
+			"tensor creation failed",
+			&probe.releases,
+		)
+		if got := memoryInfoReleases.Load(); got != 1 {
+			t.Fatalf("memory info release count = %d, want 1", got)
+		}
+		if data[0] != 1 {
+			t.Fatalf("tensor data changed after failed creation: %v", data)
+		}
+	})
+}
+
+func TestTensorDiagnosticPolicy(t *testing.T) {
+	t.Run("returned failures emit no records", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		handler := &diagnosticCountingHandler{}
+		SetDiagnosticHandler(handler)
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+		if _, err := NewTensor[float32](Shape{2}, []float32{1}); err == nil {
+			t.Fatal("invalid NewTensor returned nil error")
+		}
+		if _, err := NewEmptyTensor[float32](Shape{1}); err == nil {
+			t.Fatal("uninitialized NewEmptyTensor returned nil error")
+		}
+		if err := (&Tensor[float32]{handle: 801}).Destroy(); err == nil {
+			t.Fatal("release-unavailable Destroy returned nil error")
+		}
+
+		probe := installSessionStatusProbe(t, ErrorCodeFail, "native memory info failed")
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		createMemoryInfoFunc = func(_ uintptr, _ AllocatorType, _ int32, _ MemType, _ *uintptr) uintptr {
+			return probe.handle
+		}
+		releaseMemoryInfoFunc = func(uintptr) {}
+		createTensorWithDataAsOrtValueFunc = func(_ uintptr, _ uintptr, _ uintptr, _ *int64, _ uintptr, _ TensorElementDataType, _ *uintptr) uintptr {
+			return 0
+		}
+		mu.Unlock()
+		if _, err := NewTensor[float32](Shape{1}, []float32{1}); err == nil {
+			t.Fatal("native NewTensor failure returned nil error")
+		}
+
+		if got := handler.count.Load(); got != 0 {
+			t.Fatalf("returned tensor failures emitted %d diagnostic records, want 0", got)
+		}
+	})
+
+	t.Run("finalizer-only failure emits one structured warning", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		var output bytes.Buffer
+		SetDiagnosticHandler(slog.NewJSONHandler(&output, nil))
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+		tensor := &Tensor[float32]{handle: 802}
+		finalizeTensor(tensor)
+		finalizeTensor(tensor)
+
+		if got := strings.Count(output.String(), "\n"); got != 1 {
+			t.Fatalf("finalizer diagnostic record count = %d, want 1", got)
+		}
+		record := decodeDiagnosticRecord(t, &output)
+		if got := record["level"]; got != "WARN" {
+			t.Fatalf("level = %v, want WARN", got)
+		}
+		if got := record["msg"]; got != "finalizer cleanup failed" {
+			t.Fatalf("message = %v, want finalizer cleanup failed", got)
+		}
+		if got := record["resource"]; got != "tensor" {
+			t.Fatalf("resource = %v, want tensor", got)
+		}
+		if got := record["error"]; got == nil || !strings.Contains(got.(string), "release function unavailable") {
+			t.Fatalf("error attr = %v, want release-function failure", got)
+		}
+	})
 }
 
 func TestTensorDestroyDoubleCallsReleaseOnce(t *testing.T) {
