@@ -6,6 +6,6 @@ package ort
 // The returned backing object must be kept alive by the caller until ORT
 // has finished using the returned pointer.
 func goStringToORTChar(s string) (uintptr, any, error) {
-	bytes, ptr := GoToCstring(s)
-	return ptr, bytes, nil
+	bytes, ptr, err := goStringToCString(s, "model path")
+	return ptr, bytes, err
 }

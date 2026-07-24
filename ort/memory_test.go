@@ -304,6 +304,9 @@ func TestMemoryInfoBeforeInit(t *testing.T) {
 	if _, err := CreateMemoryInfo("", AllocatorTypeArena, 0, MemTypeCPU); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("empty name error = %v, want ErrInvalidArgument", err)
 	}
+	if _, err := CreateMemoryInfo("Cpu\x00Injected", AllocatorTypeArena, 0, MemTypeCPU); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("embedded-NUL name error = %v, want ErrInvalidArgument", err)
+	}
 	if strconv.IntSize > 32 {
 		tooLarge := int64(math.MaxInt32) + 1
 		if _, err := CreateMemoryInfo("Cpu", AllocatorTypeArena, int(tooLarge), MemTypeCPU); !errors.Is(err, ErrInvalidArgument) {

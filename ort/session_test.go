@@ -433,6 +433,33 @@ func TestNewAdvancedSessionValidation(t *testing.T) {
 			wantErr:      "at least one output name is required",
 		},
 		{
+			name:         "model path contains embedded NUL",
+			modelPath:    "model.onnx\x00other.onnx",
+			inputNames:   []string{"input"},
+			outputNames:  []string{"output"},
+			inputValues:  []Value{validValue},
+			outputValues: []Value{validValue},
+			wantErr:      "model path contains an embedded NUL",
+		},
+		{
+			name:         "input name contains embedded NUL",
+			modelPath:    "model.onnx",
+			inputNames:   []string{"input\x00other"},
+			outputNames:  []string{"output"},
+			inputValues:  []Value{validValue},
+			outputValues: []Value{validValue},
+			wantErr:      "input name at index 0 contains an embedded NUL",
+		},
+		{
+			name:         "output name contains embedded NUL",
+			modelPath:    "model.onnx",
+			inputNames:   []string{"input"},
+			outputNames:  []string{"output\x00other"},
+			inputValues:  []Value{validValue},
+			outputValues: []Value{validValue},
+			wantErr:      "output name at index 0 contains an embedded NUL",
+		},
+		{
 			name:         "input name/value mismatch",
 			modelPath:    "model.onnx",
 			inputNames:   []string{"input1", "input2"},
@@ -1965,7 +1992,10 @@ func TestAdvancedSessionRunDestroyedInputTensor(t *testing.T) {
 }
 
 func TestMakeCStringPointerArrayEmpty(t *testing.T) {
-	backings, ptrs := makeCStringPointerArray(nil)
+	backings, ptrs, err := makeCStringPointerArray(nil, "name")
+	if err != nil {
+		t.Fatalf("nil input: %v", err)
+	}
 	if backings != nil {
 		t.Fatalf("expected nil backings for empty input")
 	}
@@ -1973,12 +2003,19 @@ func TestMakeCStringPointerArrayEmpty(t *testing.T) {
 		t.Fatalf("expected nil ptrs for empty input")
 	}
 
-	backings, ptrs = makeCStringPointerArray([]string{})
+	backings, ptrs, err = makeCStringPointerArray([]string{}, "name")
+	if err != nil {
+		t.Fatalf("empty input: %v", err)
+	}
 	if backings != nil {
 		t.Fatalf("expected nil backings for empty slice")
 	}
 	if ptrs != nil {
 		t.Fatalf("expected nil ptrs for empty slice")
+	}
+
+	if _, _, err := makeCStringPointerArray([]string{"valid", "bad\x00name"}, "name"); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("embedded-NUL array error = %v, want ErrInvalidArgument", err)
 	}
 }
 

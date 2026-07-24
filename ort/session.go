@@ -35,6 +35,19 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 	if len(outputNames) == 0 {
 		return nil, fmt.Errorf("at least one output name is required: %w", ErrInvalidArgument)
 	}
+	if err := validateNativeString(modelPath, "model path"); err != nil {
+		return nil, err
+	}
+	for i, name := range inputNames {
+		if err := validateNativeString(name, fmt.Sprintf("input name at index %d", i)); err != nil {
+			return nil, err
+		}
+	}
+	for i, name := range outputNames {
+		if err := validateNativeString(name, fmt.Sprintf("output name at index %d", i)); err != nil {
+			return nil, err
+		}
+	}
 	if len(inputNames) != len(inputValues) {
 		return nil, fmt.Errorf("input names/values count mismatch: got %d names and %d values: %w", len(inputNames), len(inputValues), ErrInvalidArgument)
 	}
@@ -196,8 +209,14 @@ func (s *AdvancedSession) run(inputs, outputs []Value, useBoundValues bool) erro
 	run = runSessionFunc
 	mu.Unlock()
 
-	inputNameBackings, inputNamePtrs := makeCStringPointerArray(inputNames)
-	outputNameBackings, outputNamePtrs := makeCStringPointerArray(outputNames)
+	inputNameBackings, inputNamePtrs, err := makeCStringPointerArray(inputNames, "input name")
+	if err != nil {
+		return err
+	}
+	outputNameBackings, outputNamePtrs, err := makeCStringPointerArray(outputNames, "output name")
+	if err != nil {
+		return err
+	}
 
 	valueLeases, err := acquireUniqueValueLeases(inputValues, outputValues)
 	if err != nil {
@@ -513,19 +532,22 @@ func cloneValueSlice(input []Value) []Value {
 	return out
 }
 
-func makeCStringPointerArray(values []string) ([][]byte, []uintptr) {
+func makeCStringPointerArray(values []string, field string) ([][]byte, []uintptr, error) {
 	if len(values) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	backings := make([][]byte, len(values))
 	ptrs := make([]uintptr, len(values))
 	for i, value := range values {
-		bytes, ptr := GoToCstring(value)
+		bytes, ptr, err := goStringToCString(value, fmt.Sprintf("%s at index %d", field, i))
+		if err != nil {
+			return nil, nil, err
+		}
 		backings[i] = bytes
 		ptrs[i] = ptr
 	}
-	return backings, ptrs
+	return backings, ptrs, nil
 }
 
 func uintptrSlicePtr(values []uintptr) *uintptr {

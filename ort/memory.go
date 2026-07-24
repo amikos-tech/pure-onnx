@@ -12,6 +12,9 @@ func CreateMemoryInfo(name string, allocatorType AllocatorType, deviceID int, me
 	if name == "" {
 		return nil, fmt.Errorf("create memory info: allocator name is empty: %w", ErrInvalidArgument)
 	}
+	if err := validateNativeString(name, "memory info allocator name"); err != nil {
+		return nil, err
+	}
 	if deviceID < math.MinInt32 || deviceID > math.MaxInt32 {
 		return nil, fmt.Errorf(
 			"create memory info: device ID %d is outside the native int32 range: %w",
@@ -40,7 +43,10 @@ func CreateMemoryInfo(name string, allocatorType AllocatorType, deviceID int, me
 	createMemoryInfo := createMemoryInfoFunc
 	mu.Unlock()
 
-	nameBytes, namePtr := GoToCstring(name)
+	nameBytes, namePtr, err := goStringToCString(name, "memory info allocator name")
+	if err != nil {
+		return nil, err
+	}
 
 	var handle uintptr
 	// #nosec G115 -- deviceID is range-checked above before conversion.
