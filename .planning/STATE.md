@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.1.0
 milestone_name: "**Goal**: v0.1.0 is cut as a tagged, documented release with CI green across all supported platforms and every milestone issue closed."
 status: executing
-stopped_at: Completed 02-04-PLAN.md
-last_updated: "2026-07-24T12:51:25.982Z"
+stopped_at: Completed 02-05-PLAN.md
+last_updated: "2026-07-24T13:08:30.102Z"
 last_activity: 2026-07-24
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 11
-  completed_plans: 7
+  completed_plans: 8
   percent: 17
 ---
 
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-07-21)
 ## Current Position
 
 Phase: 02 (core-api-errors-values) — EXECUTING
-Plan: 5 of 8
+Plan: 6 of 8
 Status: Ready to execute
 Last activity: 2026-07-24
 
-Progress: [██████░░░░] 64%
+Progress: [███████░░░] 73%
 
 ## Performance Metrics
 
@@ -56,6 +56,7 @@ Progress: [██████░░░░] 64%
 | Phase 02 P02 | 4min | 1 tasks | 4 files |
 | Phase 02 P03 | 4min | 1 tasks | 2 files |
 | Phase 02 P04 | 18min | 2 tasks | 2 files |
+| Phase 02 P05 | 12min | 1 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -76,6 +77,9 @@ Recent decisions affecting current work:
 - [Phase 02]: Treat consumer diagnostic handlers as trusted synchronous callbacks — general handler panics propagate, while best-effort finalizer diagnostics recover them
 - [Phase 02]: Keep NewAdvancedSession and Run constructor bindings intact while selecting RunWithValues arguments only inside the shared locked core
 - [Phase 02]: Use stable native operation names and emit diagnostics only when a session finalizer cannot return its Destroy error
+- [Phase 02]: Preserve strconv.NumError alongside ErrInvalidArgument for ParseShape integer failures — Callers can classify invalid input and inspect the exact parse cause independently
+- [Phase 02]: Require the complete tensor and status callback set before native tensor creation — A partial runtime registration fails with ErrNotInitialized instead of panicking during status conversion
+- [Phase 02]: Use a null-message fake status for tensor call-site checks under the race detector — This proves operation, code, and exact release without sending a Go heap pointer through uintptr; non-empty copying remains covered by the status ownership tests
 
 ### Pending Todos
 
@@ -97,6 +101,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-24T12:51:25.019Z
-Stopped at: Completed 02-04-PLAN.md
+Last session: 2026-07-24T13:08:30.095Z
+Stopped at: Completed 02-05-PLAN.md
 Resume file: None
