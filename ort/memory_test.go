@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -200,6 +201,43 @@ func TestMemoryInfoDoubleDestroy(t *testing.T) {
 	var nilInfo *MemoryInfo
 	if err := nilInfo.Destroy(); err != nil {
 		t.Fatalf("nil destroy should be a no-op: %v", err)
+	}
+}
+
+func TestMemoryInfoIsValidConcurrentDestroy(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	mu.Lock()
+	releaseMemoryInfoFunc = func(uintptr) {}
+	mu.Unlock()
+
+	memInfo := &MemoryInfo{handle: 702, name: "Cpu"}
+	stop := make(chan struct{})
+	var readers sync.WaitGroup
+	for range 8 {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					_ = memInfo.IsValid()
+				}
+			}
+		}()
+	}
+
+	if err := memInfo.Destroy(); err != nil {
+		t.Fatalf("destroy memory info: %v", err)
+	}
+	close(stop)
+	readers.Wait()
+
+	if memInfo.IsValid() {
+		t.Fatal("memory info remained valid after Destroy")
 	}
 }
 

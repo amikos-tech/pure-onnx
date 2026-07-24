@@ -1,5 +1,7 @@
 package ort
 
+import "sync"
+
 // OrtApiBase represents the base API structure
 type OrtApiBase struct {
 	GetApi           uintptr
@@ -123,6 +125,7 @@ type SessionOptions struct {
 // MemoryInfo represents memory allocation information
 type MemoryInfo struct {
 	handle        uintptr // Pointer to OrtMemoryInfo
+	handleMu      sync.RWMutex
 	name          string
 	memType       MemType
 	allocatorType AllocatorType

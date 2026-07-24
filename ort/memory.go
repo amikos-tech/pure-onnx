@@ -97,11 +97,14 @@ func (m *MemoryInfo) Destroy() error {
 	)
 
 	mu.Lock()
-	handle = m.handle
 	releaseMemoryInfo = releaseMemoryInfoFunc
+	mu.Unlock()
+
+	m.handleMu.Lock()
+	handle = m.handle
 	m.handle = 0
 	runtime.SetFinalizer(m, nil)
-	mu.Unlock()
+	m.handleMu.Unlock()
 
 	if handle == 0 {
 		return nil
@@ -141,5 +144,11 @@ func (m *MemoryInfo) GetDeviceID() int {
 
 // IsValid returns true if the memory info has a valid handle.
 func (m *MemoryInfo) IsValid() bool {
-	return m.handle != 0
+	if m == nil {
+		return false
+	}
+	m.handleMu.RLock()
+	valid := m.handle != 0
+	m.handleMu.RUnlock()
+	return valid
 }
