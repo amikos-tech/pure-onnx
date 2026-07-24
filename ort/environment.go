@@ -130,6 +130,12 @@ func createEnvironment(
 	if err := statusToError(status, "create ONNX Runtime environment"); err != nil {
 		return 0, err
 	}
+	if environment == 0 {
+		return 0, fmt.Errorf(
+			"create ONNX Runtime environment returned a nil handle: %w",
+			ErrNativeContract,
+		)
+	}
 
 	return environment, nil
 }

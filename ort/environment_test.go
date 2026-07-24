@@ -340,6 +340,21 @@ func TestEnvironmentStatusConversion(t *testing.T) {
 	}
 }
 
+func TestCreateEnvironmentRejectsZeroHandle(t *testing.T) {
+	handle, err := createEnvironment(
+		func(_ int32, _ uintptr, _ *uintptr) uintptr {
+			return 0
+		},
+		LoggingLevelWarning,
+	)
+	if handle != 0 {
+		t.Fatalf("environment handle = %d, want 0", handle)
+	}
+	if !errors.Is(err, ErrNativeContract) {
+		t.Fatalf("createEnvironment error = %v, want ErrNativeContract", err)
+	}
+}
+
 func TestDiagnosticRuntimeVersion(t *testing.T) {
 	t.Run("old runtime emits one structured warning", func(t *testing.T) {
 		var output bytes.Buffer

@@ -459,6 +459,75 @@ func TestTensorStatusConversion(t *testing.T) {
 	})
 }
 
+func TestTensorCreationRejectsZeroHandles(t *testing.T) {
+	t.Run("memory info", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		createMemoryInfoFunc = func(_ uintptr, _ AllocatorType, _ int32, _ MemType, _ *uintptr) uintptr {
+			return 0
+		}
+		releaseMemoryInfoFunc = func(uintptr) {
+			t.Fatal("ReleaseMemoryInfo called for a zero handle")
+		}
+		createTensorWithDataAsOrtValueFunc = func(_ uintptr, _ uintptr, _ uintptr, _ *int64, _ uintptr, _ TensorElementDataType, _ *uintptr) uintptr {
+			t.Fatal("CreateTensorWithDataAsOrtValue called after a zero memory-info handle")
+			return 0
+		}
+		getErrorCodeFunc = func(uintptr) ErrorCode { return ErrorCodeFail }
+		getErrorMessageFunc = func(uintptr) uintptr { return 0 }
+		releaseStatusFunc = func(uintptr) {}
+		mu.Unlock()
+
+		tensor, err := NewTensor[float32](Shape{1}, []float32{1})
+		if tensor != nil {
+			t.Fatalf("tensor = %#v, want nil", tensor)
+		}
+		if !errors.Is(err, ErrNativeContract) {
+			t.Fatalf("NewTensor error = %v, want ErrNativeContract", err)
+		}
+	})
+
+	t.Run("tensor value", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		var memoryInfoReleases atomic.Int32
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		createMemoryInfoFunc = func(_ uintptr, _ AllocatorType, _ int32, _ MemType, out *uintptr) uintptr {
+			*out = 720
+			return 0
+		}
+		releaseMemoryInfoFunc = func(handle uintptr) {
+			if handle != 720 {
+				t.Errorf("ReleaseMemoryInfo handle = %d, want 720", handle)
+			}
+			memoryInfoReleases.Add(1)
+		}
+		createTensorWithDataAsOrtValueFunc = func(_ uintptr, _ uintptr, _ uintptr, _ *int64, _ uintptr, _ TensorElementDataType, _ *uintptr) uintptr {
+			return 0
+		}
+		getErrorCodeFunc = func(uintptr) ErrorCode { return ErrorCodeFail }
+		getErrorMessageFunc = func(uintptr) uintptr { return 0 }
+		releaseStatusFunc = func(uintptr) {}
+		mu.Unlock()
+
+		tensor, err := NewTensor[float32](Shape{1}, []float32{1})
+		if tensor != nil {
+			t.Fatalf("tensor = %#v, want nil", tensor)
+		}
+		if !errors.Is(err, ErrNativeContract) {
+			t.Fatalf("NewTensor error = %v, want ErrNativeContract", err)
+		}
+		if got := memoryInfoReleases.Load(); got != 1 {
+			t.Fatalf("memory info release count = %d, want 1", got)
+		}
+	})
+}
+
 func TestTensorDiagnosticPolicy(t *testing.T) {
 	t.Run("returned failures emit no records", func(t *testing.T) {
 		resetEnvironmentState()

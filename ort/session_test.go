@@ -607,6 +607,107 @@ func TestSessionOptionsLifecycle(t *testing.T) {
 	}
 }
 
+func TestSessionConstructorsRejectZeroHandles(t *testing.T) {
+	t.Run("public session options", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		createSessionOptionsFunc = func(*uintptr) uintptr { return 0 }
+		releaseSessionOptionsFunc = func(uintptr) {
+			t.Fatal("ReleaseSessionOptions called for a zero handle")
+		}
+		getErrorCodeFunc = func(uintptr) ErrorCode { return ErrorCodeFail }
+		getErrorMessageFunc = func(uintptr) uintptr { return 0 }
+		releaseStatusFunc = func(uintptr) {}
+		mu.Unlock()
+
+		options, err := NewSessionOptions()
+		if options != nil {
+			t.Fatalf("session options = %#v, want nil", options)
+		}
+		if !errors.Is(err, ErrNativeContract) {
+			t.Fatalf("NewSessionOptions error = %v, want ErrNativeContract", err)
+		}
+	})
+
+	t.Run("automatic session options", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		ortEnv = 801
+		createSessionOptionsFunc = func(*uintptr) uintptr { return 0 }
+		releaseSessionOptionsFunc = func(uintptr) {
+			t.Fatal("ReleaseSessionOptions called for a zero handle")
+		}
+		createSessionFunc = func(_ uintptr, _ uintptr, _ uintptr, _ *uintptr) uintptr {
+			t.Fatal("CreateSession called after a zero session-options handle")
+			return 0
+		}
+		mu.Unlock()
+
+		session, err := NewAdvancedSession(
+			"model.onnx",
+			[]string{"input"},
+			[]string{"output"},
+			[]Value{&fakeValue{handle: 1}},
+			[]Value{&fakeValue{handle: 2}},
+			nil,
+		)
+		if session != nil {
+			t.Fatalf("session = %#v, want nil", session)
+		}
+		if !errors.Is(err, ErrNativeContract) {
+			t.Fatalf("NewAdvancedSession error = %v, want ErrNativeContract", err)
+		}
+	})
+
+	t.Run("session", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		var optionReleases atomic.Int32
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		ortEnv = 802
+		createSessionOptionsFunc = func(out *uintptr) uintptr {
+			*out = 803
+			return 0
+		}
+		releaseSessionOptionsFunc = func(handle uintptr) {
+			if handle != 803 {
+				t.Errorf("ReleaseSessionOptions handle = %d, want 803", handle)
+			}
+			optionReleases.Add(1)
+		}
+		createSessionFunc = func(_ uintptr, _ uintptr, _ uintptr, _ *uintptr) uintptr {
+			return 0
+		}
+		mu.Unlock()
+
+		session, err := NewAdvancedSession(
+			"model.onnx",
+			[]string{"input"},
+			[]string{"output"},
+			[]Value{&fakeValue{handle: 1}},
+			[]Value{&fakeValue{handle: 2}},
+			nil,
+		)
+		if session != nil {
+			t.Fatalf("session = %#v, want nil", session)
+		}
+		if !errors.Is(err, ErrNativeContract) {
+			t.Fatalf("NewAdvancedSession error = %v, want ErrNativeContract", err)
+		}
+		if got := optionReleases.Load(); got != 1 {
+			t.Fatalf("session-options release count = %d, want 1", got)
+		}
+	})
+}
+
 func TestNewAdvancedSessionWithProvidedSessionOptionsHandle(t *testing.T) {
 	resetEnvironmentState()
 	defer resetEnvironmentState()

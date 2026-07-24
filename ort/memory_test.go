@@ -428,6 +428,32 @@ func TestMemoryInfoStatusConversion(t *testing.T) {
 	}
 }
 
+func TestCreateMemoryInfoRejectsZeroHandle(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	createMemoryInfoFunc = func(_ uintptr, _ AllocatorType, _ int32, _ MemType, _ *uintptr) uintptr {
+		return 0
+	}
+	releaseMemoryInfoFunc = func(uintptr) {
+		t.Fatal("ReleaseMemoryInfo called for a zero handle")
+	}
+	getErrorCodeFunc = func(uintptr) ErrorCode { return ErrorCodeFail }
+	getErrorMessageFunc = func(uintptr) uintptr { return 0 }
+	releaseStatusFunc = func(uintptr) {}
+	mu.Unlock()
+
+	memInfo, err := CreateMemoryInfo("Cpu", AllocatorTypeArena, 0, MemTypeCPU)
+	if memInfo != nil {
+		t.Fatalf("memory info = %#v, want nil", memInfo)
+	}
+	if !errors.Is(err, ErrNativeContract) {
+		t.Fatalf("CreateMemoryInfo error = %v, want ErrNativeContract", err)
+	}
+}
+
 func TestCreateMemoryInfoBlocksEnvironmentTeardown(t *testing.T) {
 	resetEnvironmentState()
 	t.Cleanup(resetEnvironmentState)

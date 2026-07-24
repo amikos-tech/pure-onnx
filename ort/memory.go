@@ -59,6 +59,13 @@ func CreateMemoryInfo(name string, allocatorType AllocatorType, deviceID int, me
 			statusToError(status, "create memory info"),
 		)
 	}
+	if handle == 0 {
+		return nil, fmt.Errorf(
+			"create memory info %q returned a nil handle: %w",
+			name,
+			ErrNativeContract,
+		)
+	}
 
 	memInfo := &MemoryInfo{
 		handle:        handle,

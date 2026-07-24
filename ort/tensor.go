@@ -114,6 +114,12 @@ func newTensorFromData[T any](shape Shape, data []T, elementType TensorElementDa
 			statusToError(status, "create CPU memory info"),
 		)
 	}
+	if memInfo == 0 {
+		return nil, fmt.Errorf(
+			"create CPU memory info returned a nil handle: %w",
+			ErrNativeContract,
+		)
+	}
 	defer releaseMemoryInfo(memInfo)
 
 	var dataPtr uintptr
@@ -142,6 +148,15 @@ func newTensorFromData[T any](shape Shape, data []T, elementType TensorElementDa
 		return nil, fmt.Errorf(
 			"failed to create tensor: %w",
 			statusToError(status, "create tensor with data"),
+		)
+	}
+	if valueHandle == 0 {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, fmt.Errorf(
+			"create tensor with data returned a nil handle: %w",
+			ErrNativeContract,
 		)
 	}
 

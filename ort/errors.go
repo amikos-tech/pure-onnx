@@ -36,6 +36,10 @@ var (
 	// ErrUnsupportedRuntime identifies an ONNX Runtime library that does not
 	// expose the API version required by this package.
 	ErrUnsupportedRuntime = errors.New("unsupported ONNX Runtime API")
+
+	// ErrNativeContract identifies a successful native call that did not
+	// populate a required output handle.
+	ErrNativeContract = errors.New("ONNX Runtime native contract violation")
 )
 
 type statusOps struct {

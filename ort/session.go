@@ -43,7 +43,7 @@ func NewSessionOptions() (*SessionOptions, error) {
 		return nil, fmt.Errorf("failed to create session options: %w", err)
 	}
 	if handle == 0 {
-		return nil, fmt.Errorf("create session options returned a nil handle")
+		return nil, fmt.Errorf("create session options returned a nil handle: %w", ErrNativeContract)
 	}
 
 	options := &SessionOptions{handle: handle}
@@ -178,6 +178,12 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 				statusToError(status, "create session options"),
 			)
 		}
+		if sessionOptionsHandle == 0 {
+			return nil, fmt.Errorf(
+				"create session options returned a nil handle: %w",
+				ErrNativeContract,
+			)
+		}
 		releaseCreatedOptions = true
 	}
 	if releaseCreatedOptions {
@@ -198,6 +204,12 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 		return nil, fmt.Errorf(
 			"failed to create session: %w",
 			statusToError(status, "create session"),
+		)
+	}
+	if sessionHandle == 0 {
+		return nil, fmt.Errorf(
+			"create session returned a nil handle: %w",
+			ErrNativeContract,
 		)
 	}
 
