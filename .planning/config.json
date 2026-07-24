@@ -28,6 +28,7 @@
     "skip_discuss": false,
     "code_review": true,
     "code_review_depth": "standard",
+    "use_worktrees": false,
     "_auto_chain_active": false
   },
   "ship": {
@@ -66,7 +67,6 @@
   "features": {},
   "mode": "yolo",
   "granularity": "standard",
-  "branching_strategy": "milestone",
   "phase_branch_template": "gsd/phase-{phase}-{slug}",
   "milestone_branch_template": "gsd/{milestone}-{slug}",
   "resolve_model_ids": "omit"
