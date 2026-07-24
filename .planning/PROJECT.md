@@ -21,6 +21,8 @@ Run ONNX Runtime inference from Go with zero CGO — if that stops working, noth
 - ✓ Runtime bootstrap: download/cache/checksum/lock of ONNX Runtime shared libs (`EnsureOnnxRuntimeSharedLibrary`) — existing
 - ✓ Embedding adapters: `minilm` (dense), `splade` (sparse), `openclip` (CLIP) with tokenizer + pooling — existing
 - ✓ Runnable examples (`basic`, `inference`, `openclip`) and ORT API generation tooling (`gen_ortapi.go`) — existing
+- ✓ Comprehensive, inspectable error handling across the public `ort` API — validated in Phase 2: Core API — Errors & Values
+- ✓ Sealed `Value` interface with polymorphic session tensor handling — validated in Phase 2: Core API — Errors & Values
 
 ### Active
 
@@ -42,8 +44,6 @@ Run ONNX Runtime inference from Go with zero CGO — if that stops working, noth
 
 **Features**
 - [ ] Generalize embedder API and add sparse embeddings / SPLADE (#49)
-- [ ] Comprehensive error handling across the public API (#7)
-- [ ] `Value` interface for polymorphic tensor handling (#6)
 
 ### Out of Scope
 
@@ -60,6 +60,7 @@ Run ONNX Runtime inference from Go with zero CGO — if that stops working, noth
 - Issue #42 is partially resolved by prior work: the bootstrap rewrite (`resolveRuntimeArtifact`) already emits a fail-fast `GOOS=/GOARCH=`-labeled error. The remaining gap is example-only — surface a "set `ONNXRUNTIME_LIB_PATH`" hint when bootstrap fails.
 - ONNX Runtime C API version 22; default bootstrap runtime version tracks CI (currently `1.23.1`).
 - CI runs on Go 1.24.x across Linux/macOS/Windows (amd64+arm64); `govulncheck` uses a patched Go 1.25.x toolchain.
+- Phase 2 is complete: public `ort` failures are inspectable, polymorphic `Value` handling is available, and race/native CI lanes cover the new contracts.
 
 ## Constraints
 
@@ -95,4 +96,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-21 after initialization*
+*Last updated: 2026-07-24 after Phase 2 completion*
