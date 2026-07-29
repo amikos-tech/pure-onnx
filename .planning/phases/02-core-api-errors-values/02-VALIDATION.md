@@ -3,8 +3,9 @@ phase: 2
 slug: core-api-errors-values
 status: approved
 nyquist_compliant: true
-wave_0_complete: false
+wave_0_complete: true
 created: 2026-07-23
+last_audited: 2026-07-29
 ---
 
 # Phase 2 — Validation Strategy
@@ -65,19 +66,19 @@ Final task IDs below map every missing test/CI need to the executor plan that cr
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 02-01-01 | 02-01 | 1 | API-02 | T-02-03 / T-02-04 | Nonzero native status is copied before release and released exactly once; zero status returns nil | unit/race | `go test -race ./ort -run '^(TestStatusToError|TestORTError|TestErrorSentinel)$'` | ❌ W0 | ⬜ pending |
-| 02-01-02 | 02-01 | 1 | API-02 | T-02-03 | Real ORT status preserves code and message through the native ABI without race/checkptr mixing | native integration | `ONNXRUNTIME_LIB_PATH="$ONNXRUNTIME_LIB_PATH" go test ./ort -run '^TestNativeORTStatusRoundTrip$'` | ❌ W0 | ⬜ pending |
-| 02-04-02 / 02-05-01 / 02-06-01 / 02-06-02 / 02-07-01 | 02-04–02-07 | 2 | API-02 | T-02-04 | Validation and lifecycle categories remain inspectable and lower-level causes remain reachable across shape, session, tensor, environment, memory, and bootstrap flows | unit | `go test -short ./ort -run 'Test(ParseShape|ShapeElementCount|ErrorSentinel|Bootstrap.*Error|.*Destroyed|.*NotInitialized)'` | ⚠️ extend existing tests | ⬜ pending |
-| 02-05-01 | 02-05 | 2 | API-02 | T-02-01 / T-02-04 | Exported shape parsing/counting rejects invalid input with ErrInvalidArgument while preserving the strconv parsing cause | unit/race | `go test -race ./ort -run '^(TestParseShape|TestShapeElementCountExported|TestShapeElementCount)$'` plus separate `go doc ./ort.ParseShape` and `go doc ./ort.ShapeElementCount` | ⚠️ extend existing tests | ⬜ pending |
-| 02-06-02 | 02-06 | 2 | API-02 | T-02-02 / T-02-03 | CreateMemoryInfo keeps teardown excluded through the native callback and status conversion/release | race/lifecycle | `go test -race ./ort -run '^(TestMemoryInfoStatusConversion|TestCreateMemoryInfoBlocksEnvironmentTeardown)$'` | ❌ W0 | ⬜ pending |
-| 02-03-01 / 02-04-02 / 02-05-01 / 02-06-01 / 02-06-02 / 02-07-03 / 02-08-01 | 02-03–02-08 | 1–3 | API-02 | T-02-06 / T-02-07 / T-02-08 / T-02-11 | Diagnostics default to silent, reconfigure safely, omit sensitive data, cover every approved call site, accept propagation only at the trusted general-handler boundary, contain finalizer panics, and never duplicate returned errors | unit/race/audit | `go test -race ./ort -run '^(TestDiagnostic|TestAdvancedSessionDiagnosticPolicy|TestTensorDiagnosticPolicy|TestDiagnosticRuntimeVersion|TestDiagnosticMemoryInfo|TestDiagnosticCallSites|TestReturnedErrorsDoNotEmit)$'` | ❌ W0 | ⬜ pending |
-| 02-02-01 | 02-02 | 1 | API-03 | T-02-01 | Only package-created values cross the FFI boundary; tensor extraction is exact and never coerces | compile/unit | `go test -short ./ort -run '^TestValue$'` | ❌ W0 | ⬜ pending |
-| 02-04-01 | 02-04 | 2 | API-03 | T-02-01 / T-02-02 | Per-call values validate counts and preserve ownership, handle leases, serialization, KeepAlive, and lock order | unit/race | `go test -race ./ort -run '^(TestAdvancedSessionRunWithValues|TestAdvancedSessionRunConcurrent|TestAdvancedSessionRunConcurrentAcrossSessionsSharingTensor|TestAdvancedSessionRunAndDestroyConcurrent|TestTensorDestroyWaitsForInFlightRun|TestValuesToHandlesDeduplicatesRepeatedLockableValue|TestValuesToHandlesReleasesPriorLeasesOnError)$'` | ⚠️ extend existing tests | ⬜ pending |
-| 02-04-02 | 02-04 | 2 | API-03 | T-02-01 / T-02-02 | Caller-preallocated per-call tensors produce the expected output against a real model | native integration | `ONNXRUNTIME_LIB_PATH="$ONNXRUNTIME_LIB_PATH" go test ./ort -run '^TestAdvancedSessionRunWithValuesRealModel$'` | ⚠️ extend existing fixtures | ⬜ pending |
-| 02-07-01 / 02-07-02 / 02-08-02 | 02-07–02-08 | 2–3 | API-02 | T-02-10 | Bootstrap HTTPS, checksum, archive containment, size, lock, and Unix-safe directory/installed-library/lock-file permissions remain intact through the error/diagnostic migration and final gate | security regression/full gate | `go test -short ./ort -run '^(TestBootstrapCreatedFilePermissions|TestEnsureOnnxRuntimeSharedLibraryChecksumMismatch|TestRejectHTTPSDowngradeRedirect|TestDownloadRuntimeArchiveRejectsOversize|TestSecureArchiveJoin)$' && go test -short ./...` | ⚠️ add exact permission test; retain existing tests | ⬜ pending |
-| 02-01-01 / 02-01-02 / 02-02-01 / 02-08-02 | 02-01, 02-02, 02-08 | 1–3 | API-02, API-03 | T-02-09 | Go 1.25-compatible APIs and supported Windows builds compile while existing consumers remain unchanged | platform/compile | `GOOS=windows GOARCH=amd64 go test -c -o /dev/null ./ort && go test -run '^$' ./...` | ✅ existing compile path; extend native-test constraint | ⬜ pending |
-| 02-01-01 / 02-01-02 / 02-02-01 / 02-03-01 / 02-04-01 / 02-04-02 / 02-05-01 / 02-06-01 / 02-06-02 / 02-07-01 / 02-07-02 / 02-07-03 / 02-08-01 / 02-08-02 | 02-01–02-08 | 1–3 | API-02, API-03 | T-02-SC | No package/module requirement or CI action `uses:` reference changes enter Phase 2 | source integrity | `git diff --exit-code -- go.mod go.sum && test -z "$(git diff HEAD --unified=0 -- .github/workflows/ci.yml | sed -n '/^[+-][[:space:]]*uses:/p')"` | ✅ existing module/workflow inputs; add workflow diff gate | ⬜ pending |
-| 02-08-02 | 02-08 | 3 | API-02, API-03 | T-02-02 / T-02-03 / T-02-06 / T-02-07 / T-02-08 / T-02-09 / T-02-10 / T-02-11 / T-02-SC | CI keeps fake ownership/concurrency proofs under race and real ABI/model proofs in the configured non-race lane; each selector proves 29/4 live top-level tests before execution, and exported APIs plus unchanged action references are checked while comprehensive suites run at wave/phase scope | CI/liveness + wave/phase gate | `go test -list '<race-selector>' ./ort` resolves 29 tests, `go test -list '<native-selector>' ./ort` resolves 4 tests, and `test -z "$(git diff HEAD --unified=0 -- .github/workflows/ci.yml | sed -n '/^[+-][[:space:]]*uses:/p')"` | ⚠️ extend existing workflow | ⬜ pending |
+| 02-01-01 | 02-01 | 1 | API-02 | T-02-03 / T-02-04 | Nonzero native status is copied before release and released exactly once; zero status returns nil | unit/race | `go test -race ./ort -run '^(TestStatusToError|TestORTError|TestErrorSentinel)$'` | ✅ yes | ✅ green |
+| 02-01-02 | 02-01 | 1 | API-02 | T-02-03 | Real ORT status preserves code and message through the native ABI without race/checkptr mixing | native integration | `ONNXRUNTIME_LIB_PATH="$ONNXRUNTIME_LIB_PATH" go test ./ort -run '^TestNativeORTStatusRoundTrip$'` | ✅ yes | ✅ green in configured CI; local skip verified |
+| 02-04-02 / 02-05-01 / 02-06-01 / 02-06-02 / 02-07-01 | 02-04–02-07 | 2 | API-02 | T-02-04 | Validation and lifecycle categories remain inspectable and lower-level causes remain reachable across shape, session, tensor, environment, memory, and bootstrap flows | unit | `go test -short ./ort -run 'Test(ParseShape|ShapeElementCount|ErrorSentinel|Bootstrap.*Error|.*Destroyed|.*NotInitialized)'` | ✅ yes | ✅ green |
+| 02-05-01 | 02-05 | 2 | API-02 | T-02-01 / T-02-04 | Exported shape parsing/counting rejects invalid input with ErrInvalidArgument while preserving the strconv parsing cause | unit/race | `go test -race ./ort -run '^(TestParseShape|TestShapeElementCountExported|TestShapeElementCount)$'` plus separate `go doc ./ort.ParseShape` and `go doc ./ort.ShapeElementCount` | ✅ yes | ✅ green |
+| 02-06-02 | 02-06 | 2 | API-02 | T-02-02 / T-02-03 | CreateMemoryInfo keeps teardown excluded through the native callback and status conversion/release | race/lifecycle | `go test -race ./ort -run '^(TestMemoryInfoStatusConversion|TestCreateMemoryInfoBlocksEnvironmentTeardown)$'` | ✅ yes | ✅ green |
+| 02-03-01 / 02-04-02 / 02-05-01 / 02-06-01 / 02-06-02 / 02-07-03 / 02-08-01 | 02-03–02-08 | 1–3 | API-02 | T-02-06 / T-02-07 / T-02-08 / T-02-11 | Diagnostics default to silent, reconfigure safely, omit sensitive data, cover every approved call site, accept propagation only at the trusted general-handler boundary, contain finalizer panics, and never duplicate returned errors | unit/race/audit | `go test -race ./ort -run '^(TestDiagnostic|TestAdvancedSessionDiagnosticPolicy|TestTensorDiagnosticPolicy|TestDiagnosticRuntimeVersion|TestDiagnosticMemoryInfo|TestDiagnosticCallSites|TestReturnedErrorsDoNotEmit)$'` | ✅ yes | ✅ green |
+| 02-02-01 | 02-02 | 1 | API-03 | T-02-01 | Only package-created values cross the FFI boundary; tensor extraction is exact and never coerces | compile/unit | `go test -short ./ort -run '^TestValue$'` | ✅ yes | ✅ green |
+| 02-04-01 | 02-04 | 2 | API-03 | T-02-01 / T-02-02 | Per-call values validate counts and preserve ownership, handle leases, serialization, KeepAlive, and lock order | unit/race | `go test -race ./ort -run '^(TestAdvancedSessionRunWithValues|TestAdvancedSessionRunConcurrent|TestAdvancedSessionRunConcurrentAcrossSessionsSharingTensor|TestAdvancedSessionRunAndDestroyConcurrent|TestTensorDestroyWaitsForInFlightRun|TestValuesToHandlesDeduplicatesRepeatedLockableValue|TestValuesToHandlesReleasesPriorLeasesOnError)$'` | ✅ yes | ✅ green |
+| 02-04-02 | 02-04 | 2 | API-03 | T-02-01 / T-02-02 | Caller-preallocated per-call tensors produce the expected output against a real model | native integration | `ONNXRUNTIME_LIB_PATH="$ONNXRUNTIME_LIB_PATH" go test ./ort -run '^TestAdvancedSessionRunWithValuesRealModel$'` | ✅ yes | ✅ green in configured CI; local skip verified |
+| 02-07-01 / 02-07-02 / 02-08-02 | 02-07–02-08 | 2–3 | API-02 | T-02-10 | Bootstrap HTTPS, checksum, archive containment, size, lock, and Unix-safe directory/installed-library/lock-file permissions remain intact through the error/diagnostic migration and final gate | security regression/full gate | `go test -short ./ort -run '^(TestBootstrapCreatedFilePermissions|TestEnsureOnnxRuntimeSharedLibraryChecksumMismatch|TestRejectHTTPSDowngradeRedirect|TestDownloadRuntimeArchiveRejectsOversize|TestSecureArchiveJoin)$' && go test -short ./...` | ✅ yes | ✅ green |
+| 02-01-01 / 02-01-02 / 02-02-01 / 02-08-02 | 02-01, 02-02, 02-08 | 1–3 | API-02, API-03 | T-02-09 | Go 1.25-compatible APIs and supported Windows builds compile while existing consumers remain unchanged | platform/compile | `GOOS=windows GOARCH=amd64 go test -c -o /dev/null ./ort && go test -run '^$' ./...` | ✅ yes | ✅ green |
+| 02-01-01 / 02-01-02 / 02-02-01 / 02-03-01 / 02-04-01 / 02-04-02 / 02-05-01 / 02-06-01 / 02-06-02 / 02-07-01 / 02-07-02 / 02-07-03 / 02-08-01 / 02-08-02 | 02-01–02-08 | 1–3 | API-02, API-03 | T-02-SC | No package/module requirement or CI action `uses:` reference changes enter Phase 2 | source integrity | `git diff --exit-code -- go.mod go.sum && test -z "$(git diff HEAD --unified=0 -- .github/workflows/ci.yml | sed -n '/^[+-][[:space:]]*uses:/p')"` | ✅ yes | ✅ green |
+| 02-08-02 | 02-08 | 3 | API-02, API-03 | T-02-02 / T-02-03 / T-02-06 / T-02-07 / T-02-08 / T-02-09 / T-02-10 / T-02-11 / T-02-SC | CI keeps fake ownership/concurrency proofs under race and real ABI/model proofs in the configured non-race lane; each selector proves 29/4 live top-level tests before execution, and exported APIs plus unchanged action references are checked while comprehensive suites run at wave/phase scope | CI/liveness + wave/phase gate | `go test -list '<race-selector>' ./ort` resolves 29 tests, `go test -list '<native-selector>' ./ort` resolves 4 tests, and `test -z "$(git diff HEAD --unified=0 -- .github/workflows/ci.yml | sed -n '/^[+-][[:space:]]*uses:/p')"` | ✅ yes | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -85,16 +86,16 @@ Final task IDs below map every missing test/CI need to the executor plan that cr
 
 ## Wave 0 Requirements
 
-- [ ] `ort/errors_test.go` (02-01-01) — fake status store; zero/nonzero conversion; accessor order; message copy; exact release; concurrent conversion; `errors.As`; sentinel wrapping for API-02
-- [ ] `ort/errors_native_test.go` (02-01-02) — `//go:build !windows` Unix-loader constraint plus real `CreateStatus` ABI round trip gated by `ONNXRUNTIME_LIB_PATH` for API-02
-- [ ] `ort/diagnostics_test.go` (02-03-01 plus call-site extensions in 02-04-02/02-05-01/02-06-01/02-06-02/02-07-03) — silent default; standard attributes/levels; nil reset; concurrent emit/reconfigure; explicit non-finalizer panic propagation/finalizer containment; returned-error zero-emission proof for API-02
-- [ ] `ort/value_test.go` (02-02-01) — kind check and exact generic extraction matrix for API-03
-- [ ] `ort/shape_test.go` additions (02-05-01) — exported ParseShape/ShapeElementCount `errors.Is` coverage plus preserved `*strconv.NumError` `errors.As` coverage for API-02
-- [ ] `ort/session_test.go` additions (02-04-01/02-04-02) — count validation; supplied handle arrays; bound-path compatibility; borrow/Destroy synchronization; per-call concurrency for API-03
-- [ ] Flow-test additions (02-04-02/02-05-01/02-06-01/02-06-02/02-07-01/02-07-03) in `shape_test.go`, `environment_test.go`, `memory_test.go`, `tensor_test.go`, `session_test.go`, and `bootstrap_test.go` — `errors.Is`/`errors.As`, preserved causes, lifecycle-lock protection, and approved diagnostic call sites for API-02
-- [ ] `ort/bootstrap_test.go` (02-07-02) — exact `TestBootstrapCreatedFilePermissions` Unix regression and isolated hardening commit for bootstrap-created directories, installed TGZ/ZIP library files, and lock files, with a Windows-safe POSIX-mode skip
-- [ ] `.github/workflows/ci.yml` (02-08-02) — run fake-status and diagnostic concurrency tests in the targeted race job; run native-status and `RunWithValues` real-model tests in the existing integration job
-- [ ] No framework installation or dependency change is required (enforced by every plan and the 02-08 compatibility gate)
+- [x] `ort/errors_test.go` (02-01-01) — fake status store; zero/nonzero conversion; accessor order; message copy; exact release; concurrent conversion; `errors.As`; sentinel wrapping for API-02
+- [x] `ort/errors_native_test.go` (02-01-02) — `//go:build !windows` Unix-loader constraint plus real `CreateStatus` ABI round trip gated by `ONNXRUNTIME_LIB_PATH` for API-02
+- [x] `ort/diagnostics_test.go` (02-03-01 plus call-site extensions in 02-04-02/02-05-01/02-06-01/02-06-02/02-07-03) — silent default; standard attributes/levels; nil reset; concurrent emit/reconfigure; explicit non-finalizer panic propagation/finalizer containment; returned-error zero-emission proof for API-02
+- [x] `ort/value_test.go` (02-02-01) — kind check and exact generic extraction matrix for API-03
+- [x] `ort/shape_test.go` additions (02-05-01) — exported ParseShape/ShapeElementCount `errors.Is` coverage plus preserved `*strconv.NumError` `errors.As` coverage for API-02
+- [x] `ort/session_test.go` additions (02-04-01/02-04-02) — count validation; supplied handle arrays; bound-path compatibility; borrow/Destroy synchronization; per-call concurrency for API-03
+- [x] Flow-test additions (02-04-02/02-05-01/02-06-01/02-06-02/02-07-01/02-07-03) in `shape_test.go`, `environment_test.go`, `memory_test.go`, `tensor_test.go`, `session_test.go`, and `bootstrap_test.go` — `errors.Is`/`errors.As`, preserved causes, lifecycle-lock protection, and approved diagnostic call sites for API-02
+- [x] `ort/bootstrap_test.go` (02-07-02) — exact `TestBootstrapCreatedFilePermissions` Unix regression and isolated hardening commit for bootstrap-created directories, installed TGZ/ZIP library files, and lock files, with a Windows-safe POSIX-mode skip
+- [x] `.github/workflows/ci.yml` (02-08-02) — run fake-status and diagnostic concurrency tests in the targeted race job; run native-status and `RunWithValues` real-model tests in the existing integration job
+- [x] No framework installation or dependency change is required (enforced by every plan and the 02-08 compatibility gate)
 
 ---
 
@@ -115,3 +116,25 @@ Final task IDs below map every missing test/CI need to the executor plan that cr
 - [x] `nyquist_compliant: true` set in frontmatter
 
 **Approval:** approved 2026-07-23 (gsd-plan-checker verified Phase 2 plans and Nyquist coverage)
+
+## Validation Audit 2026-07-29
+
+| Metric | Count |
+|--------|-------|
+| Gaps found | 0 |
+| Resolved | 0 |
+| Escalated | 0 |
+| Requirements covered | 2/2 |
+
+| Requirement | Status | Live evidence |
+|-------------|--------|---------------|
+| API-02 | COVERED | Fresh full short suite and exact 29-test race selector passed; error, lifecycle, diagnostic, bootstrap, and review-added session-options/environment paths are exercised. |
+| API-03 | COVERED | Value exact-type tests, shared `RunWithValues` ownership/concurrency tests, all-package compilation, and the configured native selector are present and green. |
+
+Audit notes:
+
+- The exact race and native selectors still resolve 29 and 4 top-level tests respectively.
+- The four native tests skip locally when `ONNXRUNTIME_LIB_PATH` is unset; the configured CI lane supplies the runtime and executes them without `-race`.
+- Review remediation expanded the live source beyond the original plan snapshots to eight `statusToError` call sites and four finalizer resource paths. The full short suite, focused review-remediation tests, generic finalizer containment tests, and source/security audits cover those additions.
+- `go test -count=1 -short ./...`, the exact race selector with `-count=1`, all-package compilation, exported API checks, `go vet -unsafeptr=false ./ort/...`, bootstrap permission coverage, module integrity, and CI action-reference integrity passed during this audit.
+- `make precommit-lint-new` currently reports two test-only `govet/unsafeptr` findings in review-added native callback fixtures (`ort/bootstrap_test.go` and `ort/environment_test.go`). Their behavioral tests pass; this is a quality-gate warning rather than a missing Nyquist verification path.
