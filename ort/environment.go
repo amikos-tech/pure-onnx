@@ -148,9 +148,12 @@ func InitializeEnvironment() error {
 // initializeEnvironmentAt initializes the runtime with path as one atomic
 // lifecycle transition. An empty path keeps the value configured by
 // SetSharedLibraryPath.
-func initializeEnvironmentAt(path string) (err error) {
-	runtimeVersion, newlyInitialized, err := initializeEnvironmentAtLocked(path)
-	if runtimeVersion == "" {
+func initializeEnvironmentAt(path string) error {
+	return completeEnvironmentInitialization(initializeEnvironmentAtLocked(path))
+}
+
+func completeEnvironmentInitialization(runtimeVersion string, newlyInitialized bool, err error) error {
+	if err != nil || runtimeVersion == "" {
 		return err
 	}
 

@@ -216,6 +216,21 @@ func TestEnvironmentErrorChains(t *testing.T) {
 			t.Fatalf("returned joined error emitted %d diagnostics, want 0", got)
 		}
 	})
+
+	t.Run("initialization failure with old runtime emits nothing", func(t *testing.T) {
+		handler := &diagnosticCountingHandler{}
+		SetDiagnosticHandler(handler)
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+		wantErr := errors.New("CreateEnv failed")
+		err := completeEnvironmentInitialization("1.21.4", false, wantErr)
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("initialization error = %v, want %v", err, wantErr)
+		}
+		if got := handler.count.Load(); got != 0 {
+			t.Fatalf("returned initialization error emitted %d diagnostics, want 0", got)
+		}
+	})
 }
 
 func TestInitializeEnvironmentRejectsUnsupportedAPIVersion(t *testing.T) {
