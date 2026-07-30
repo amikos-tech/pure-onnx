@@ -128,6 +128,10 @@ jobs:
         run: go mod download
 
       - name: Run race detector on ORT concurrency tests
+        # RACE_SELECTOR is an explicit, fully anchored list, so adding a new test
+        # does NOT change the count. The exact-match guard exists to catch a
+        # listed test being renamed or deleted, which would otherwise drop it
+        # from this lane silently. Bump the count only when editing the selector.
         run: |
           RACE_SELECTOR='^(TestStatusToError|TestORTError|TestErrorSentinel|TestDiagnostic|TestAdvancedSessionRunWithValues|TestAdvancedSessionErrorContracts|TestAdvancedSessionDiagnosticPolicy|TestAcquireValueLeasesDeduplicatesRepeatedLockableValue|TestAcquireValueLeasesReleasesPriorLeasesOnError|TestAcquireValueLeasesRejectsNonComparableLockable|TestAdvancedSessionRunConcurrent|TestAdvancedSessionRunConcurrentAcrossSessionsSharingTensor|TestAdvancedSessionRunAndDestroyConcurrent|TestDestroyEnvironmentWaitsForInFlightSessionRun|TestNewAdvancedSessionBorrowedOptionsBlocksConcurrentDestroy|TestAdvancedSessionDestroyConcurrentCallsReleaseOnce|TestAdvancedSessionDestroyDoesNotBlockUnrelatedRun|TestTensorDestroyWaitsForInFlightRun|TestTensorDestroyDoesNotBlockUnrelatedRun|TestTensorDestroyConcurrentCallsReleaseOnce|TestTensorStatusConversion|TestTensorDiagnosticPolicy|TestEnvironmentErrorChains|TestEnvironmentStatusConversion|TestConcurrentInitialization|TestConcurrentDestroy|TestDiagnosticRuntimeVersion|TestMemoryInfoStatusConversion|TestMemoryInfoIsValidConcurrentDestroy|TestCreateMemoryInfoBlocksEnvironmentTeardown|TestDiagnosticMemoryInfo|TestDiagnosticCallSites|TestReturnedErrorsDoNotEmit)$'
           RACE_TESTS="$(go test -list "$RACE_SELECTOR" ./ort | awk '/^Test/')"
@@ -230,6 +234,9 @@ jobs:
           ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH: '8'
           ONNXRUNTIME_TEST_LEAK_ITERATIONS: '40'
           ONNXRUNTIME_TEST_LEAK_MAX_GROWTH_MB: '96'
+        # Same contract as RACE_SELECTOR above: the anchored list means new tests
+        # do not shift the count, and the exact-match guard catches a listed test
+        # silently leaving the native lane. Bump the count only with the selector.
         run: |
           NATIVE_SELECTOR='^(TestNativeORTStatusRoundTrip|TestTensorSupportedElementTypesWithORT|TestAdvancedSessionRunWithValuesRealModel|TestAdvancedSessionRunWithAllMiniLML6V2|TestAdvancedSessionRunWithAllMiniLML6V2MemoryStability)$'
           NATIVE_TESTS="$(go test -list "$NATIVE_SELECTOR" ./ort | awk '/^Test/')"
