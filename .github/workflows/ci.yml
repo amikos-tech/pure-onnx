@@ -48,14 +48,25 @@ jobs:
           go vet -unsafeptr=false ./examples/inference/...
           go vet ./embeddings/...
 
+      # Resolve the merge base under a fixed local ref so the lint args below stay
+      # free of workflow expressions.
+      - name: Fetch lint baseline
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git fetch --no-tags origin "+refs/heads/$BASE_REF:refs/remotes/origin/lint-base"
+
       - name: Run golangci-lint (PR new issues)
         if: github.event_name == 'pull_request'
         uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
         with:
           # Pin v2 because .golangci.yml uses v2 formatters config.
           version: v2.8.0
-          args: --concurrency=8
-          only-new-issues: true
+          # only-new-issues alone did not filter pre-existing findings, so the
+          # baseline is passed explicitly: this lane must fail only on issues the
+          # PR itself introduces.
+          args: --concurrency=8 --new-from-merge-base=refs/remotes/origin/lint-base
+          only-new-issues: false
           verify: false
 
       - name: Run golangci-lint (push informational)

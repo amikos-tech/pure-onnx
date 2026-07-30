@@ -231,7 +231,8 @@ func TestBootstrapErrorChains(t *testing.T) {
 		if !errors.Is(err, gzip.ErrHeader) {
 			t.Fatalf("expected gzip.ErrHeader in archive error chain, got: %v", err)
 		}
-		if !strings.Contains(err.Error(), archivePath) {
+		// The error quotes the path with %q, which escapes Windows separators.
+		if !strings.Contains(err.Error(), fmt.Sprintf("%q", archivePath)) {
 			t.Fatalf("expected archive path in error, got: %v", err)
 		}
 	})
