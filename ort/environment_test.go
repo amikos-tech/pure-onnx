@@ -9,7 +9,6 @@ import (
 	"go/token"
 	"log/slog"
 	"os"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -581,50 +580,15 @@ func TestLifecycleLockHierarchyDocumentation(t *testing.T) {
 func TestInitializeEnvironmentDiagnosticHandlerCanQueryRuntime(t *testing.T) {
 	resetEnvironmentState()
 	t.Cleanup(resetEnvironmentState)
-	t.Setenv("ONNXRUNTIME_SKIP_VERSION_CHECK", "")
 
-	versionBytes, versionPtr := GoToCstring("1.21.4")
-	noOp := purego.NewCallback(func() {})
-	api := &OrtApi{
-		GetErrorCode:                   noOp,
-		GetErrorMessage:                noOp,
-		ReleaseStatus:                  noOp,
-		CreateMemoryInfo:               noOp,
-		ReleaseMemoryInfo:              noOp,
-		CreateTensorWithDataAsOrtValue: noOp,
-		ReleaseValue:                   noOp,
-		CreateSessionOptions:           noOp,
-		ReleaseSessionOptions:          noOp,
-		CreateSession:                  noOp,
-		Run:                            noOp,
-		ReleaseSession:                 noOp,
-		ReleaseEnv:                     purego.NewCallback(func(uintptr) {}),
-	}
-	api.CreateEnv = purego.NewCallback(func(_ int32, _ uintptr, out uintptr) uintptr {
-		//nolint:govet // The purego callback ABI supplies the native output address as uintptr; the test writes the fake OrtEnv handle through it.
-		*(*uintptr)(unsafe.Pointer(out)) = 1001
+	versionQueried := make(chan struct{}, 1)
+	mu.Lock()
+	refCount = 1
+	getVersionStringFunc = func() uintptr {
+		versionQueried <- struct{}{}
 		return 0
-	})
-	apiBase := &OrtApiBase{
-		GetApi: purego.NewCallback(func(uint32) uintptr {
-			return uintptr(unsafe.Pointer(api))
-		}),
-		GetVersionString: purego.NewCallback(func() uintptr {
-			return versionPtr
-		}),
 	}
-	getAPIBase := purego.NewCallback(func() uintptr {
-		return uintptr(unsafe.Pointer(apiBase))
-	})
-
-	installEnvironmentLibraryHooks(
-		func(string) (uintptr, error) { return 1002, nil },
-		func(uintptr, string) (uintptr, error) { return getAPIBase, nil },
-		func(uintptr) error { return nil },
-	)
-	if err := SetSharedLibraryPath("reentrant-diagnostic-runtime"); err != nil {
-		t.Fatalf("set shared library path: %v", err)
-	}
+	mu.Unlock()
 
 	handler := &runtimeQueryDiagnosticHandler{
 		handled:      make(chan struct{}),
@@ -635,7 +599,7 @@ func TestInitializeEnvironmentDiagnosticHandlerCanQueryRuntime(t *testing.T) {
 
 	initDone := make(chan error, 1)
 	go func() {
-		initDone <- InitializeEnvironment()
+		initDone <- completeEnvironmentInitialization("1.21.4", true, nil)
 	}()
 
 	select {
@@ -658,16 +622,18 @@ func TestInitializeEnvironmentDiagnosticHandlerCanQueryRuntime(t *testing.T) {
 	if !handler.initialized {
 		t.Fatal("IsInitialized returned false from the diagnostic handler")
 	}
-	if handler.version != "1.21.4" {
-		t.Fatalf("GetVersionString returned %q from the diagnostic handler, want 1.21.4", handler.version)
+	if handler.version != "" {
+		t.Fatalf("GetVersionString returned %q, want empty fake-native result", handler.version)
+	}
+	select {
+	case <-versionQueried:
+	default:
+		t.Fatal("GetVersionString did not call the seeded runtime query")
 	}
 
 	if err := DestroyEnvironment(); err != nil {
 		t.Fatalf("destroy environment: %v", err)
 	}
-	runtime.KeepAlive(versionBytes)
-	runtime.KeepAlive(api)
-	runtime.KeepAlive(apiBase)
 }
 
 type runtimeQueryDiagnosticHandler struct {

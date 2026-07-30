@@ -73,6 +73,14 @@ Optional bootstrap environment variables:
 - `ONNXRUNTIME_LIB_PATH` (if set, explicit path mode is used)
 - `GITHUB_TOKEN` / `GH_TOKEN` (optional; helps avoid GitHub API rate limits during checksum metadata lookup)
 
+### Runtime diagnostics
+
+Warnings that cannot be returned to the caller are written to stderr by default.
+Informational diagnostics remain quiet unless you install a structured
+`slog.Handler` with `ort.SetDiagnosticHandler`. Passing `nil` restores the
+warning-level stderr handler. Errors returned by an API are not also emitted as
+diagnostics.
+
 ## Usage Example
 
 ```go

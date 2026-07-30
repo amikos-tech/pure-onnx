@@ -21,14 +21,14 @@ const (
 )
 
 var (
-	// Lock hierarchy across ORT lifecycle and calls:
-	// 1) AdvancedSession.runMu (session-local serialization)
-	// 2) ortCallMu (RLock for regular ORT calls; Lock for environment init/destroy
-	//    and selected object releases that must not overlap in-flight ORT use)
-	// 3) mu (global runtime pointers/function snapshots)
-	// 4) Tensor.runMu (value-local run lease lock; only acquired while ortCallMu is held)
-	//
-	// Keep this order to avoid deadlocks.
+	// Lock relationships across ORT lifecycle and calls form a partial order;
+	// an arrow means the lock on the left is acquired before the lock on the right:
+	// AdvancedSession.runMu -> ortCallMu.
+	// ortCallMu -> SessionOptions.handleMu, mu, Tensor.runMu, MemoryInfo.handleMu.
+	// SessionOptions.handleMu -> mu only when both are held.
+	// mu is released before Tensor.runMu or MemoryInfo.handleMu.
+	// Tensor.runMu and MemoryInfo.handleMu are never nested with each other.
+	// Not every listed lock is held in one operation.
 	mu                                 sync.Mutex
 	ortCallMu                          sync.RWMutex
 	refCount                           int
@@ -160,7 +160,32 @@ func completeEnvironmentInitialization(runtimeVersion string, newlyInitialized b
 	if newlyInitialized {
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				_ = DestroyEnvironment()
+				var (
+					rollbackErr   error
+					rollbackPanic any
+				)
+				func() {
+					defer func() {
+						rollbackPanic = recover()
+					}()
+					rollbackErr = DestroyEnvironment()
+				}()
+				if rollbackErr != nil {
+					emitEmergencyDiagnostic(
+						"environment rollback failed after diagnostic handler panic",
+						"environment",
+						rollbackErr,
+						recovered,
+					)
+				}
+				if rollbackPanic != nil {
+					emitEmergencyDiagnostic(
+						"environment rollback panicked after diagnostic handler panic",
+						"environment",
+						rollbackPanic,
+						recovered,
+					)
+				}
 				panic(recovered)
 			}
 		}()
