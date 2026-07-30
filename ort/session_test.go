@@ -558,6 +558,61 @@ func TestNewAdvancedSessionWithUninitializedSessionOptions(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "session options handle is not initialized") {
 		t.Fatalf("expected session options error, got: %v", err)
 	}
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("NewAdvancedSession error = %v, want ErrInvalidArgument", err)
+	}
+	if errors.Is(err, ErrDestroyed) {
+		t.Fatalf("NewAdvancedSession error = %v, do not want ErrDestroyed", err)
+	}
+}
+
+func TestNewAdvancedSessionWithDestroyedSessionOptions(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	var releases atomic.Int32
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	createSessionOptionsFunc = func(out *uintptr) uintptr {
+		*out = 777
+		return 0
+	}
+	releaseSessionOptionsFunc = func(handle uintptr) {
+		if handle != 777 {
+			t.Errorf("released session options handle = %d, want 777", handle)
+		}
+		releases.Add(1)
+	}
+	getErrorCodeFunc = func(uintptr) ErrorCode { return ErrorCodeFail }
+	getErrorMessageFunc = func(uintptr) uintptr { return 0 }
+	releaseStatusFunc = func(uintptr) {}
+	mu.Unlock()
+
+	options, err := NewSessionOptions()
+	if err != nil {
+		t.Fatalf("NewSessionOptions: %v", err)
+	}
+	if err := options.Destroy(); err != nil {
+		t.Fatalf("Destroy session options: %v", err)
+	}
+
+	_, err = NewAdvancedSession(
+		"model.onnx",
+		[]string{"input"},
+		[]string{"output"},
+		[]Value{&fakeValue{handle: 1}},
+		[]Value{&fakeValue{handle: 2}},
+		options,
+	)
+	if !errors.Is(err, ErrDestroyed) {
+		t.Fatalf("NewAdvancedSession error = %v, want ErrDestroyed", err)
+	}
+	if errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("NewAdvancedSession error = %v, do not want ErrInvalidArgument", err)
+	}
+	if got := releases.Load(); got != 1 {
+		t.Fatalf("session-options release count = %d, want 1", got)
+	}
 }
 
 func TestSessionOptionsLifecycle(t *testing.T) {
