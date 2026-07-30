@@ -75,7 +75,8 @@ func emitEmergencyDiagnostic(message, resource string, cleanupFailure, handlerPa
 
 	_, _ = fmt.Fprintf(
 		os.Stderr,
-		"onnx-purego emergency diagnostic: %s resource=%q cleanup_failure=%q handler_panic=%q\n",
+		// cleanupFailure and handlerPanic are arbitrary values (recover() results included), so %v not %q.
+		"onnx-purego emergency diagnostic: %s resource=%q cleanup_failure=%v handler_panic=%v\n",
 		message,
 		resource,
 		cleanupFailure,
