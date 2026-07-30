@@ -316,6 +316,106 @@ func TestEnsureOnnxRuntimeSharedLibraryWithExplicitPath(t *testing.T) {
 	}
 }
 
+func TestEnsureOnnxRuntimeSharedLibraryExplicitSymlink(t *testing.T) {
+	sources := []struct {
+		name      string
+		configure func(*testing.T, string) []BootstrapOption
+	}{
+		{
+			name: "option",
+			configure: func(_ *testing.T, path string) []BootstrapOption {
+				return []BootstrapOption{WithBootstrapLibraryPath(path)}
+			},
+		},
+		{
+			name: "environment",
+			configure: func(t *testing.T, path string) []BootstrapOption {
+				t.Setenv("ONNXRUNTIME_LIB_PATH", path)
+				return nil
+			},
+		},
+	}
+
+	for _, source := range sources {
+		t.Run(source.name, func(t *testing.T) {
+			clearBootstrapEnv(t)
+
+			dir := t.TempDir()
+			target := filepath.Join(dir, "libonnxruntime.so.1.24.1")
+			if err := os.WriteFile(target, []byte("onnxruntime"), 0o600); err != nil {
+				t.Fatalf("write explicit library target: %v", err)
+			}
+			link := filepath.Join(dir, "libonnxruntime.so")
+			if err := os.Symlink(target, link); err != nil {
+				t.Skipf("cannot create symlink on this platform: %v", err)
+			}
+
+			resolved, err := EnsureOnnxRuntimeSharedLibrary(source.configure(t, link)...)
+			if err != nil {
+				t.Fatalf("resolve explicit library symlink: %v", err)
+			}
+			want, err := filepath.Abs(target)
+			if err != nil {
+				t.Fatalf("resolve expected target path: %v", err)
+			}
+			if resolved != want {
+				t.Fatalf("resolved path = %q, want symlink target %q", resolved, want)
+			}
+		})
+	}
+
+	t.Run("dangling target", func(t *testing.T) {
+		clearBootstrapEnv(t)
+
+		dir := t.TempDir()
+		link := filepath.Join(dir, "libonnxruntime.so")
+		if err := os.Symlink(filepath.Join(dir, "missing.so"), link); err != nil {
+			t.Skipf("cannot create symlink on this platform: %v", err)
+		}
+
+		_, err := EnsureOnnxRuntimeSharedLibrary(WithBootstrapLibraryPath(link))
+		if !errors.Is(err, ErrSharedLibraryNotFound) {
+			t.Fatalf("dangling explicit symlink error = %v, want ErrSharedLibraryNotFound", err)
+		}
+	})
+
+	t.Run("directory target", func(t *testing.T) {
+		clearBootstrapEnv(t)
+
+		dir := t.TempDir()
+		target := filepath.Join(dir, "runtime")
+		if err := os.Mkdir(target, 0o700); err != nil {
+			t.Fatalf("create directory target: %v", err)
+		}
+		link := filepath.Join(dir, "libonnxruntime.so")
+		if err := os.Symlink(target, link); err != nil {
+			t.Skipf("cannot create symlink on this platform: %v", err)
+		}
+
+		if _, err := EnsureOnnxRuntimeSharedLibrary(WithBootstrapLibraryPath(link)); err == nil {
+			t.Fatal("expected explicit symlink to a directory to be rejected")
+		}
+	})
+
+	t.Run("empty file target", func(t *testing.T) {
+		clearBootstrapEnv(t)
+
+		dir := t.TempDir()
+		target := filepath.Join(dir, "libonnxruntime.so.1.24.1")
+		if err := os.WriteFile(target, nil, 0o600); err != nil {
+			t.Fatalf("write empty target: %v", err)
+		}
+		link := filepath.Join(dir, "libonnxruntime.so")
+		if err := os.Symlink(target, link); err != nil {
+			t.Skipf("cannot create symlink on this platform: %v", err)
+		}
+
+		if _, err := EnsureOnnxRuntimeSharedLibrary(WithBootstrapLibraryPath(link)); err == nil {
+			t.Fatal("expected explicit symlink to an empty file to be rejected")
+		}
+	})
+}
+
 func TestEnsureOnnxRuntimeSharedLibraryDownloadAndCache(t *testing.T) {
 	clearBootstrapEnv(t)
 
