@@ -893,6 +893,70 @@ func TestBootstrapCacheValidationDisposition(t *testing.T) {
 		t.Fatalf("malformed manifest disposition = %v, want confirmed invalid", got)
 	}
 
+	seedValidInstall := func() string {
+		t.Helper()
+		if err := os.RemoveAll(installDir); err != nil {
+			t.Fatalf("reset install directory: %v", err)
+		}
+		libDir := filepath.Join(installDir, "lib")
+		if err := os.MkdirAll(libDir, secureDirectoryPermission); err != nil {
+			t.Fatalf("create library directory: %v", err)
+		}
+		libraryPath := filepath.Join(libDir, artifact.primaryLibrary)
+		if err := os.WriteFile(libraryPath, []byte("cached-runtime"), 0o600); err != nil {
+			t.Fatalf("write cached runtime: %v", err)
+		}
+		if err := writeBootstrapInstallManifest(
+			installDir,
+			cfg,
+			artifact,
+			strings.Repeat("a", 64),
+			true,
+		); err != nil {
+			t.Fatalf("write valid manifest: %v", err)
+		}
+		return libraryPath
+	}
+
+	seedValidInstall()
+	encoded, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read valid manifest: %v", err)
+	}
+	var manifest bootstrapInstallManifest
+	if err := json.Unmarshal(encoded, &manifest); err != nil {
+		t.Fatalf("decode valid manifest: %v", err)
+	}
+	manifest.Platform = "wrong-platform"
+	encoded, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("encode wrong-platform manifest: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, encoded, 0o600); err != nil {
+		t.Fatalf("write wrong-platform manifest: %v", err)
+	}
+	_, err = validateCachedRuntimeInstall(cfg, artifact, installDir)
+	if got := cacheValidationDispositionForError(err); got != cacheValidationConfirmedInvalid {
+		t.Fatalf("wrong metadata disposition = %v, want confirmed invalid", got)
+	}
+
+	seedValidInstall()
+	checksumCfg := cfg
+	checksumCfg.expectedSHA256 = strings.Repeat("b", 64)
+	_, err = validateCachedRuntimeInstall(checksumCfg, artifact, installDir)
+	if got := cacheValidationDispositionForError(err); got != cacheValidationConfirmedInvalid {
+		t.Fatalf("checksum mismatch disposition = %v, want confirmed invalid", got)
+	}
+
+	seedValidInstall()
+	if err := os.WriteFile(filepath.Join(installDir, "unexpected-file"), []byte("extra"), 0o600); err != nil {
+		t.Fatalf("write unexpected cached file: %v", err)
+	}
+	_, err = validateCachedRuntimeInstall(cfg, artifact, installDir)
+	if got := cacheValidationDispositionForError(err); got != cacheValidationConfirmedInvalid {
+		t.Fatalf("file-list mismatch disposition = %v, want confirmed invalid", got)
+	}
+
 	operationalErr := fmt.Errorf("wrapped inspection failure: %w", syscall.EIO)
 	if got := cacheValidationDispositionForError(operationalErr); got != cacheValidationOperational {
 		t.Fatalf("operational error disposition = %v, want operational", got)
@@ -966,6 +1030,39 @@ func TestBootstrapReadOnlyCacheHit(t *testing.T) {
 	}
 }
 
+func TestDownloadAndInstallRuntimeDoesNotReplaceExistingDestination(t *testing.T) {
+	cfg, artifact, installDir, checksum := newBootstrapDiagnosticDownloadFixture(t, false)
+	cfg.expectedSHA256 = checksum
+	if err := os.MkdirAll(installDir, secureDirectoryPermission); err != nil {
+		t.Fatalf("create competing install directory: %v", err)
+	}
+	sentinel := filepath.Join(installDir, "preserve-me")
+	if err := os.WriteFile(sentinel, []byte("sentinel"), 0o600); err != nil {
+		t.Fatalf("write competing install sentinel: %v", err)
+	}
+
+	previousRemoveAll := bootstrapRemoveAll
+	removedDestination := false
+	bootstrapRemoveAll = func(path string) error {
+		if path == installDir {
+			removedDestination = true
+		}
+		return os.RemoveAll(path)
+	}
+	t.Cleanup(func() { bootstrapRemoveAll = previousRemoveAll })
+
+	err := downloadAndInstallRuntime(cfg, artifact, installDir)
+	if err == nil || !strings.Contains(err.Error(), "refusing to replace") {
+		t.Fatalf("download error = %v, want destination collision rejection", err)
+	}
+	if removedDestination {
+		t.Fatal("download removed an existing destination without confirmed-invalid validation")
+	}
+	if contents, readErr := os.ReadFile(sentinel); readErr != nil || string(contents) != "sentinel" {
+		t.Fatalf("competing destination changed: contents=%q error=%v", contents, readErr)
+	}
+}
+
 func TestBootstrapPlatformTrustPolicy(t *testing.T) {
 	path := t.TempDir()
 	info, err := os.Lstat(path)
@@ -983,20 +1080,38 @@ func TestBootstrapPlatformTrustPolicy(t *testing.T) {
 		if stat.Kind() != reflect.Pointer || stat.IsNil() {
 			t.Fatalf("unexpected Unix stat value %T", info.Sys())
 		}
-		rootStat := reflect.New(stat.Elem().Type())
-		rootStat.Elem().Set(stat.Elem())
-		uid := rootStat.Elem().FieldByName("Uid")
-		if !uid.IsValid() || !uid.CanSet() {
+		uid := stat.Elem().FieldByName("Uid")
+		if !uid.IsValid() {
 			t.Fatalf("Unix stat value %T has no settable Uid", info.Sys())
 		}
-		uid.SetUint(0)
-		rootInfo := bootstrapTestFileInfo{
-			FileInfo: info,
-			mode:     info.Mode(),
-			system:   rootStat.Interface(),
+		withUID := func(value uint64) bootstrapTestFileInfo {
+			clonedStat := reflect.New(stat.Elem().Type())
+			clonedStat.Elem().Set(stat.Elem())
+			clonedUID := clonedStat.Elem().FieldByName("Uid")
+			if !clonedUID.CanSet() {
+				t.Fatalf("Unix stat value %T has no settable Uid", info.Sys())
+			}
+			clonedUID.SetUint(value)
+			return bootstrapTestFileInfo{
+				FileInfo: info,
+				mode:     info.Mode(),
+				system:   clonedStat.Interface(),
+			}
 		}
+		rootInfo := withUID(0)
 		if err := validateBootstrapPathOwnershipAndMode(path, rootInfo, false); err != nil {
 			t.Fatalf("strict policy rejected root owner: %v", err)
+		}
+		otherUID := uid.Uint() + 1
+		if otherUID == 0 {
+			otherUID = 1
+		}
+		otherOwnerInfo := withUID(otherUID)
+		if err := validateBootstrapPathOwnershipAndMode(path, otherOwnerInfo, false); err == nil {
+			t.Fatal("strict policy accepted non-current owner")
+		}
+		if err := validateBootstrapPathOwnershipAndMode(path, otherOwnerInfo, true); err != nil {
+			t.Fatalf("shared policy rejected non-current owner: %v", err)
 		}
 
 		if err := os.Chmod(path, 0o770); err != nil {
@@ -2281,7 +2396,7 @@ func TestWithProcessFileLockTimesOut(t *testing.T) {
 	release := make(chan struct{})
 	holderErrCh := make(chan error, 1)
 	go func() {
-		holderErrCh <- withProcessFileLock(lockPath, func() error {
+		holderErrCh <- withProcessFileLock(lockPath, false, func() error {
 			close(locked)
 			<-release
 			return nil
@@ -2294,7 +2409,7 @@ func TestWithProcessFileLockTimesOut(t *testing.T) {
 		t.Fatalf("timed out waiting for lock holder to acquire lock")
 	}
 
-	err := withProcessFileLock(lockPath, func() error { return nil })
+	err := withProcessFileLock(lockPath, false, func() error { return nil })
 	if err == nil {
 		t.Fatalf("expected timeout while waiting for lock")
 	}
@@ -2310,7 +2425,7 @@ func TestWithProcessFileLockTimesOut(t *testing.T) {
 
 func TestWithProcessFileLockRejectsNilCallback(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "bootstrap.lock")
-	err := withProcessFileLock(lockPath, nil)
+	err := withProcessFileLock(lockPath, false, nil)
 	if err == nil || !strings.Contains(err.Error(), "lock callback is nil") {
 		t.Fatalf("expected nil callback error, got: %v", err)
 	}
@@ -2647,6 +2762,9 @@ func TestDiagnosticCallSites(t *testing.T) {
 		t.Cleanup(func() { bootstrapRemove = previousRemove })
 
 		assertBootstrapDiagnosticCase(t, &legacyOutput, handler, func(t *testing.T) {
+			if err := os.RemoveAll(installDir); err != nil {
+				t.Fatalf("reset diagnostic install directory: %v", err)
+			}
 			if err := downloadAndInstallRuntime(cfg, artifact, installDir); err != nil {
 				t.Fatalf("downloadAndInstallRuntime: %v", err)
 			}
@@ -2670,6 +2788,9 @@ func TestDiagnosticCallSites(t *testing.T) {
 		wantURL := parsedURL.Redacted() + "/v" + cfg.version + "/" + artifact.archiveFilename(cfg.version)
 
 		assertBootstrapDiagnosticCase(t, &legacyOutput, handler, func(t *testing.T) {
+			if err := os.RemoveAll(installDir); err != nil {
+				t.Fatalf("reset diagnostic install directory: %v", err)
+			}
 			if err := downloadAndInstallRuntime(cfg, artifact, installDir); err != nil {
 				t.Fatalf("downloadAndInstallRuntime: %v", err)
 			}
@@ -2693,7 +2814,7 @@ func TestDiagnosticCallSites(t *testing.T) {
 		removeCalls := 0
 		bootstrapRemoveAll = func(path string) error {
 			removeCalls++
-			if removeCalls == 3 {
+			if removeCalls == 2 && strings.Contains(path, ".staging-") {
 				return removeErr
 			}
 			return os.RemoveAll(path)
@@ -2702,6 +2823,9 @@ func TestDiagnosticCallSites(t *testing.T) {
 
 		assertBootstrapDiagnosticCase(t, &legacyOutput, handler, func(t *testing.T) {
 			removeCalls = 0
+			if err := os.RemoveAll(installDir); err != nil {
+				t.Fatalf("reset diagnostic install directory: %v", err)
+			}
 			if err := downloadAndInstallRuntime(cfg, artifact, installDir); err != nil {
 				t.Fatalf("downloadAndInstallRuntime: %v", err)
 			}
@@ -2861,7 +2985,7 @@ func TestDiagnosticCallSites(t *testing.T) {
 			release := make(chan struct{})
 			holderErr := make(chan error, 1)
 			go func() {
-				holderErr <- withProcessFileLock(lockPath, func() error {
+				holderErr <- withProcessFileLock(lockPath, false, func() error {
 					close(locked)
 					<-release
 					return nil
@@ -2873,7 +2997,7 @@ func TestDiagnosticCallSites(t *testing.T) {
 				t.Fatal("timed out waiting for lock holder")
 			}
 
-			err := withProcessFileLock(lockPath, func() error { return nil })
+			err := withProcessFileLock(lockPath, false, func() error { return nil })
 			if err == nil || !strings.Contains(err.Error(), "timed out acquiring lock") {
 				t.Fatalf("lock wait: got %v, want timeout", err)
 			}
@@ -3036,7 +3160,7 @@ func TestReturnedErrorsDoNotEmit(t *testing.T) {
 		release := make(chan struct{})
 		holderErr := make(chan error, 1)
 		go func() {
-			holderErr <- withProcessFileLock(lockPath, func() error {
+			holderErr <- withProcessFileLock(lockPath, false, func() error {
 				close(locked)
 				<-release
 				return nil
@@ -3049,7 +3173,7 @@ func TestReturnedErrorsDoNotEmit(t *testing.T) {
 		}
 
 		assertNoDiagnostic(t, func() error {
-			return withProcessFileLock(lockPath, func() error { return nil })
+			return withProcessFileLock(lockPath, false, func() error { return nil })
 		})
 		close(release)
 		if err := <-holderErr; err != nil {

@@ -70,8 +70,22 @@ Optional bootstrap environment variables:
 - `ONNXRUNTIME_VERSION` (default: `1.24.1`)
 - `ONNXRUNTIME_CACHE_DIR` (default: user cache dir under `onnx-purego/onnxruntime`)
 - `ONNXRUNTIME_DISABLE_DOWNLOAD=1` (fail if library is not already cached)
+- `ONNXRUNTIME_ALLOW_SHARED_CACHE=1` (explicitly trust a controlled shared cache)
 - `ONNXRUNTIME_LIB_PATH` (if set, explicit path mode is used)
 - `GITHUB_TOKEN` / `GH_TOKEN` (optional; helps avoid GitHub API rate limits during checksum metadata lookup)
+
+Validated cache hits are returned before bootstrap creates directories or opens a
+lock file, so root-baked and read-only caches work without write access. On
+Unix, strict mode accepts only current-user or root-owned paths that are not
+group- or world-writable. `WithBootstrapAllowSharedCache(true)` (or
+`ONNXRUNTIME_ALLOW_SHARED_CACHE=1`) deliberately permits other owners and
+group-writable paths for a controlled group, but world-writable paths are always
+rejected. Windows and other non-Unix systems do not claim Unix UID or mode-bit
+validation; the same path-type, symlink, manifest, metadata, and hash checks
+still apply.
+
+Caller-selected explicit library paths may resolve a normal soname symlink to
+its validated target. Cache-managed installs reject symlinks at every level.
 
 ### Runtime diagnostics
 
