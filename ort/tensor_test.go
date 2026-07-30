@@ -725,8 +725,10 @@ func TestTensorPinnedBackingSurvivesGC(t *testing.T) {
 	mu.Unlock()
 
 	want := []int64{11, 22, 33, 44}
-	data := append([]int64(nil), want...)
-	tensor, err := NewTensor[int64](Shape{int64(len(data))}, data)
+	tensor, err := func() (*Tensor[int64], error) {
+		callerData := append([]int64(nil), want...)
+		return NewTensor[int64](Shape{int64(len(callerData))}, callerData)
+	}()
 	if err != nil {
 		t.Fatalf("NewTensor: %v", err)
 	}
@@ -737,7 +739,6 @@ func TestTensorPinnedBackingSurvivesGC(t *testing.T) {
 		t.Fatalf("tensor data pointer = %#x, native pointer = %#x", got, capturedData)
 	}
 
-	data = nil
 	for iteration := 0; iteration < 25; iteration++ {
 		pressure := make([][]byte, 32)
 		for i := range pressure {
@@ -747,9 +748,12 @@ func TestTensorPinnedBackingSurvivesGC(t *testing.T) {
 		runtime.GC()
 		runtime.Gosched()
 
-		got := unsafe.Slice((*int64)(unsafe.Pointer(capturedData)), len(want))
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("pinned data changed after GC iteration %d: got %v, want %v", iteration, got, want)
+		liveData := tensor.GetData()
+		if got := uintptr(unsafe.Pointer(unsafe.SliceData(liveData))); got != capturedData {
+			t.Fatalf("tensor data pointer moved after GC iteration %d: got %#x, want %#x", iteration, got, capturedData)
+		}
+		if !reflect.DeepEqual(liveData, want) {
+			t.Fatalf("pinned data changed after GC iteration %d: got %v, want %v", iteration, liveData, want)
 		}
 		runtime.KeepAlive(pressure)
 	}
