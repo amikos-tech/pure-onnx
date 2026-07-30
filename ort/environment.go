@@ -28,6 +28,7 @@ var (
 	// SessionOptions.handleMu -> mu only when both are held.
 	// mu is released before Tensor.runMu or MemoryInfo.handleMu.
 	// Tensor.runMu and MemoryInfo.handleMu are never nested with each other.
+	// Multiple Tensor.runMu leases DO nest within one Run, ordered by pointer identity in acquireValueLeases.
 	// Not every listed lock is held in one operation.
 	mu                                 sync.Mutex
 	ortCallMu                          sync.RWMutex

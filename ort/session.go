@@ -517,6 +517,10 @@ func acquireValueLeases(groups ...valueRoleValues) (*valueLeaseSet, error) {
 		}
 	}
 
+	// The loop below holds every acquired lease while taking the next, so all leases of one
+	// Run nest. Sorting by orderKey (pointer identity), with a reflect type-name tiebreak,
+	// gives every Run the same process-wide total order. Removing or reordering this sort
+	// reintroduces AB-BA deadlock between concurrent Run calls that share values.
 	sort.Slice(candidates, func(i, j int) bool {
 		if candidates[i].orderKey != candidates[j].orderKey {
 			return candidates[i].orderKey < candidates[j].orderKey
