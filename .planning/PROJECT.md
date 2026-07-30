@@ -77,6 +77,11 @@ Run ONNX Runtime inference from Go with zero CGO — if that stops working, noth
 | v0.1.0 = harden full milestone (all 11 issues), not a feature-tight subset | User chose to include features (#49/#7/#6) alongside DX/docs/lint | — Pending |
 | Definition of Done = tagged + documented release | All issues closed, full lint gate green, docs complete, CI green on all platforms, v0.1.0 tag + release notes | — Pending |
 | #42 fix stays in the example, not `ort/` | Issue is scoped "example UX only; no ort runtime changes" | — Pending |
+| Separate local error categories from native runtime detail | `errors.Is` remains stable for local lifecycle/validation failures while `errors.As` exposes `ORTError` operation, code, and message | ✓ Validated in Phase 2 |
+| Seal `Value` and keep tensor extraction exact | Only package-owned values can enter the native lease protocol; `AsTensor[T]` performs no coercion, copying, reflection, or allocation | ✓ Validated in Phase 2 |
+| Keep diagnostics opt-in and avoid logging returned errors | Silent defaults prevent surprise output; structured diagnostics are reserved for non-returnable notices and finalizer failures | ✓ Validated in Phase 2 |
+| Borrow per-call values through the existing session run core | `RunWithValues` preserves caller ownership and existing lock, lease, lifetime, and `Run` behavior | ✓ Validated in Phase 2 |
+| Keep race and native ABI verification in separate live-counted CI lanes | Exact selector counts prevent renamed tests from silently reducing coverage without disabling checkptr | ✓ Validated in Phase 2 |
 
 ## Evolution
 
@@ -96,4 +101,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-24 after Phase 2 completion*
+*Last updated: 2026-07-30 after Phase 2 UAT completion*

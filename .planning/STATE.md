@@ -4,8 +4,8 @@ milestone: v0.1.0
 milestone_name: "**Goal**: v0.1.0 is cut as a tagged, documented release with CI green across all supported platforms and every milestone issue closed."
 status: ready_to_plan
 stopped_at: Phase 02 complete (8/8) — ready to discuss Phase 3
-last_updated: 2026-07-24T15:12:48.663Z
-last_activity: 2026-07-24
+last_updated: 2026-07-30T08:49:07.079Z
+last_activity: 2026-07-30
 progress:
   total_phases: 6
   completed_phases: 2
@@ -18,19 +18,19 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-21)
+See: .planning/PROJECT.md (updated 2026-07-30)
 
 **Core value:** Run ONNX Runtime inference from Go with zero CGO — if that stops working, nothing else matters.
-**Current focus:** Phase 3 — generalized embedder api
+**Current focus:** Phase 3 — Generalized Embedder API
 
 ## Current Position
 
 Phase: 3
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-07-24
+Last activity: 2026-07-30
 
-Progress: [██████████] 100%
+Progress: [████████████████████] 11/11 plans (100%)
 
 ## Performance Metrics
 
@@ -69,30 +69,11 @@ Progress: [██████████] 100%
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- v0.1.0 = full hardening milestone (all 12 requirements), not a feature-tight subset
-- Definition of Done = tagged + documented release with full lint gate green and CI green on all platforms
-- DX-01 (#42) fix stays in the example, not `ort/` — issue is scoped example-UX only
-- [Phase 02]: Keep native ErrorCode values on ORTError instead of mapping them to local sentinels — errors.As preserves native detail while errors.Is remains reserved for local lifecycle categories
-- [Phase 02]: Require callers to hold ortCallMu through status conversion — the converter avoids changing the established lock hierarchy while reset cannot clear live function pointers
-- [Phase 02]: Use ONNXRUNTIME_LIB_PATH for the optional Unix ABI test — the test stays portable and Windows evidence remains registration/reset plus package compilation
-- [Phase 02]: Seal Value with the private ortValue marker — Only package-created values can safely participate in native handle and run-lease protocols
-- [Phase 02]: Keep IsTensor kind-only and make AsTensor exact and non-nil — Exact extraction preserves ownership and avoids coercion, copying, reflection, and allocation
-- [Phase 02]: Keep diagnostics silent until a standard slog handler is explicitly installed — nil installs slog.DiscardHandler and restores the package default
-- [Phase 02]: Treat consumer diagnostic handlers as trusted synchronous callbacks — general handler panics propagate, while best-effort finalizer diagnostics recover them
-- [Phase 02]: Keep NewAdvancedSession and Run constructor bindings intact while selecting RunWithValues arguments only inside the shared locked core
-- [Phase 02]: Use stable native operation names and emit diagnostics only when a session finalizer cannot return its Destroy error
-- [Phase 02]: Preserve strconv.NumError alongside ErrInvalidArgument for ParseShape integer failures — Callers can classify invalid input and inspect the exact parse cause independently
-- [Phase 02]: Require the complete tensor and status callback set before native tensor creation — A partial runtime registration fails with ErrNotInitialized instead of panicking during status conversion
-- [Phase 02]: Use a null-message fake status for tensor call-site checks under the race detector — This proves operation, code, and exact release without sending a Go heap pointer through uintptr; non-empty copying remains covered by the status ownership tests
-- [Phase 02]: Use private environment loader seams for exact cause-chain tests — This proves load, symbol, and cleanup identity without invoking purego on fake symbols
-- [Phase 02]: Keep race-lane environment and MemoryInfo status probes null-message — The central converter test proves non-empty copying without sending Go heap pointers through uintptr
-- [Phase 02]: Require the complete MemoryInfo create, release, and status callback set before native creation — Partial registration cannot safely convert failures or release a successful handle
-- [Phase 02]: Keep unsupported platforms distinct from supported-platform library absence — ErrUnsupportedPlatform and ErrSharedLibraryNotFound remain independently actionable
-- [Phase 02]: Clamp only group and other write bits from archive-derived file modes — Owner execute permissions survive while archive-supplied writable permissions are removed
-- [Phase 02]: Allowlist structured bootstrap attributes and redact URLs before emission — Returned errors stay diagnostic-free and trusted synchronous handler panics continue to propagate
-- [Phase 02]: Fail CI unless the exact race and native selectors resolve to 29 and 4 top-level tests respectively — Selector liveness makes test renames or omissions fail instead of silently shrinking coverage
-- [Phase 02]: Keep call-site status probes checkptr-safe with null message pointers while central and native tests retain non-empty message-copy proof — Each test proves one ownership property without sending Go heap pointers through uintptr under race
-- [Phase 02]: Preserve intentional native pointer and nil-context tests with line-scoped lint annotations instead of weakening repository lint — The tests exercise required boundaries and narrow annotations keep the changed-code gate enforcing everywhere else
+- v0.1.0 remains the full hardening milestone, with a tagged documented release and green CI as the definition of done.
+- [Phase 02] Keep local error categories separate from native `ORTError` detail so callers can use both `errors.Is` and `errors.As`.
+- [Phase 02] Seal `Value` and keep `AsTensor[T]` exact so only package-owned values enter native handle and lease protocols.
+- [Phase 02] Keep diagnostics opt-in and do not duplicate returned errors; only non-returnable notices and finalizer failures emit.
+- [Phase 02] Borrow per-call values through the existing session run core, preserving caller ownership and established locking/lifetime behavior.
 
 ### Pending Todos
 
@@ -101,7 +82,7 @@ None yet.
 ### Blockers/Concerns
 
 - CLN-01 (full lint gate, Phase 5) may surface latent issues in code changed by Phases 2-4; sequenced after code + docs so it audits the final tree.
-- API-01/02/03 (Phases 2-3) are the heaviest, code-changing work; watch fragile global lock ordering in `ort/environment.go`/`session.go`/`tensor.go`.
+- API-01 (Phase 3) builds on the settled `Value` and `RunWithValues` contracts; preserve their ownership, locking, and lifetime guarantees.
 
 ## Deferred Items
 
@@ -114,6 +95,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-24T14:25:38.211Z
-Stopped at: Completed 02-08-PLAN.md
+Last session: 2026-07-30T08:49:07.079Z
+Stopped at: Phase 2 UAT complete, ready to discuss Phase 3
 Resume file: None
