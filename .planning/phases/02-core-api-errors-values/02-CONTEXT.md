@@ -1,5 +1,8 @@
 # Phase 2: Core API — Errors & Values - Context
 
+> Superseded by c7e58011: the shipped diagnostics default is a stderr TextHandler at
+> LevelWarn, not a silent DiscardHandler.
+
 **Gathered:** 2026-07-23
 **Status:** Ready for planning
 

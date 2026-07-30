@@ -1,5 +1,8 @@
 # Phase 2: Core API — Errors & Values - Research
 
+> Superseded by c7e58011: the shipped diagnostics default is a stderr TextHandler at
+> LevelWarn, not a silent DiscardHandler.
+
 <user_constraints>
 ## User Constraints (from CONTEXT.md)
 

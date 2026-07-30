@@ -8,6 +8,9 @@ created: 2026-07-23
 last_audited: 2026-07-29
 ---
 
+> Superseded by c7e58011: the shipped diagnostics default is a stderr TextHandler at
+> LevelWarn, not a silent DiscardHandler.
+
 # Phase 2 — Validation Strategy
 
 > Per-phase validation contract for feedback sampling during execution.

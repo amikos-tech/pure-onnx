@@ -6,6 +6,9 @@ started: 2026-07-29T11:13:39Z
 updated: 2026-07-30T08:47:39Z
 ---
 
+> Superseded by c7e58011: the shipped diagnostics default is a stderr TextHandler at
+> LevelWarn, not a silent DiscardHandler.
+
 ## Current Test
 
 [testing complete]

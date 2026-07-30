@@ -42,6 +42,9 @@ duration: 4min
 completed: 2026-07-24
 ---
 
+> Superseded by c7e58011: the shipped diagnostics default is a stderr TextHandler at
+> LevelWarn, not a silent DiscardHandler.
+
 # Phase 2 Plan 03: Consumer-Wired Diagnostic Hook Summary
 
 **Silent standard-library diagnostics with atomic handler replacement, structured `LogAttrs` emission, and finalizer-only panic containment.**

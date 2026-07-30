@@ -1,5 +1,8 @@
 # Phase 2: Core API — Errors & Values - Pattern Map
 
+> Superseded by c7e58011: the shipped diagnostics default is a stderr TextHandler at
+> LevelWarn, not a silent DiscardHandler.
+
 **Mapped:** 2026-07-23  
 **Files analyzed:** 21 new/modified files
 **Analogs found:** 21 / 21

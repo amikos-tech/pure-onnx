@@ -6,6 +6,9 @@ score: 44/44 must-haves verified
 overrides_applied: 0
 ---
 
+> Superseded by c7e58011: the shipped diagnostics default is a stderr TextHandler at
+> LevelWarn, not a silent DiscardHandler.
+
 # Phase 2: Core API — Errors & Values Verification Report
 
 **Phase Goal:** The `ort` core returns comprehensive wrapped errors and exposes a `Value` interface for polymorphic tensor handling.

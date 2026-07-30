@@ -13,6 +13,9 @@ plans_reviewed:
   - 02-08-PLAN.md
 ---
 
+> Superseded by c7e58011: the shipped diagnostics default is a stderr TextHandler at
+> LevelWarn, not a silent DiscardHandler.
+
 # Cross-AI Plan Review — Phase 2
 
 ## Claude Review
