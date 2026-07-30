@@ -242,6 +242,10 @@ func TestBootstrapErrorChains(t *testing.T) {
 		if err := os.WriteFile(libPath, []byte("synthetic library"), 0o600); err != nil {
 			t.Fatalf("failed to write synthetic library: %v", err)
 		}
+		resolvedLibPath, resolveErr := filepath.EvalSymlinks(libPath)
+		if resolveErr != nil {
+			t.Fatalf("resolve synthetic library path: %v", resolveErr)
+		}
 		loadCause := errors.New("synthetic dynamic loader failure")
 		mu.Lock()
 		environmentLoadLibrary = func(path string) (uintptr, error) {
@@ -257,8 +261,8 @@ func TestBootstrapErrorChains(t *testing.T) {
 		if !errors.As(err, &pathErr) {
 			t.Fatalf("expected *os.PathError in dynamic loader chain, got: %v", err)
 		}
-		if pathErr.Path != libPath {
-			t.Fatalf("loader path = %q, want %q", pathErr.Path, libPath)
+		if pathErr.Path != resolvedLibPath {
+			t.Fatalf("loader path = %q, want resolved path %q", pathErr.Path, resolvedLibPath)
 		}
 	})
 
@@ -2773,7 +2777,10 @@ func TestInitializeEnvironmentWithBootstrapLoadsSelectedPathAtomically(t *testin
 	if err := os.WriteFile(otherLib, []byte("other"), 0o600); err != nil {
 		t.Fatalf("write competing library: %v", err)
 	}
-	bootstrapLib, _ = filepath.Abs(bootstrapLib)
+	resolvedBootstrapLib, err := filepath.EvalSymlinks(bootstrapLib)
+	if err != nil {
+		t.Fatalf("resolve bootstrap library path: %v", err)
+	}
 	otherLib, _ = filepath.Abs(otherLib)
 
 	noOp := purego.NewCallback(func() {})
@@ -2828,8 +2835,8 @@ func TestInitializeEnvironmentWithBootstrapLoadsSelectedPathAtomically(t *testin
 
 	select {
 	case loadedPath := <-loadEntered:
-		if loadedPath != bootstrapLib {
-			t.Fatalf("loaded path = %q, want bootstrap path %q", loadedPath, bootstrapLib)
+		if loadedPath != resolvedBootstrapLib {
+			t.Fatalf("loaded path = %q, want resolved bootstrap path %q", loadedPath, resolvedBootstrapLib)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("bootstrap initialization did not reach the library loader")
