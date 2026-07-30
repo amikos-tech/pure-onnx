@@ -58,7 +58,7 @@ Run ONNX Runtime inference from Go with zero CGO — if that stops working, noth
 - **Brownfield.** Mature codebase already mapped in `.planning/codebase/` (2026-03-18). Layered: FFI core (`ort/`) → embedding adapters (`embeddings/*`) → examples/tooling.
 - The public `CLAUDE.md` predates the embeddings work and under-describes the current surface; treat the codebase map + this doc as ground truth.
 - Issue #42 is partially resolved by prior work: the bootstrap rewrite (`resolveRuntimeArtifact`) already emits a fail-fast `GOOS=/GOARCH=`-labeled error. The remaining gap is example-only — surface a "set `ONNXRUNTIME_LIB_PATH`" hint when bootstrap fails.
-- ONNX Runtime C API version 22; default bootstrap runtime version tracks CI (currently `1.23.1`).
+- ONNX Runtime C API version 22; default bootstrap runtime version tracks CI (currently `1.24.1`, asserted by the version-match step in `ci.yml`).
 - CI runs on Go 1.24.x across Linux/macOS/Windows (amd64+arm64); `govulncheck` uses a patched Go 1.25.x toolchain.
 - Phase 2 is complete: public `ort` failures are inspectable, polymorphic `Value` handling is available, and race/native CI lanes cover the new contracts.
 

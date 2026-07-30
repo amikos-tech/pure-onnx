@@ -125,7 +125,9 @@ Symptom:
 - message about module compiled with NumPy 1.x and running in NumPy 2.x
 
 Fix:
-1. Pin ONNX Runtime to `1.23.1` (project baseline):
+1. Pin the Python `onnxruntime` package to `1.23.1` (matches
+   `tools/requirements-openclip.txt`; this export-tooling pin is independent of
+   the Go bootstrap default in `ort.DefaultOnnxRuntimeVersion`):
    ```bash
    pip install --upgrade onnxruntime==1.23.1
    ```
