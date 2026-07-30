@@ -65,6 +65,26 @@ func IsUnsupportedPlatformError(err error) bool { return errors.Is(err, ErrUnsup
 var bootstrapCacheFallbackWarnOnce sync.Once
 var bootstrapInitMu sync.Mutex
 
+// bootstrapValidatedInstalls memoizes installs that already passed full manifest
+// verification in this process, so repeat calls skip re-hashing the whole tree
+// (a cached install is dominated by the shared library itself). A memo hit still
+// requires an unchanged metadata fingerprint, so tampering between calls is
+// caught and re-verified rather than served from the memo.
+var bootstrapValidatedInstalls sync.Map // bootstrapValidationKey -> bootstrapValidatedInstall
+
+type bootstrapValidationKey struct {
+	installDir       string
+	runtimeVersion   string
+	platform         string
+	expectedSHA256   string
+	allowSharedCache bool
+}
+
+type bootstrapValidatedInstall struct {
+	libraryPath string
+	fingerprint string
+}
+
 var (
 	bootstrapLockAcquireTimeout           = 2 * time.Minute
 	bootstrapLockRetryInterval            = 200 * time.Millisecond
@@ -1537,6 +1557,22 @@ func validateCachedRuntimeInstall(
 		return "", markCacheValidationError(cacheValidationConfirmedInvalid, err)
 	}
 
+	memoKey := bootstrapValidationKey{
+		installDir:       installDir,
+		runtimeVersion:   cfg.version,
+		platform:         artifact.platform,
+		expectedSHA256:   cfg.expectedSHA256,
+		allowSharedCache: cfg.allowSharedCache,
+	}
+	fingerprint := bootstrapInstallFingerprint(installDir)
+	if fingerprint != "" {
+		if cached, ok := bootstrapValidatedInstalls.Load(memoKey); ok {
+			if memo, ok := cached.(bootstrapValidatedInstall); ok && memo.fingerprint == fingerprint {
+				return memo.libraryPath, nil
+			}
+		}
+	}
+
 	manifest, err := readBootstrapInstallManifest(installDir, cfg.allowSharedCache)
 	if err != nil {
 		return "", err
@@ -1601,7 +1637,47 @@ func validateCachedRuntimeInstall(
 		}
 		return "", markCacheValidationError(cacheValidationConfirmedInvalid, err)
 	}
+	if fingerprint != "" {
+		bootstrapValidatedInstalls.Store(memoKey, bootstrapValidatedInstall{
+			libraryPath: path,
+			fingerprint: fingerprint,
+		})
+	}
 	return path, nil
+}
+
+// bootstrapInstallFingerprint summarizes an install tree from directory metadata
+// alone. It never reads file contents, so it costs a few stats instead of a full
+// SHA-256 pass. An empty result means "no usable fingerprint" and forces callers
+// back onto full manifest verification.
+func bootstrapInstallFingerprint(installDir string) string {
+	hash := sha256.New()
+	err := filepath.WalkDir(installDir, func(filePath string, _ os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := os.Lstat(filePath)
+		if err != nil {
+			return err
+		}
+		relativePath, err := filepath.Rel(installDir, filePath)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(
+			hash,
+			"%s\x00%d\x00%d\x00%d\n",
+			filepath.ToSlash(relativePath),
+			info.Mode(),
+			info.Size(),
+			info.ModTime().UnixNano(),
+		)
+		return nil
+	})
+	if err != nil {
+		return ""
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func readBootstrapInstallManifest(

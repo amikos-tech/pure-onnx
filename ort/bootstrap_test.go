@@ -3174,6 +3174,74 @@ func TestDiagnosticCallSites(t *testing.T) {
 	})
 }
 
+func TestEnsureOnnxRuntimeSharedLibraryMemoizesVerifiedInstall(t *testing.T) {
+	clearBootstrapEnv(t)
+
+	artifact, err := resolveRuntimeArtifact(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		t.Skipf("unsupported runtime for bootstrap test: %v", err)
+	}
+
+	cacheDir := t.TempDir()
+	version := "1.99.71"
+	archiveBytes := buildORTArchive(t, artifact, version, true)
+	sum := sha256.Sum256(archiveBytes)
+	server, hits := newArchiveServer(t, artifact, version, archiveBytes)
+	opts := []BootstrapOption{
+		WithBootstrapCacheDir(cacheDir),
+		WithBootstrapVersion(version),
+		WithBootstrapExpectedSHA256(hex.EncodeToString(sum[:])),
+		withBootstrapBaseURL(server.URL),
+		withBootstrapHTTPClient(server.Client()),
+	}
+
+	resolved, err := EnsureOnnxRuntimeSharedLibrary(opts...)
+	if err != nil {
+		t.Fatalf("initial bootstrap: %v", err)
+	}
+
+	installDir := filepath.Join(cacheDir, artifact.archiveName(version))
+	manifestPath := filepath.Join(installDir, bootstrapManifestFilename)
+	info, err := os.Stat(manifestPath)
+	if err != nil {
+		t.Fatalf("stat manifest: %v", err)
+	}
+	original, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+
+	// Corrupt the manifest while preserving size and mtime. A memoized install
+	// keeps its fingerprint, so the second call must not re-read the manifest.
+	if err := os.WriteFile(manifestPath, bytes.Repeat([]byte("x"), len(original)), 0o600); err != nil {
+		t.Fatalf("corrupt manifest: %v", err)
+	}
+	if err := os.Chtimes(manifestPath, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatalf("restore manifest mtime: %v", err)
+	}
+
+	memoized, err := EnsureOnnxRuntimeSharedLibrary(opts...)
+	if err != nil {
+		t.Fatalf("memoized cache hit revalidated the corrupt manifest: %v", err)
+	}
+	if memoized != resolved {
+		t.Fatalf("memoized path = %q, want %q", memoized, resolved)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("archive download count = %d, want 1 while the memo is valid", got)
+	}
+
+	// Any metadata change drops the memo and forces full verification, which now
+	// fails because the manifest is corrupt.
+	shifted := info.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(manifestPath, shifted, shifted); err != nil {
+		t.Fatalf("shift manifest mtime: %v", err)
+	}
+	if _, err := EnsureOnnxRuntimeSharedLibrary(append(opts, WithBootstrapDisableDownload(true))...); err == nil {
+		t.Fatal("changed fingerprint returned a memoized install without revalidating")
+	}
+}
+
 func TestReturnedErrorsDoNotEmit(t *testing.T) {
 	handler := &bootstrapDiagnosticRecordingHandler{}
 	SetDiagnosticHandler(handler)
