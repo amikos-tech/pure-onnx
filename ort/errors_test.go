@@ -150,57 +150,120 @@ func TestStatusToError(t *testing.T) {
 	})
 
 	t.Run("releases when an accessor panics", func(t *testing.T) {
+		type statusOpCalls struct {
+			codes    atomic.Int32
+			messages atomic.Int32
+			releases atomic.Int32
+		}
+
 		tests := []struct {
-			name string
-			ops  func(*atomic.Int32) statusOps
+			name         string
+			ops          func(*statusOpCalls) statusOps
+			wantPanic    string
+			wantCodes    int32
+			wantMessages int32
+			wantReleases int32
 		}{
 			{
 				name: "code accessor",
-				ops: func(releases *atomic.Int32) statusOps {
+				ops: func(calls *statusOpCalls) statusOps {
 					return statusOps{
 						getCode: func(uintptr) ErrorCode {
+							calls.codes.Add(1)
 							panic("code accessor failed")
 						},
 						copyMessage: func(uintptr) string {
+							calls.messages.Add(1)
 							return "unreachable"
 						},
 						release: func(uintptr) {
-							releases.Add(1)
+							calls.releases.Add(1)
 						},
 					}
 				},
+				wantPanic:    "code accessor failed",
+				wantCodes:    1,
+				wantMessages: 0,
+				wantReleases: 1,
 			},
 			{
 				name: "message accessor",
-				ops: func(releases *atomic.Int32) statusOps {
+				ops: func(calls *statusOpCalls) statusOps {
 					return statusOps{
 						getCode: func(uintptr) ErrorCode {
+							calls.codes.Add(1)
 							return ErrorCodeFail
 						},
 						copyMessage: func(uintptr) string {
+							calls.messages.Add(1)
 							panic("message accessor failed")
 						},
 						release: func(uintptr) {
-							releases.Add(1)
+							calls.releases.Add(1)
 						},
 					}
 				},
+				wantPanic:    "message accessor failed",
+				wantCodes:    1,
+				wantMessages: 1,
+				wantReleases: 1,
+			},
+			{
+				// release is deferred before the ORTError literal is built, so both accessors
+				// run and the error IS constructed - then discarded when release panics.
+				// The native status leaks: nothing else frees it.
+				name: "release",
+				ops: func(calls *statusOpCalls) statusOps {
+					return statusOps{
+						getCode: func(uintptr) ErrorCode {
+							calls.codes.Add(1)
+							return ErrorCodeFail
+						},
+						copyMessage: func(uintptr) string {
+							calls.messages.Add(1)
+							return "message"
+						},
+						release: func(uintptr) {
+							calls.releases.Add(1)
+							panic("release failed")
+						},
+					}
+				},
+				wantPanic:    "release failed",
+				wantCodes:    1,
+				wantMessages: 1,
+				wantReleases: 1,
 			},
 		}
 
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
-				var releases atomic.Int32
+				var calls statusOpCalls
+				var got error
 				func() {
 					defer func() {
-						if recover() == nil {
-							t.Fatal("accessor did not panic")
+						recovered := recover()
+						if recovered == nil {
+							t.Fatal("statusToErrorWithOps did not panic")
+						}
+						if recovered != tc.wantPanic {
+							t.Fatalf("panic value = %v, want %v", recovered, tc.wantPanic)
 						}
 					}()
-					_ = statusToErrorWithOps(1, "panic test", tc.ops(&releases))
+					got = statusToErrorWithOps(1, "panic test", tc.ops(&calls))
 				}()
-				if got := releases.Load(); got != 1 {
-					t.Fatalf("release count = %d, want 1", got)
+				// An escaping panic discards the return value even once it is computed.
+				if got != nil {
+					t.Fatalf("returned error = %v, want nil", got)
+				}
+				if n := calls.codes.Load(); n != tc.wantCodes {
+					t.Fatalf("getCode calls = %d, want %d", n, tc.wantCodes)
+				}
+				if n := calls.messages.Load(); n != tc.wantMessages {
+					t.Fatalf("copyMessage calls = %d, want %d", n, tc.wantMessages)
+				}
+				if n := calls.releases.Load(); n != tc.wantReleases {
+					t.Fatalf("release count = %d, want %d", n, tc.wantReleases)
 				}
 			})
 		}
