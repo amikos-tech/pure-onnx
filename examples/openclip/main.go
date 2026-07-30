@@ -147,7 +147,7 @@ func parsePositiveIntEnv(key string, fallback int) (int, error) {
 
 func loadExamplesFromManifest(assetsDir string, limit int) (rows []manifestRow, images []image.Image, texts []string, retErr error) {
 	manifestPath := filepath.Join(assetsDir, manifestFileName)
-	file, err := os.Open(manifestPath)
+	file, err := os.Open(manifestPath) // #nosec G304 G703 -- This local example intentionally opens the fixed manifest under the CLI-selected assets directory.
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to open manifest %q: %w", manifestPath, err)
 	}
@@ -233,7 +233,7 @@ func validateManifestRow(row manifestRow) error {
 }
 
 func decodeImageFile(path string) (retImg image.Image, retErr error) {
-	file, err := os.Open(path)
+	file, err := os.Open(path) // #nosec G304 G703 -- The caller supplies a local dataset image path after manifest filename traversal checks.
 	if err != nil {
 		return nil, fmt.Errorf("open %q: %w", path, err)
 	}

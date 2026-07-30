@@ -497,6 +497,7 @@ func TestInitializeEnvironmentDiagnosticHandlerCanQueryRuntime(t *testing.T) {
 		ReleaseEnv:                     purego.NewCallback(func(uintptr) {}),
 	}
 	api.CreateEnv = purego.NewCallback(func(_ int32, _ uintptr, out uintptr) uintptr {
+		//nolint:govet // The purego callback ABI supplies the native output address as uintptr; the test writes the fake OrtEnv handle through it.
 		*(*uintptr)(unsafe.Pointer(out)) = 1001
 		return 0
 	})

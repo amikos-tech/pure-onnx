@@ -17,7 +17,7 @@ func validateBootstrapPathOwnershipAndMode(path string, info os.FileInfo) error 
 	if !ok {
 		return fmt.Errorf("bootstrap path ownership is unavailable for %q", path)
 	}
-	if stat.Uid != uint32(os.Geteuid()) {
+	if stat.Uid != uint32(os.Geteuid()) { // #nosec G115 -- Unix effective UIDs are non-negative uid_t values; conversion matches syscall.Stat_t.Uid for comparison.
 		return fmt.Errorf("bootstrap path %q is owned by uid %d, want current uid %d", path, stat.Uid, os.Geteuid())
 	}
 	return nil
