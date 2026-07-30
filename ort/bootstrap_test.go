@@ -1098,9 +1098,14 @@ func TestBootstrapPlatformTrustPolicy(t *testing.T) {
 				system:   clonedStat.Interface(),
 			}
 		}
-		rootInfo := withUID(0)
-		if err := validateBootstrapPathOwnershipAndMode(path, rootInfo, false); err != nil {
-			t.Fatalf("strict policy rejected root owner: %v", err)
+		if effectiveUID := uint32(os.Geteuid()); effectiveUID != 0 { // #nosec G115 -- Unix effective UIDs are non-negative uid_t values.
+			rootInfo := withUID(0)
+			if err := validateBootstrapPathOwnershipAndMode(path, rootInfo, false); err == nil {
+				t.Fatal("strict policy accepted root owner")
+			}
+			if err := validateBootstrapPathOwnershipAndMode(path, rootInfo, true); err != nil {
+				t.Fatalf("shared policy rejected root owner: %v", err)
+			}
 		}
 		otherUID := uid.Uint() + 1
 		if otherUID == 0 {

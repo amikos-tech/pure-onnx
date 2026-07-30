@@ -29,8 +29,8 @@ func validateBootstrapPathOwnershipAndMode(
 		return nil
 	}
 	effectiveUID := uint32(os.Geteuid()) // #nosec G115 -- Unix effective UIDs are non-negative uid_t values; conversion matches syscall.Stat_t.Uid for comparison.
-	if stat.Uid != effectiveUID && stat.Uid != 0 {
-		return fmt.Errorf("bootstrap path %q is owned by uid %d, want current uid %d or root", path, stat.Uid, os.Geteuid())
+	if stat.Uid != effectiveUID {
+		return fmt.Errorf("bootstrap path %q is owned by uid %d, want current uid %d", path, stat.Uid, os.Geteuid())
 	}
 	return nil
 }
