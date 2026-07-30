@@ -17,7 +17,7 @@ type AdvancedSession struct {
 	outputNames  []string
 	inputValues  []Value
 	outputValues []Value
-	runMu        sync.Mutex
+	runMu        sync.Mutex // Guards all fields above and serializes Run with Destroy.
 }
 
 // NewSessionOptions creates a native ONNX Runtime session-options object.
@@ -150,7 +150,8 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 		}
 	}
 
-	// Validate values while ortCallMu is held so handles cannot be released concurrently.
+	// validateSessionValue is a value-local synchronized check; it does not lease the handle.
+	// Run obtains the native-use leases after it has finished all call setup.
 	for i, v := range inputValues {
 		if err := validateSessionValue(v, "input", i); err != nil {
 			return nil, err
@@ -316,6 +317,7 @@ func (s *AdvancedSession) run(inputs, outputs []Value, useBoundValues bool) erro
 		return err
 	}
 
+	// acquireUniqueValueLeases prevents handle release during native Run.
 	valueLeases, err := acquireUniqueValueLeases(inputValues, outputValues)
 	if err != nil {
 		return err
@@ -376,21 +378,17 @@ func (s *AdvancedSession) Destroy() error {
 	ortCallMu.RLock()
 	defer ortCallMu.RUnlock()
 
-	var (
-		handle         uintptr
-		releaseSession func(uintptr)
-	)
-
 	mu.Lock()
-	handle = s.handle
-	releaseSession = releaseSessionFunc
+	releaseSession := releaseSessionFunc
+	mu.Unlock()
+
+	handle := s.handle
 	s.handle = 0
 	s.inputNames = nil
 	s.outputNames = nil
 	s.inputValues = nil
 	s.outputValues = nil
 	runtime.SetFinalizer(s, nil)
-	mu.Unlock()
 
 	if handle != 0 && releaseSession != nil {
 		releaseSession(handle)
@@ -574,20 +572,6 @@ func sessionValueLeaseError(role string, index int, err error) error {
 		return fmt.Errorf("%s value at index %d has been destroyed: %w", role, index, ErrDestroyed)
 	}
 	return fmt.Errorf("%s value at index %d is invalid: %v: %w", role, index, err, ErrInvalidArgument)
-}
-
-func valuesToHandles(values []Value, role string) ([]uintptr, func(), error) {
-	noOpRelease := func() {}
-	leases, err := acquireValueLeases(valueRoleValues{role: role, values: values})
-	if err != nil {
-		return nil, noOpRelease, err
-	}
-	handles, err := handlesFromLeasedValues(values, role, leases)
-	if err != nil {
-		leases.Release()
-		return nil, noOpRelease, err
-	}
-	return handles, leases.Release, nil
 }
 
 func comparableIdentityKey(v any) (any, bool) {

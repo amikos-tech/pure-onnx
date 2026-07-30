@@ -11,9 +11,9 @@ import (
 // Tensor represents a tensor with data of type T
 type Tensor[T any] struct {
 	shape  Shape
-	data   []T
+	data   []T             // Keeps the pinned backing array reachable until Destroy.
 	handle uintptr         // Pointer to OrtValue
-	pinner *runtime.Pinner // Pins data backing array while OrtValue may access it.
+	pinner *runtime.Pinner // Prevents backing-array movement for the entire native OrtValue lifetime.
 	runMu  sync.RWMutex    // Coordinates Run() handle leases with Destroy().
 }
 
@@ -126,7 +126,9 @@ func newTensorFromData[T any](shape Shape, data []T, elementType TensorElementDa
 	var pinner *runtime.Pinner
 	if len(data) > 0 {
 		pinner = &runtime.Pinner{}
-		// #nosec G103 -- Required for CGO-free FFI; backing array is pinned for OrtValue lifetime via runtime.Pinner.
+		// runtime.Pinner prevents the backing array from moving for the entire
+		// native OrtValue lifetime; Tensor.data keeps that array reachable.
+		// #nosec G103 -- Required for CGO-free FFI; backing array is pinned for the OrtValue lifetime.
 		pinner.Pin(unsafe.SliceData(data))
 		// #nosec G103 -- Pointer conversion is required to pass the pinned slice buffer to ORT.
 		dataPtr = uintptr(unsafe.Pointer(unsafe.SliceData(data)))
@@ -138,7 +140,8 @@ func newTensorFromData[T any](shape Shape, data []T, elementType TensorElementDa
 	var valueHandle uintptr
 	status = createTensorWithData(memInfo, dataPtr, dataBytes, shapePtr(shape), uintptr(len(shape)), elementType, &valueHandle)
 	// ORT reads shape dimensions synchronously during CreateTensorWithDataAsOrtValue call.
-	// Keep shape alive for the call; tensor data lifetime is guarded by pinner.
+	// runtime.KeepAlive(shape) and runtime.KeepAlive(data) are synchronous call
+	// barriers only; the runtime.Pinner above owns the longer native data lifetime.
 	runtime.KeepAlive(shape)
 	runtime.KeepAlive(data)
 	if status != 0 {
