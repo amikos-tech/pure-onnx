@@ -72,6 +72,9 @@ func (o *SessionOptions) Destroy() error {
 
 	o.handleMu.Lock()
 	handle := o.handle
+	if handle != 0 {
+		o.destroyed = true
+	}
 	o.handle = 0
 	runtime.SetFinalizer(o, nil)
 	o.handleMu.Unlock()
@@ -140,6 +143,9 @@ func NewAdvancedSession(modelPath string, inputNames []string, outputNames []str
 		defer options.handleMu.RUnlock()
 		sessionOptionsHandle = options.handle
 		if sessionOptionsHandle == 0 {
+			if options.destroyed {
+				return nil, fmt.Errorf("session options have been destroyed: %w", ErrDestroyed)
+			}
 			return nil, fmt.Errorf("session options handle is not initialized: %w", ErrInvalidArgument)
 		}
 	}

@@ -10,17 +10,19 @@ type OrtApiBase struct {
 
 // OrtApi is defined in ortapi_generated.go (auto-generated from C header)
 
-// Status represents a borrowed native OrtStatus handle.
-// Thread-safe: Status can be shared across goroutines for read operations.
-type Status uintptr
+// Status represents an ONNX Runtime status
+// Thread-safe: Status can be shared across goroutines for read operations
+type Status struct {
+	handle uintptr // Pointer to OrtStatus
+}
 
 // IsOK returns true if the status represents success
-func (s Status) IsOK() bool {
-	return s == 0
+func (s *Status) IsOK() bool {
+	return s.handle == 0
 }
 
 // GetErrorCode returns the error code from the status
-func (s Status) GetErrorCode() ErrorCode {
+func (s *Status) GetErrorCode() ErrorCode {
 	if s.IsOK() {
 		return ErrorCodeOK
 	}
@@ -34,11 +36,11 @@ func (s Status) GetErrorCode() ErrorCode {
 	if getErrorCode == nil {
 		return ErrorCodeFail
 	}
-	return getErrorCode(uintptr(s))
+	return getErrorCode(s.handle)
 }
 
 // GetErrorMessage returns the error message from the status
-func (s Status) GetErrorMessage() string {
+func (s *Status) GetErrorMessage() string {
 	if s.IsOK() {
 		return ""
 	}
@@ -52,14 +54,26 @@ func (s Status) GetErrorMessage() string {
 	if getErrorMessage == nil {
 		return ""
 	}
-	return CstringToGo(getErrorMessage(uintptr(s)))
+	return CstringToGo(getErrorMessage(s.handle))
 }
 
-// Environment represents a borrowed native OrtEnv handle.
-type Environment uintptr
+// Environment represents an ONNX Runtime environment
+// Thread-safe: Environment is thread-safe and can be shared across multiple sessions
+type Environment struct {
+	handle       uintptr // Pointer to OrtEnv
+	loggingLevel LoggingLevel
+	logID        string
+}
 
-// Session represents a borrowed native OrtSession handle.
-type Session uintptr
+// Session represents an ONNX Runtime session for model inference
+// Thread-safe: Session.Run() is thread-safe, multiple threads can call Run() simultaneously
+type Session struct {
+	handle      uintptr // Pointer to OrtSession
+	inputNames  []string
+	outputNames []string
+	inputCount  int
+	outputCount int
+}
 
 // Value represents an ONNX Runtime value created by this package.
 //
@@ -112,6 +126,7 @@ func NewShape(dims ...int64) Shape {
 type SessionOptions struct {
 	handle                 uintptr // Pointer to OrtSessionOptions
 	handleMu               sync.RWMutex
+	destroyed              bool
 	graphOptimizationLevel GraphOptimizationLevel
 	executionMode          ExecutionMode
 	interOpNumThreads      int
