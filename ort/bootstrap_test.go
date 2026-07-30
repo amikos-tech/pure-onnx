@@ -20,10 +20,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 	"unsafe"
@@ -788,6 +790,263 @@ func TestEnsureOnnxRuntimeSharedLibraryRejectsCachedSymlink(t *testing.T) {
 		t.Fatalf("resolved path = %q, want empty on cached symlink rejection", resolved)
 	}
 }
+
+func TestEnsureOnnxRuntimeSharedLibraryPreservesCacheOnOperationalValidationError(t *testing.T) {
+	clearBootstrapEnv(t)
+
+	artifact, err := resolveRuntimeArtifact(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		t.Skipf("unsupported runtime for bootstrap test: %v", err)
+	}
+
+	causes := []struct {
+		name  string
+		cause error
+	}{
+		{name: "permission", cause: os.ErrPermission},
+		{name: "io", cause: syscall.EIO},
+	}
+	for _, cause := range causes {
+		for _, disableDownload := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/disable-download-%t", cause.name, disableDownload), func(t *testing.T) {
+				cacheDir := t.TempDir()
+				const version = "1.99.64"
+				installDir := filepath.Join(cacheDir, artifact.archiveName(version))
+				if err := os.MkdirAll(installDir, secureDirectoryPermission); err != nil {
+					t.Fatalf("create install directory: %v", err)
+				}
+				sentinel := filepath.Join(installDir, "preserve-me")
+				if err := os.WriteFile(sentinel, []byte("sentinel"), 0o600); err != nil {
+					t.Fatalf("write cache sentinel: %v", err)
+				}
+
+				previousValidator := bootstrapValidateCachedRuntimeInstall
+				previousRemoveAll := bootstrapRemoveAll
+				removeCount := 0
+				bootstrapValidateCachedRuntimeInstall = func(
+					bootstrapConfig,
+					runtimeArtifact,
+					string,
+				) (string, error) {
+					return "", fmt.Errorf("injected cache validation failure: %w", cause.cause)
+				}
+				bootstrapRemoveAll = func(path string) error {
+					removeCount++
+					return os.RemoveAll(path)
+				}
+				t.Cleanup(func() {
+					bootstrapValidateCachedRuntimeInstall = previousValidator
+					bootstrapRemoveAll = previousRemoveAll
+				})
+
+				_, err := EnsureOnnxRuntimeSharedLibrary(
+					WithBootstrapCacheDir(cacheDir),
+					WithBootstrapVersion(version),
+					WithBootstrapDisableDownload(disableDownload),
+				)
+				if !errors.Is(err, cause.cause) {
+					t.Fatalf("bootstrap error = %v, want original cause %v", err, cause.cause)
+				}
+				if removeCount != 0 {
+					t.Fatalf("bootstrapRemoveAll calls = %d, want 0", removeCount)
+				}
+				contents, readErr := os.ReadFile(sentinel)
+				if readErr != nil {
+					t.Fatalf("read preserved sentinel: %v", readErr)
+				}
+				if string(contents) != "sentinel" {
+					t.Fatalf("sentinel contents = %q, want sentinel", contents)
+				}
+			})
+		}
+	}
+}
+
+func TestBootstrapCacheValidationDisposition(t *testing.T) {
+	artifact, err := resolveRuntimeArtifact(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		t.Skipf("unsupported runtime for bootstrap test: %v", err)
+	}
+	cfg := bootstrapConfig{version: "1.99.65"}
+
+	missingInstall := filepath.Join(t.TempDir(), "missing-install")
+	_, err = validateCachedRuntimeInstall(cfg, artifact, missingInstall)
+	if got := cacheValidationDispositionForError(err); got != cacheValidationMissing {
+		t.Fatalf("missing install disposition = %v, want missing", got)
+	}
+
+	installDir := filepath.Join(t.TempDir(), artifact.archiveName(cfg.version))
+	if err := os.MkdirAll(installDir, secureDirectoryPermission); err != nil {
+		t.Fatalf("create install directory: %v", err)
+	}
+	_, err = validateCachedRuntimeInstall(cfg, artifact, installDir)
+	if got := cacheValidationDispositionForError(err); got != cacheValidationConfirmedInvalid {
+		t.Fatalf("missing manifest disposition = %v, want confirmed invalid", got)
+	}
+
+	manifestPath := filepath.Join(installDir, bootstrapManifestFilename)
+	if err := os.WriteFile(manifestPath, []byte("{invalid"), 0o600); err != nil {
+		t.Fatalf("write invalid manifest: %v", err)
+	}
+	_, err = validateCachedRuntimeInstall(cfg, artifact, installDir)
+	if got := cacheValidationDispositionForError(err); got != cacheValidationConfirmedInvalid {
+		t.Fatalf("malformed manifest disposition = %v, want confirmed invalid", got)
+	}
+
+	operationalErr := fmt.Errorf("wrapped inspection failure: %w", syscall.EIO)
+	if got := cacheValidationDispositionForError(operationalErr); got != cacheValidationOperational {
+		t.Fatalf("operational error disposition = %v, want operational", got)
+	}
+}
+
+func TestBootstrapReadOnlyCacheHit(t *testing.T) {
+	clearBootstrapEnv(t)
+
+	artifact, err := resolveRuntimeArtifact(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		t.Skipf("unsupported runtime for bootstrap test: %v", err)
+	}
+
+	cacheDir := t.TempDir()
+	const version = "1.99.66"
+	installDir := filepath.Join(cacheDir, artifact.archiveName(version))
+	libDir := filepath.Join(installDir, "lib")
+	if err := os.MkdirAll(libDir, secureDirectoryPermission); err != nil {
+		t.Fatalf("create cached library directory: %v", err)
+	}
+	libraryPath := filepath.Join(libDir, artifact.primaryLibrary)
+	if err := os.WriteFile(libraryPath, []byte("read-only-runtime"), 0o600); err != nil {
+		t.Fatalf("write cached library: %v", err)
+	}
+	cfg := bootstrapConfig{
+		cacheDir: cacheDir,
+		version:  version,
+		goos:     runtime.GOOS,
+		goarch:   runtime.GOARCH,
+	}
+	if err := writeBootstrapInstallManifest(
+		installDir,
+		cfg,
+		artifact,
+		strings.Repeat("a", 64),
+		true,
+	); err != nil {
+		t.Fatalf("write bootstrap manifest: %v", err)
+	}
+
+	makeBootstrapTreeReadOnly(t, cacheDir)
+	previousRemoveAll := bootstrapRemoveAll
+	removeCount := 0
+	bootstrapRemoveAll = func(path string) error {
+		removeCount++
+		return os.RemoveAll(path)
+	}
+	t.Cleanup(func() { bootstrapRemoveAll = previousRemoveAll })
+
+	resolved, err := EnsureOnnxRuntimeSharedLibrary(
+		WithBootstrapCacheDir(cacheDir),
+		WithBootstrapVersion(version),
+		WithBootstrapDisableDownload(true),
+	)
+	if err != nil {
+		t.Fatalf("resolve read-only cache hit: %v", err)
+	}
+	want, err := filepath.Abs(libraryPath)
+	if err != nil {
+		t.Fatalf("resolve expected absolute path: %v", err)
+	}
+	if resolved != want {
+		t.Fatalf("resolved path = %q, want %q", resolved, want)
+	}
+	if removeCount != 0 {
+		t.Fatalf("bootstrapRemoveAll calls = %d, want 0", removeCount)
+	}
+	if _, err := os.Lstat(filepath.Join(cacheDir, ".locks")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("lock directory inspection error = %v, want not-exist", err)
+	}
+}
+
+func TestBootstrapPlatformTrustPolicy(t *testing.T) {
+	path := t.TempDir()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("inspect test directory: %v", err)
+	}
+
+	switch runtime.GOOS {
+	case "darwin", "linux":
+		if err := validateBootstrapPathOwnershipAndMode(path, info, false); err != nil {
+			t.Fatalf("strict policy rejected current owner: %v", err)
+		}
+
+		stat := reflect.ValueOf(info.Sys())
+		if stat.Kind() != reflect.Pointer || stat.IsNil() {
+			t.Fatalf("unexpected Unix stat value %T", info.Sys())
+		}
+		rootStat := reflect.New(stat.Elem().Type())
+		rootStat.Elem().Set(stat.Elem())
+		uid := rootStat.Elem().FieldByName("Uid")
+		if !uid.IsValid() || !uid.CanSet() {
+			t.Fatalf("Unix stat value %T has no settable Uid", info.Sys())
+		}
+		uid.SetUint(0)
+		rootInfo := bootstrapTestFileInfo{
+			FileInfo: info,
+			mode:     info.Mode(),
+			system:   rootStat.Interface(),
+		}
+		if err := validateBootstrapPathOwnershipAndMode(path, rootInfo, false); err != nil {
+			t.Fatalf("strict policy rejected root owner: %v", err)
+		}
+
+		if err := os.Chmod(path, 0o770); err != nil {
+			t.Fatalf("make test directory group-writable: %v", err)
+		}
+		info, err = os.Lstat(path)
+		if err != nil {
+			t.Fatalf("inspect group-writable directory: %v", err)
+		}
+		if err := validateBootstrapPathOwnershipAndMode(path, info, false); err == nil {
+			t.Fatal("strict policy accepted group-writable directory")
+		}
+		if err := validateBootstrapPathOwnershipAndMode(path, info, true); err != nil {
+			t.Fatalf("shared policy rejected group-writable directory: %v", err)
+		}
+
+		if err := os.Chmod(path, 0o777); err != nil {
+			t.Fatalf("make test directory world-writable: %v", err)
+		}
+		info, err = os.Lstat(path)
+		if err != nil {
+			t.Fatalf("inspect world-writable directory: %v", err)
+		}
+		for _, allowShared := range []bool{false, true} {
+			if err := validateBootstrapPathOwnershipAndMode(path, info, allowShared); err == nil {
+				t.Fatalf("allowShared=%t accepted world-writable directory", allowShared)
+			}
+		}
+	default:
+		unixLikeInfo := bootstrapTestFileInfo{
+			FileInfo: info,
+			mode:     os.ModeDir | 0o777,
+			system:   nil,
+		}
+		for _, allowShared := range []bool{false, true} {
+			if err := validateBootstrapPathOwnershipAndMode(path, unixLikeInfo, allowShared); err != nil {
+				t.Fatalf("allowShared=%t claimed Unix trust validation on %s: %v", allowShared, runtime.GOOS, err)
+			}
+		}
+	}
+}
+
+type bootstrapTestFileInfo struct {
+	os.FileInfo
+	mode   os.FileMode
+	system any
+}
+
+func (i bootstrapTestFileInfo) Mode() os.FileMode { return i.mode }
+func (i bootstrapTestFileInfo) Sys() any          { return i.system }
 
 func TestResolveRuntimeArchiveChecksumFromReleaseMetadata(t *testing.T) {
 	artifact, err := resolveRuntimeArtifact("linux", "amd64")
@@ -1873,6 +2132,72 @@ func TestResolveBootstrapConfigRejectsInvalidDisableDownloadEnv(t *testing.T) {
 	}
 }
 
+func TestResolveBootstrapConfigAllowSharedCacheEnvironment(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  bool
+	}{
+		{value: "true", want: true},
+		{value: "false", want: false},
+		{value: "1", want: true},
+		{value: "0", want: false},
+	} {
+		t.Run(test.value, func(t *testing.T) {
+			clearBootstrapEnv(t)
+			t.Setenv("ONNXRUNTIME_ALLOW_SHARED_CACHE", test.value)
+
+			cfg, err := resolveBootstrapConfig()
+			if err != nil {
+				t.Fatalf("resolve bootstrap config: %v", err)
+			}
+			if cfg.allowSharedCache != test.want {
+				t.Fatalf("allowSharedCache = %t, want %t", cfg.allowSharedCache, test.want)
+			}
+		})
+	}
+}
+
+func TestResolveBootstrapConfigAllowSharedCacheOptionPrecedence(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		env  string
+		opt  bool
+		want bool
+	}{
+		{name: "option disables environment", env: "true", opt: false, want: false},
+		{name: "option enables environment", env: "false", opt: true, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clearBootstrapEnv(t)
+			t.Setenv("ONNXRUNTIME_ALLOW_SHARED_CACHE", test.env)
+
+			cfg, err := resolveBootstrapConfig(WithBootstrapAllowSharedCache(test.opt))
+			if err != nil {
+				t.Fatalf("resolve bootstrap config: %v", err)
+			}
+			if cfg.allowSharedCache != test.want {
+				t.Fatalf("allowSharedCache = %t, want %t", cfg.allowSharedCache, test.want)
+			}
+		})
+	}
+}
+
+func TestResolveBootstrapConfigRejectsInvalidAllowSharedCacheEnvironment(t *testing.T) {
+	clearBootstrapEnv(t)
+	t.Setenv("ONNXRUNTIME_ALLOW_SHARED_CACHE", "sometimes")
+
+	_, err := resolveBootstrapConfig()
+	if err == nil {
+		t.Fatal("expected invalid shared-cache environment error")
+	}
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("shared-cache environment error = %v, want ErrInvalidArgument", err)
+	}
+	if !strings.Contains(err.Error(), "ONNXRUNTIME_ALLOW_SHARED_CACHE") {
+		t.Fatalf("shared-cache environment error = %v, want variable name", err)
+	}
+}
+
 func TestValidateLibraryFile(t *testing.T) {
 	if _, err := validateLibraryFile("   "); err == nil {
 		t.Fatalf("expected empty library path error")
@@ -2870,6 +3195,34 @@ func clearBootstrapEnv(t *testing.T) {
 	t.Setenv("ONNXRUNTIME_CACHE_DIR", "")
 	t.Setenv("ONNXRUNTIME_VERSION", "")
 	t.Setenv("ONNXRUNTIME_DISABLE_DOWNLOAD", "")
+	t.Setenv("ONNXRUNTIME_ALLOW_SHARED_CACHE", "")
+}
+
+func makeBootstrapTreeReadOnly(t *testing.T, root string) {
+	t.Helper()
+
+	if err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			return os.Chmod(path, 0o550)
+		}
+		return os.Chmod(path, 0o440)
+	}); err != nil {
+		t.Fatalf("make bootstrap tree read-only: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil {
+				return nil
+			}
+			if info.IsDir() {
+				return os.Chmod(path, 0o750)
+			}
+			return os.Chmod(path, 0o600)
+		})
+	})
 }
 
 func newArchiveServer(t *testing.T, artifact runtimeArtifact, version string, archive []byte) (*httptest.Server, *atomic.Int32) {
