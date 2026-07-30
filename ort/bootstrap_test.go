@@ -3174,6 +3174,62 @@ func TestDiagnosticCallSites(t *testing.T) {
 	})
 }
 
+// diagnosticReentrantCacheDirHandler re-enters bootstrap from inside Handle to
+// prove the emit happens after sync.Once releases its internal mutex.
+type diagnosticReentrantCacheDirHandler struct {
+	reentered chan<- string
+}
+
+func (h diagnosticReentrantCacheDirHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h diagnosticReentrantCacheDirHandler) Handle(context.Context, slog.Record) error {
+	select {
+	case h.reentered <- defaultBootstrapCacheDir():
+	default:
+	}
+	return nil
+}
+
+func (h diagnosticReentrantCacheDirHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h diagnosticReentrantCacheDirHandler) WithGroup(string) slog.Handler { return h }
+
+func TestDefaultBootstrapCacheDirEmitsFallbackWarningOutsideOnce(t *testing.T) {
+	previousUserCacheDir := bootstrapUserCacheDir
+	bootstrapUserCacheDir = func() (string, error) { return "", nil }
+	bootstrapCacheFallbackWarnOnce = sync.Once{}
+	t.Cleanup(func() {
+		SetDiagnosticHandler(nil)
+		bootstrapUserCacheDir = previousUserCacheDir
+		bootstrapCacheFallbackWarnOnce = sync.Once{}
+	})
+
+	reentered := make(chan string, 1)
+	SetDiagnosticHandler(diagnosticReentrantCacheDirHandler{reentered: reentered})
+
+	fallback := filepath.Join(os.TempDir(), "onnx-purego", "onnxruntime")
+	resolved := make(chan string, 1)
+	go func() { resolved <- defaultBootstrapCacheDir() }()
+
+	select {
+	case got := <-resolved:
+		if got != fallback {
+			t.Fatalf("defaultBootstrapCacheDir = %q, want %q", got, fallback)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("defaultBootstrapCacheDir deadlocked against its own sync.Once")
+	}
+
+	select {
+	case got := <-reentered:
+		if got != fallback {
+			t.Fatalf("reentrant defaultBootstrapCacheDir = %q, want %q", got, fallback)
+		}
+	default:
+		t.Fatal("diagnostic handler never re-entered defaultBootstrapCacheDir")
+	}
+}
+
 func TestEnsureOnnxRuntimeSharedLibraryMemoizesVerifiedInstall(t *testing.T) {
 	clearBootstrapEnv(t)
 

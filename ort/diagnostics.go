@@ -33,10 +33,19 @@ func newDefaultDiagnosticHandler() slog.Handler {
 // The handler is trusted synchronous consumer code and must be safe for
 // concurrent use. Its panics propagate to the caller except at the
 // best-effort finalizer boundary. Handlers may call read-only runtime queries,
-// including IsInitialized and GetVersionString. They must not call lifecycle
-// mutation or bootstrap APIs because bootstrap diagnostics may be emitted while
-// an interprocess cache lock is held. Passing nil restores the default text
-// handler, which writes warning-level diagnostics to the current os.Stderr.
+// including IsInitialized and GetVersionString; no ORT lifecycle lock is held
+// while a handler runs.
+//
+// Handlers must not call bootstrap APIs. Download and extraction diagnostics are
+// emitted while the interprocess cache lock is held, and that lock is scoped to
+// an open file description rather than to the process, so a handler that
+// re-enters EnsureOnnxRuntimeSharedLibrary conflicts with its own caller and
+// stalls until lock acquisition times out. Calling lifecycle mutation APIs does
+// not deadlock, but InitializeEnvironment from a handler still leaks a reference
+// count and is unsupported.
+//
+// Passing nil restores the default text handler, which writes warning-level
+// diagnostics to the current os.Stderr.
 func SetDiagnosticHandler(handler slog.Handler) {
 	if handler == nil {
 		handler = newDefaultDiagnosticHandler()

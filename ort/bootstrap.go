@@ -451,10 +451,16 @@ func InitializeEnvironmentWithBootstrap(opts ...BootstrapOption) error {
 		return err
 	}
 
-	bootstrapInitMu.Lock()
-	defer bootstrapInitMu.Unlock()
+	// Serialize only the lifecycle transition. Diagnostics are emitted after
+	// bootstrapInitMu is released so a handler may re-enter this function without
+	// deadlocking on a non-reentrant mutex.
+	runtimeVersion, newlyInitialized, initErr := func() (string, bool, error) {
+		bootstrapInitMu.Lock()
+		defer bootstrapInitMu.Unlock()
+		return initializeEnvironmentAtLocked(path)
+	}()
 
-	if err := initializeEnvironmentAt(path); err != nil {
+	if err := completeEnvironmentInitialization(runtimeVersion, newlyInitialized, initErr); err != nil {
 		return fmt.Errorf("initialize environment with bootstrap library %q: %w", path, err)
 	}
 	return nil
@@ -2144,24 +2150,35 @@ func defaultBootstrapCacheDir() string {
 	}
 
 	fallback := filepath.Join(os.TempDir(), "onnx-purego", "onnxruntime")
+	// Decide under the Once but emit after it returns. sync.Once holds an internal
+	// mutex for the whole callback, so a handler that re-enters bootstrap from
+	// inside Do would deadlock against itself on the same goroutine.
+	var emitFallbackWarning func()
 	bootstrapCacheFallbackWarnOnce.Do(func() {
 		if err != nil {
+			emitFallbackWarning = func() {
+				emitDiagnostic(
+					context.Background(),
+					slog.LevelWarn,
+					"bootstrap user cache lookup failed; using temporary cache",
+					slog.String("path", fallback),
+					slog.Any("error", err),
+				)
+			}
+			return
+		}
+		emitFallbackWarning = func() {
 			emitDiagnostic(
 				context.Background(),
 				slog.LevelWarn,
-				"bootstrap user cache lookup failed; using temporary cache",
+				"bootstrap user cache path empty; using temporary cache",
 				slog.String("path", fallback),
-				slog.Any("error", err),
 			)
-			return
 		}
-		emitDiagnostic(
-			context.Background(),
-			slog.LevelWarn,
-			"bootstrap user cache path empty; using temporary cache",
-			slog.String("path", fallback),
-		)
 	})
+	if emitFallbackWarning != nil {
+		emitFallbackWarning()
+	}
 	return fallback
 }
 
