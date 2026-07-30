@@ -56,6 +56,10 @@ var (
 	environmentCloseLibrary            = closeLibrary
 )
 
+// clearORTGlobalsLocked nils every ORT func global as one set, mirroring the single
+// purego.RegisterFunc block that populates them. Callers rely on that coupling: guarding
+// one global (e.g. runSessionFunc) is taken to imply the rest are non-nil too, so statusToError
+// needs no nil guard. Clearing or registering these individually breaks that invariant.
 func clearORTGlobalsLocked() {
 	ortAPI = nil
 	ortEnv = 0

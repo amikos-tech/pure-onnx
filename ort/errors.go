@@ -65,6 +65,8 @@ func statusToErrorWithOps(status uintptr, operation string, ops statusOps) error
 // Every production caller must hold ortCallMu for the complete native call and
 // conversion. InitializeEnvironment instead holds ortCallMu.Lock plus mu. Those
 // scopes prevent runtime reset from clearing these accessors during conversion.
+// It has no nil guard by design: the accessors are registered and cleared as one set
+// (see clearORTGlobalsLocked), so a caller's check on any one ORT global covers them all.
 func statusToError(status uintptr, operation string) error {
 	return statusToErrorWithOps(status, operation, statusOps{
 		getCode: getErrorCodeFunc,
