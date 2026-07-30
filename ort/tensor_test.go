@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -678,6 +679,93 @@ func TestTensorDestroyConcurrentCallsReleaseOnce(t *testing.T) {
 	}
 }
 
+func TestTensorPinnedBackingSurvivesGC(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	var (
+		capturedData       uintptr
+		memoryInfoReleases atomic.Int32
+		valueReleases      atomic.Int32
+	)
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	createMemoryInfoFunc = func(_ uintptr, _ AllocatorType, _ int32, _ MemType, out *uintptr) uintptr {
+		*out = 801
+		return 0
+	}
+	releaseMemoryInfoFunc = func(handle uintptr) {
+		if handle != 801 {
+			t.Errorf("released memory-info handle = %d, want 801", handle)
+		}
+		memoryInfoReleases.Add(1)
+	}
+	createTensorWithDataAsOrtValueFunc = func(
+		_ uintptr,
+		data uintptr,
+		_ uintptr,
+		_ *int64,
+		_ uintptr,
+		_ TensorElementDataType,
+		out *uintptr,
+	) uintptr {
+		capturedData = data
+		*out = 802
+		return 0
+	}
+	releaseValueFunc = func(handle uintptr) {
+		if handle != 802 {
+			t.Errorf("released tensor handle = %d, want 802", handle)
+		}
+		valueReleases.Add(1)
+	}
+	getErrorCodeFunc = func(uintptr) ErrorCode { return ErrorCodeFail }
+	getErrorMessageFunc = func(uintptr) uintptr { return 0 }
+	releaseStatusFunc = func(uintptr) {}
+	mu.Unlock()
+
+	want := []int64{11, 22, 33, 44}
+	data := append([]int64(nil), want...)
+	tensor, err := NewTensor[int64](Shape{int64(len(data))}, data)
+	if err != nil {
+		t.Fatalf("NewTensor: %v", err)
+	}
+	if capturedData == 0 {
+		t.Fatal("native tensor constructor received a nil data pointer")
+	}
+	if got := uintptr(unsafe.Pointer(unsafe.SliceData(tensor.GetData()))); got != capturedData {
+		t.Fatalf("tensor data pointer = %#x, native pointer = %#x", got, capturedData)
+	}
+
+	data = nil
+	for iteration := 0; iteration < 25; iteration++ {
+		pressure := make([][]byte, 32)
+		for i := range pressure {
+			pressure[i] = make([]byte, 32*1024)
+			pressure[i][0] = byte(iteration + i)
+		}
+		runtime.GC()
+		runtime.Gosched()
+
+		got := unsafe.Slice((*int64)(unsafe.Pointer(capturedData)), len(want))
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("pinned data changed after GC iteration %d: got %v, want %v", iteration, got, want)
+		}
+		runtime.KeepAlive(pressure)
+	}
+	runtime.KeepAlive(tensor)
+
+	if err := tensor.Destroy(); err != nil {
+		t.Fatalf("Destroy tensor: %v", err)
+	}
+	if got := memoryInfoReleases.Load(); got != 1 {
+		t.Fatalf("memory-info release count = %d, want 1", got)
+	}
+	if got := valueReleases.Load(); got != 1 {
+		t.Fatalf("tensor release count = %d, want 1", got)
+	}
+}
+
 func TestNewTensorWithORT(t *testing.T) {
 	cleanup := setupTestEnvironment(t)
 	defer cleanup()
@@ -703,6 +791,60 @@ func TestNewTensorWithORT(t *testing.T) {
 
 	if !reflect.DeepEqual(tensor.GetData(), input) {
 		t.Fatalf("unexpected data: got %v, want %v", tensor.GetData(), input)
+	}
+}
+
+func TestTensorSupportedElementTypesWithORT(t *testing.T) {
+	cleanup := setupTestEnvironment(t)
+	defer cleanup()
+
+	tests := []struct {
+		name   string
+		create func() (Value, error)
+	}{
+		{
+			name: "float32",
+			create: func() (Value, error) {
+				return NewTensor[float32](Shape{2}, []float32{1, 2})
+			},
+		},
+		{
+			name: "float64",
+			create: func() (Value, error) {
+				return NewTensor[float64](Shape{2}, []float64{1, 2})
+			},
+		},
+		{
+			name: "int32",
+			create: func() (Value, error) {
+				return NewTensor[int32](Shape{2}, []int32{1, 2})
+			},
+		},
+		{
+			name: "int64",
+			create: func() (Value, error) {
+				return NewTensor[int64](Shape{2}, []int64{1, 2})
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			value, err := test.create()
+			if err != nil {
+				t.Fatalf("create %s tensor: %v", test.name, err)
+			}
+			handleProvider, ok := value.(valueWithORTHandle)
+			if !ok {
+				t.Fatalf("%s tensor does not expose its package-owned native handle", test.name)
+			}
+			if handle := handleProvider.ortValueHandle(); handle == 0 {
+				t.Fatalf("%s tensor returned a zero native handle", test.name)
+			}
+			if err := value.Destroy(); err != nil {
+				t.Fatalf("destroy %s tensor: %v", test.name, err)
+			}
+		})
 	}
 }
 

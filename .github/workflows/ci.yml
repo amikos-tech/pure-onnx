@@ -126,12 +126,12 @@ jobs:
 
       - name: Run race detector on ORT concurrency tests
         run: |
-          RACE_SELECTOR='^(TestStatusToError|TestORTError|TestErrorSentinel|TestDiagnostic|TestAdvancedSessionRunWithValues|TestAdvancedSessionErrorContracts|TestAdvancedSessionDiagnosticPolicy|TestValuesToHandlesDeduplicatesRepeatedLockableValue|TestValuesToHandlesReleasesPriorLeasesOnError|TestValuesToHandlesRejectsNonComparableLockable|TestAdvancedSessionRunConcurrent|TestAdvancedSessionRunConcurrentAcrossSessionsSharingTensor|TestAdvancedSessionRunAndDestroyConcurrent|TestAdvancedSessionDestroyDoesNotBlockUnrelatedRun|TestTensorDestroyWaitsForInFlightRun|TestTensorDestroyDoesNotBlockUnrelatedRun|TestTensorDestroyConcurrentCallsReleaseOnce|TestTensorStatusConversion|TestTensorDiagnosticPolicy|TestEnvironmentErrorChains|TestEnvironmentStatusConversion|TestConcurrentInitialization|TestConcurrentDestroy|TestDiagnosticRuntimeVersion|TestMemoryInfoStatusConversion|TestCreateMemoryInfoBlocksEnvironmentTeardown|TestDiagnosticMemoryInfo|TestDiagnosticCallSites|TestReturnedErrorsDoNotEmit)$'
+          RACE_SELECTOR='^(TestStatusToError|TestORTError|TestErrorSentinel|TestDiagnostic|TestAdvancedSessionRunWithValues|TestAdvancedSessionErrorContracts|TestAdvancedSessionDiagnosticPolicy|TestAcquireValueLeasesDeduplicatesRepeatedLockableValue|TestAcquireValueLeasesReleasesPriorLeasesOnError|TestAcquireValueLeasesRejectsNonComparableLockable|TestAdvancedSessionRunConcurrent|TestAdvancedSessionRunConcurrentAcrossSessionsSharingTensor|TestAdvancedSessionRunAndDestroyConcurrent|TestDestroyEnvironmentWaitsForInFlightSessionRun|TestNewAdvancedSessionBorrowedOptionsBlocksConcurrentDestroy|TestAdvancedSessionDestroyConcurrentCallsReleaseOnce|TestAdvancedSessionDestroyDoesNotBlockUnrelatedRun|TestTensorDestroyWaitsForInFlightRun|TestTensorDestroyDoesNotBlockUnrelatedRun|TestTensorDestroyConcurrentCallsReleaseOnce|TestTensorStatusConversion|TestTensorDiagnosticPolicy|TestEnvironmentErrorChains|TestEnvironmentStatusConversion|TestConcurrentInitialization|TestConcurrentDestroy|TestDiagnosticRuntimeVersion|TestMemoryInfoStatusConversion|TestMemoryInfoIsValidConcurrentDestroy|TestCreateMemoryInfoBlocksEnvironmentTeardown|TestDiagnosticMemoryInfo|TestDiagnosticCallSites|TestReturnedErrorsDoNotEmit)$'
           RACE_TESTS="$(go test -list "$RACE_SELECTOR" ./ort | awk '/^Test/')"
           printf '%s\n' "$RACE_TESTS"
           RACE_COUNT="$(printf '%s\n' "$RACE_TESTS" | awk '/^Test/{count++} END {print count+0}')"
-          if [ "$RACE_COUNT" -ne 29 ]; then
-            echo "expected 29 ORT race tests, found $RACE_COUNT"
+          if [ "$RACE_COUNT" -ne 33 ]; then
+            echo "expected 33 ORT race tests, found $RACE_COUNT"
             exit 1
           fi
           go test -race ./ort -run "$RACE_SELECTOR"
@@ -228,12 +228,12 @@ jobs:
           ONNXRUNTIME_TEST_LEAK_ITERATIONS: '40'
           ONNXRUNTIME_TEST_LEAK_MAX_GROWTH_MB: '96'
         run: |
-          NATIVE_SELECTOR='^(TestNativeORTStatusRoundTrip|TestAdvancedSessionRunWithValuesRealModel|TestAdvancedSessionRunWithAllMiniLML6V2|TestAdvancedSessionRunWithAllMiniLML6V2MemoryStability)$'
+          NATIVE_SELECTOR='^(TestNativeORTStatusRoundTrip|TestTensorSupportedElementTypesWithORT|TestAdvancedSessionRunWithValuesRealModel|TestAdvancedSessionRunWithAllMiniLML6V2|TestAdvancedSessionRunWithAllMiniLML6V2MemoryStability)$'
           NATIVE_TESTS="$(go test -list "$NATIVE_SELECTOR" ./ort | awk '/^Test/')"
           printf '%s\n' "$NATIVE_TESTS"
           NATIVE_COUNT="$(printf '%s\n' "$NATIVE_TESTS" | awk '/^Test/{count++} END {print count+0}')"
-          if [ "$NATIVE_COUNT" -ne 4 ]; then
-            echo "expected 4 ORT native integration tests, found $NATIVE_COUNT"
+          if [ "$NATIVE_COUNT" -ne 5 ]; then
+            echo "expected 5 ORT native integration tests, found $NATIVE_COUNT"
             exit 1
           fi
           go test -v ./ort/... -run "$NATIVE_SELECTOR"

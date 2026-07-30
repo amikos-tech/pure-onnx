@@ -219,21 +219,27 @@ func requireSessionORTError(
 	}
 }
 
-func TestValuesToHandlesDeduplicatesRepeatedLockableValue(t *testing.T) {
+func TestAcquireValueLeasesDeduplicatesRepeatedLockableValue(t *testing.T) {
 	value := newBlockingLeaseValue(42)
 
-	type valuesToHandlesResult struct {
+	type leaseResult struct {
 		handles []uintptr
-		release func()
+		leases  *valueLeaseSet
 		err     error
 	}
 
-	resultCh := make(chan valuesToHandlesResult, 1)
+	resultCh := make(chan leaseResult, 1)
 	go func() {
-		handles, release, err := valuesToHandles([]Value{value, value}, "input")
-		resultCh <- valuesToHandlesResult{
+		values := []Value{value, value}
+		leases, err := acquireValueLeases(valueRoleValues{role: "input", values: values})
+		if err != nil {
+			resultCh <- leaseResult{err: err}
+			return
+		}
+		handles, err := handlesFromLeasedValues(values, "input", leases)
+		resultCh <- leaseResult{
 			handles: handles,
-			release: release,
+			leases:  leases,
 			err:     err,
 		}
 	}()
@@ -248,7 +254,7 @@ func TestValuesToHandlesDeduplicatesRepeatedLockableValue(t *testing.T) {
 
 	close(value.allowFirstLeaseReturn)
 
-	var result valuesToHandlesResult
+	var result leaseResult
 	require.Eventually(t, func() bool {
 		select {
 		case result = <-resultCh:
@@ -256,10 +262,10 @@ func TestValuesToHandlesDeduplicatesRepeatedLockableValue(t *testing.T) {
 		default:
 			return false
 		}
-	}, 2*time.Second, 10*time.Millisecond, "valuesToHandles blocked while acquiring repeated lockable value")
+	}, 2*time.Second, 10*time.Millisecond, "acquireValueLeases blocked while acquiring repeated lockable value")
 
 	if result.err != nil {
-		t.Fatalf("valuesToHandles failed: %v", result.err)
+		t.Fatalf("production lease path failed: %v", result.err)
 	}
 	if got := len(result.handles); got != 2 {
 		t.Fatalf("expected two handles, got %d", got)
@@ -274,7 +280,7 @@ func TestValuesToHandlesDeduplicatesRepeatedLockableValue(t *testing.T) {
 	default:
 	}
 
-	result.release()
+	result.leases.Release()
 
 	require.Eventually(t, func() bool {
 		select {
@@ -286,49 +292,71 @@ func TestValuesToHandlesDeduplicatesRepeatedLockableValue(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond, "destroy did not complete after release()")
 }
 
-func TestValuesToHandlesReleasesPriorLeasesOnError(t *testing.T) {
-	value := newBlockingLeaseValue(42)
-	close(value.allowFirstLeaseReturn)
+func TestAcquireValueLeasesReleasesPriorLeasesOnError(t *testing.T) {
+	first := &countingLeaseValue{handle: 42}
+	second := &countingLeaseValue{}
+	firstKey, _ := valueLeaseOrderKey(first)
+	secondKey, _ := valueLeaseOrderKey(second)
+	if firstKey > secondKey {
+		first, second = second, first
+		first.handle = 42
+		second.handle = 0
+	}
 
-	_, release, err := valuesToHandles([]Value{value, &fakeValue{handle: 0}}, "input")
+	leases, err := acquireValueLeases(valueRoleValues{
+		role:   "input",
+		values: []Value{first, second},
+	})
 	if err == nil || !strings.Contains(err.Error(), "input value at index 1 has been destroyed") {
 		t.Fatalf("expected destroyed-value error at index 1, got: %v", err)
 	}
-	if release == nil {
-		t.Fatalf("expected non-nil release callback on error")
+	if leases != nil {
+		t.Fatalf("leases = %#v, want nil after acquisition failure", leases)
 	}
-	release()
-
-	destroyDone := make(chan struct{})
-	go func() {
-		_ = value.Destroy()
-		close(destroyDone)
-	}()
-
-	require.Eventually(t, func() bool {
-		select {
-		case <-destroyDone:
-			return true
-		default:
-			return false
-		}
-	}, 2*time.Second, 10*time.Millisecond, "destroy should not block; prior leases should have been released on error")
+	if got := first.lockCalls.Load(); got != 1 {
+		t.Fatalf("first value lock count = %d, want 1", got)
+	}
+	if got := first.unlockCalls.Load(); got != 1 {
+		t.Fatalf("first value unlock count = %d, want 1 after later failure", got)
+	}
 }
 
-func TestValuesToHandlesRejectsNonComparableLockable(t *testing.T) {
+func TestAcquireValueLeasesRejectsNonComparableLockable(t *testing.T) {
 	value := nonComparableLeaseValue{
 		handle:  7,
 		payload: []int{1, 2, 3},
 	}
 
-	_, release, err := valuesToHandles([]Value{value}, "input")
+	leases, err := acquireValueLeases(valueRoleValues{
+		role:   "input",
+		values: []Value{value},
+	})
 	if err == nil || !strings.Contains(err.Error(), "must be comparable") {
 		t.Fatalf("expected non-comparable lockable error, got: %v", err)
 	}
-	if release == nil {
-		t.Fatalf("expected non-nil release callback on error")
+	if leases != nil {
+		t.Fatalf("leases = %#v, want nil after non-comparable rejection", leases)
 	}
-	release()
+}
+
+func TestSessionLeaseDocumentation(t *testing.T) {
+	source, err := os.ReadFile("session.go")
+	if err != nil {
+		t.Fatalf("read session.go: %v", err)
+	}
+
+	for _, phrase := range []string{
+		"value-local synchronized check",
+		"does not lease the handle",
+		"acquireUniqueValueLeases prevents handle release during native Run",
+	} {
+		if !bytes.Contains(source, []byte(phrase)) {
+			t.Errorf("session.go documentation is missing %q", phrase)
+		}
+	}
+	if bytes.Contains(source, []byte("func valuesToHandles(")) {
+		t.Error("session.go still contains the production-dead valuesToHandles helper")
+	}
 }
 
 func TestAdvancedSessionRunSharedInputOutputDoesNotDeadlockDestroy(t *testing.T) {
@@ -827,6 +855,132 @@ func TestNewAdvancedSessionWithProvidedSessionOptionsHandle(t *testing.T) {
 	}
 	if receivedSessionOptions != options.handle {
 		t.Fatalf("expected createSession to receive options handle %d, got %d", options.handle, receivedSessionOptions)
+	}
+}
+
+func TestNewAdvancedSessionBorrowedOptionsBlocksConcurrentDestroy(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	createEntered := make(chan struct{})
+	allowCreateReturn := make(chan struct{})
+	var unblockCreate sync.Once
+	unblock := func() {
+		unblockCreate.Do(func() { close(allowCreateReturn) })
+	}
+	t.Cleanup(unblock)
+
+	var (
+		optionsReleases atomic.Int32
+		sessionReleases atomic.Int32
+		receivedOptions uintptr
+	)
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	ortEnv = 901
+	createSessionOptionsFunc = func(*uintptr) uintptr {
+		t.Error("CreateSessionOptions called for supplied options")
+		return 0
+	}
+	releaseSessionOptionsFunc = func(handle uintptr) {
+		if handle != 777 {
+			t.Errorf("released session options handle = %d, want 777", handle)
+		}
+		optionsReleases.Add(1)
+	}
+	createSessionFunc = func(_ uintptr, _ uintptr, sessionOptions uintptr, out *uintptr) uintptr {
+		receivedOptions = sessionOptions
+		close(createEntered)
+		<-allowCreateReturn
+		*out = 902
+		return 0
+	}
+	releaseSessionFunc = func(handle uintptr) {
+		if handle != 902 {
+			t.Errorf("released session handle = %d, want 902", handle)
+		}
+		sessionReleases.Add(1)
+	}
+	mu.Unlock()
+
+	options := &SessionOptions{handle: 777}
+	type sessionResult struct {
+		session *AdvancedSession
+		err     error
+	}
+	sessionDone := make(chan sessionResult, 1)
+	go func() {
+		session, err := NewAdvancedSession(
+			"model.onnx",
+			[]string{"input"},
+			[]string{"output"},
+			[]Value{&fakeValue{handle: 1}},
+			[]Value{&fakeValue{handle: 2}},
+			options,
+		)
+		sessionDone <- sessionResult{session: session, err: err}
+	}()
+
+	select {
+	case <-createEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("session creation did not enter the native callback")
+	}
+	if receivedOptions != 777 {
+		t.Fatalf("native callback received options handle %d, want 777", receivedOptions)
+	}
+	if options.handleMu.TryLock() {
+		options.handleMu.Unlock()
+		t.Fatal("session constructor did not retain the SessionOptions read lease")
+	}
+
+	destroyStarted := make(chan struct{})
+	destroyDone := make(chan error, 1)
+	go func() {
+		close(destroyStarted)
+		destroyDone <- options.Destroy()
+	}()
+	<-destroyStarted
+
+	select {
+	case err := <-destroyDone:
+		t.Fatalf("SessionOptions.Destroy returned during native creation: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := optionsReleases.Load(); got != 0 {
+		t.Fatalf("session options released during native creation %d times", got)
+	}
+
+	unblock()
+	var result sessionResult
+	select {
+	case result = <-sessionDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("session constructor did not return after native creation unblocked")
+	}
+	if result.err != nil {
+		t.Fatalf("NewAdvancedSession: %v", result.err)
+	}
+	if result.session == nil {
+		t.Fatal("NewAdvancedSession returned a nil session")
+	}
+	select {
+	case err := <-destroyDone:
+		if err != nil {
+			t.Fatalf("SessionOptions.Destroy: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SessionOptions.Destroy did not finish after construction returned")
+	}
+	if got := optionsReleases.Load(); got != 1 {
+		t.Fatalf("session-options release count = %d, want 1", got)
+	}
+
+	if err := result.session.Destroy(); err != nil {
+		t.Fatalf("destroy returned session: %v", err)
+	}
+	if got := sessionReleases.Load(); got != 1 {
+		t.Fatalf("session release count = %d, want 1", got)
 	}
 }
 
@@ -1884,6 +2038,204 @@ func TestAdvancedSessionRunAndDestroyConcurrent(t *testing.T) {
 
 	if err := session.Run(); err == nil || !strings.Contains(err.Error(), "session has been destroyed") {
 		t.Fatalf("expected destroyed session error after concurrent destroy, got: %v", err)
+	}
+}
+
+func TestDestroyEnvironmentWaitsForInFlightSessionRun(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	runEntered := make(chan struct{})
+	allowRunReturn := make(chan struct{})
+	var unblockRun sync.Once
+	unblock := func() {
+		unblockRun.Do(func() { close(allowRunReturn) })
+	}
+	t.Cleanup(unblock)
+
+	var (
+		sessionReleases atomic.Int32
+		tensorReleases  atomic.Int32
+		eventsMu        sync.Mutex
+		events          []string
+	)
+	record := func(event string) {
+		eventsMu.Lock()
+		events = append(events, event)
+		eventsMu.Unlock()
+	}
+
+	mu.Lock()
+	refCount = 1
+	ortAPI = &OrtApi{}
+	runSessionFunc = func(_ uintptr, _ uintptr, _ *uintptr, _ *uintptr, _ uintptr, _ *uintptr, _ uintptr, _ *uintptr) uintptr {
+		close(runEntered)
+		<-allowRunReturn
+		record("run returned")
+		return 0
+	}
+	releaseSessionFunc = func(uintptr) {
+		sessionReleases.Add(1)
+	}
+	releaseValueFunc = func(uintptr) {
+		tensorReleases.Add(1)
+	}
+	mu.Unlock()
+
+	input := &Tensor[float32]{
+		handle: 701,
+		data:   []float32{1},
+		shape:  Shape{1},
+	}
+	session := &AdvancedSession{
+		handle:       702,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{input},
+		outputValues: []Value{&fakeValue{handle: 703}},
+	}
+
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- session.Run()
+	}()
+	select {
+	case <-runEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("session Run did not enter the native callback")
+	}
+
+	if session.runMu.TryLock() {
+		session.runMu.Unlock()
+		t.Fatal("session.runMu was not held during native Run")
+	}
+	if ortCallMu.TryLock() {
+		ortCallMu.Unlock()
+		t.Fatal("ortCallMu exclusive lock was available during native Run")
+	}
+	if input.runMu.TryLock() {
+		input.runMu.Unlock()
+		t.Fatal("tensor write lock was available during native Run")
+	}
+
+	destroyStarted := make(chan struct{})
+	destroyDone := make(chan error, 1)
+	go func() {
+		close(destroyStarted)
+		err := DestroyEnvironment()
+		record("environment destroyed")
+		destroyDone <- err
+	}()
+	<-destroyStarted
+
+	select {
+	case err := <-destroyDone:
+		t.Fatalf("DestroyEnvironment returned during native Run: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	unblock()
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("session Run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("session Run did not return after native callback unblocked")
+	}
+	select {
+	case err := <-destroyDone:
+		if err != nil {
+			t.Fatalf("DestroyEnvironment: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("DestroyEnvironment did not return after Run completed")
+	}
+
+	eventsMu.Lock()
+	gotEvents := append([]string(nil), events...)
+	eventsMu.Unlock()
+	if want := []string{"run returned", "environment destroyed"}; !slices.Equal(gotEvents, want) {
+		t.Fatalf("events = %v, want %v", gotEvents, want)
+	}
+	if got := sessionReleases.Load(); got != 0 {
+		t.Fatalf("environment teardown released session %d times, want 0", got)
+	}
+	if got := tensorReleases.Load(); got != 0 {
+		t.Fatalf("environment teardown released tensor %d times, want 0", got)
+	}
+
+	mu.Lock()
+	gotRefCount := refCount
+	gotAPI := ortAPI
+	gotRun := runSessionFunc
+	gotReleaseSession := releaseSessionFunc
+	gotReleaseValue := releaseValueFunc
+	mu.Unlock()
+	if gotRefCount != 0 || gotAPI != nil || gotRun != nil || gotReleaseSession != nil || gotReleaseValue != nil {
+		t.Fatalf(
+			"environment globals not cleared: refCount=%d api=%p run=%v releaseSession=%v releaseValue=%v",
+			gotRefCount,
+			gotAPI,
+			gotRun != nil,
+			gotReleaseSession != nil,
+			gotReleaseValue != nil,
+		)
+	}
+}
+
+func TestAdvancedSessionDestroyConcurrentCallsReleaseOnce(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	var releases atomic.Int32
+	mu.Lock()
+	releaseSessionFunc = func(handle uintptr) {
+		if handle != 704 {
+			t.Errorf("released session handle = %d, want 704", handle)
+		}
+		releases.Add(1)
+	}
+	mu.Unlock()
+
+	session := &AdvancedSession{
+		handle:       704,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{&fakeValue{handle: 705}},
+		outputValues: []Value{&fakeValue{handle: 706}},
+	}
+
+	const workers = 32
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var workersDone sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		workersDone.Add(1)
+		go func() {
+			defer workersDone.Done()
+			<-start
+			errs <- session.Destroy()
+		}()
+	}
+	close(start)
+	workersDone.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent session destroy: %v", err)
+		}
+	}
+	if got := releases.Load(); got != 1 {
+		t.Fatalf("session release count = %d, want 1", got)
+	}
+	if session.handle != 0 ||
+		session.inputNames != nil ||
+		session.outputNames != nil ||
+		session.inputValues != nil ||
+		session.outputValues != nil {
+		t.Fatalf("destroyed session retained owned state: %#v", session)
 	}
 }
 
