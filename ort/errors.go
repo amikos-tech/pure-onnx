@@ -6,6 +6,10 @@ import (
 )
 
 // ORTError describes a native ONNX Runtime failure using Go-owned data.
+// Reach it with errors.As(err, &ortErr) and branch on the Code field; there is no
+// sentinel per native code. The package sentinels below (ErrInvalidArgument,
+// ErrNotInitialized, ErrDestroyed, ...) report Go-side validation only and
+// deliberately never match a native status via errors.Is.
 type ORTError struct {
 	Operation string
 	Code      ErrorCode
