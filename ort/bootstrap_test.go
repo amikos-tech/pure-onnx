@@ -862,6 +862,89 @@ func TestEnsureOnnxRuntimeSharedLibraryPreservesCacheOnOperationalValidationErro
 	}
 }
 
+func TestBootstrapDirectoryTrustFailureIsOperational(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("Unix-specific cache directory trust checks")
+	}
+	cacheDir := t.TempDir()
+	if err := os.Chmod(cacheDir, 0o770); err != nil {
+		t.Fatalf("make cache directory group-writable: %v", err)
+	}
+	err := validateBootstrapDirectoryTrust(cacheDir, false)
+	if err == nil {
+		t.Fatal("expected untrusted cache directory to be rejected")
+	}
+	if got := cacheValidationDispositionForError(err); got != cacheValidationOperational {
+		t.Fatalf("cache directory trust failure disposition = %v, want operational", got)
+	}
+}
+
+func TestEnsureOnnxRuntimeSharedLibraryPreservesCacheOnDirectoryTrustFailure(t *testing.T) {
+	clearBootstrapEnv(t)
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("Unix-specific cache directory trust checks")
+	}
+
+	artifact, err := resolveRuntimeArtifact(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		t.Skipf("unsupported runtime for bootstrap test: %v", err)
+	}
+
+	for _, disableDownload := range []bool{false, true} {
+		t.Run(fmt.Sprintf("disable-download-%t", disableDownload), func(t *testing.T) {
+			cacheDir := t.TempDir()
+			const version = "1.99.66"
+			installDir := filepath.Join(cacheDir, artifact.archiveName(version))
+			libDir := filepath.Join(installDir, "lib")
+			if err := os.MkdirAll(libDir, secureDirectoryPermission); err != nil {
+				t.Fatalf("create install directory: %v", err)
+			}
+			libraryPath := filepath.Join(libDir, artifact.primaryLibrary)
+			if err := os.WriteFile(libraryPath, []byte("cached-runtime"), 0o600); err != nil {
+				t.Fatalf("write cached runtime: %v", err)
+			}
+			cfg := bootstrapConfig{version: version}
+			if err := writeBootstrapInstallManifest(installDir, cfg, artifact, strings.Repeat("a", 64), true); err != nil {
+				t.Fatalf("write valid manifest: %v", err)
+			}
+
+			// A trust problem with the parent cache directory, planted after
+			// the install itself was already valid, must not be treated as
+			// evidence that this install is corrupt.
+			if err := os.Chmod(cacheDir, 0o770); err != nil {
+				t.Fatalf("make cache directory group-writable: %v", err)
+			}
+
+			previousRemoveAll := bootstrapRemoveAll
+			removeCount := 0
+			bootstrapRemoveAll = func(path string) error {
+				removeCount++
+				return os.RemoveAll(path)
+			}
+			t.Cleanup(func() { bootstrapRemoveAll = previousRemoveAll })
+
+			_, err := EnsureOnnxRuntimeSharedLibrary(
+				WithBootstrapCacheDir(cacheDir),
+				WithBootstrapVersion(version),
+				WithBootstrapDisableDownload(disableDownload),
+			)
+			if err == nil || !strings.Contains(err.Error(), "not trusted") {
+				t.Fatalf("bootstrap error = %v, want cache directory trust failure", err)
+			}
+			if removeCount != 0 {
+				t.Fatalf("bootstrapRemoveAll calls = %d, want 0", removeCount)
+			}
+			contents, readErr := os.ReadFile(libraryPath)
+			if readErr != nil {
+				t.Fatalf("read preserved cached library: %v", readErr)
+			}
+			if string(contents) != "cached-runtime" {
+				t.Fatalf("cached library contents = %q, want cached-runtime", contents)
+			}
+		})
+	}
+}
+
 func TestBootstrapCacheValidationDisposition(t *testing.T) {
 	artifact, err := resolveRuntimeArtifact(runtime.GOOS, runtime.GOARCH)
 	if err != nil {
@@ -3011,7 +3094,7 @@ func TestDiagnosticCallSites(t *testing.T) {
 				t.Fatalf("lock holder: %v", err)
 			}
 		}, []bootstrapDiagnosticExpectation{{
-			level:   slog.LevelInfo,
+			level:   slog.LevelWarn,
 			message: "waiting for bootstrap lock",
 			attrs: map[string]string{
 				"path":          "",

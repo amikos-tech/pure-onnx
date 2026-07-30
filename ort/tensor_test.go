@@ -679,6 +679,15 @@ func TestTensorDestroyConcurrentCallsReleaseOnce(t *testing.T) {
 	}
 }
 
+// TestTensorPinnedBackingSurvivesGC proves the backing array stays reachable
+// and unchanged across repeated GC cycles. It does not, and structurally
+// cannot, prove the Pinner itself prevents a move: Go's current garbage
+// collector never relocates heap objects, so this data-liveness check would
+// pass identically even without runtime.Pinner. runtime.Pinner exposes no way
+// to confirm Pin() itself ran, so the accompanying tensor.pinner != nil check
+// only catches the coarser regression of the whole pinning branch being
+// dropped for a non-empty tensor, not a Pin() call quietly disappearing from
+// inside it.
 func TestTensorPinnedBackingSurvivesGC(t *testing.T) {
 	resetEnvironmentState()
 	t.Cleanup(resetEnvironmentState)
@@ -737,6 +746,9 @@ func TestTensorPinnedBackingSurvivesGC(t *testing.T) {
 	}
 	if got := uintptr(unsafe.Pointer(unsafe.SliceData(tensor.GetData()))); got != capturedData {
 		t.Fatalf("tensor data pointer = %#x, native pointer = %#x", got, capturedData)
+	}
+	if tensor.pinner == nil {
+		t.Fatal("NewTensor did not pin the backing array")
 	}
 
 	for iteration := 0; iteration < 25; iteration++ {

@@ -1838,20 +1838,20 @@ func validateBootstrapDirectoryTrust(path string, allowSharedCache bool) error {
 		}
 		return fmt.Errorf("failed to inspect bootstrap directory %q: %w", path, err)
 	}
+	// A trust problem with the shared cache directory says nothing about
+	// whether any specific install underneath it is corrupt, and installDir
+	// is computed by joining onto this path — so these failures stay
+	// unmarked (operational): the caller propagates the error and leaves
+	// installDir untouched, rather than treating an untrusted parent as
+	// grounds to delete a child install it hasn't actually inspected.
 	if info.Mode()&os.ModeSymlink != 0 {
-		return markCacheValidationError(
-			cacheValidationConfirmedInvalid,
-			fmt.Errorf("bootstrap directory must not be a symbolic link: %q", path),
-		)
+		return fmt.Errorf("bootstrap directory must not be a symbolic link: %q", path)
 	}
 	if !info.IsDir() {
-		return markCacheValidationError(
-			cacheValidationConfirmedInvalid,
-			fmt.Errorf("bootstrap path is not a directory: %q", path),
-		)
+		return fmt.Errorf("bootstrap path is not a directory: %q", path)
 	}
 	if err := validateBootstrapPathOwnershipAndMode(path, info, allowSharedCache); err != nil {
-		return markCacheValidationError(cacheValidationConfirmedInvalid, err)
+		return err
 	}
 	return nil
 }
@@ -2002,7 +2002,7 @@ func withProcessFileLock(
 		if time.Now().After(nextLogAt) {
 			emitDiagnostic(
 				context.Background(),
-				slog.LevelInfo,
+				slog.LevelWarn,
 				"waiting for bootstrap lock",
 				slog.String("path", lockPath),
 				slog.Duration("wait_duration", waited),
