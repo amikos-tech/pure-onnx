@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"log/slog"
 	"os"
 	"runtime"
@@ -442,16 +445,21 @@ func TestDiagnosticRuntimeVersion(t *testing.T) {
 		}
 	})
 
-	t.Run("nil handler is silent", func(t *testing.T) {
+	t.Run("nil handler restores warning stderr default", func(t *testing.T) {
 		handler := &diagnosticCountingHandler{}
 		SetDiagnosticHandler(handler)
 		t.Cleanup(func() { SetDiagnosticHandler(nil) })
-		SetDiagnosticHandler(nil)
 
-		emitRuntimeVersionWarning("1.21.4")
+		output := captureDiagnosticStderr(t, func() {
+			SetDiagnosticHandler(nil)
+			emitRuntimeVersionWarning("1.21.4")
+		})
 
 		if got := handler.count.Load(); got != 0 {
 			t.Fatalf("nil handler emitted %d diagnostics, want 0", got)
+		}
+		if !strings.Contains(output, "ONNX Runtime version is older") {
+			t.Fatalf("nil-handler stderr output = %q, want runtime warning", output)
 		}
 	})
 
@@ -472,6 +480,102 @@ func TestDiagnosticRuntimeVersion(t *testing.T) {
 			t.Fatalf("recovered panic = %v, want %q", recovered, panicValue)
 		}
 	})
+
+	t.Run("rollback failure is reported without masking handler panic", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		panicValue := &struct{ label string }{label: "handler panic"}
+		closeCause := errors.New("rollback close failed")
+		var closeCount int
+		installEnvironmentLibraryHooks(
+			func(string) (uintptr, error) { return 0, nil },
+			func(uintptr, string) (uintptr, error) { return 0, nil },
+			func(handle uintptr) error {
+				closeCount++
+				if handle != 912 {
+					t.Errorf("closed handle = %d, want 912", handle)
+				}
+				return closeCause
+			},
+		)
+		mu.Lock()
+		refCount = 1
+		ortLib = 912
+		runSessionFunc = func(uintptr, uintptr, *uintptr, *uintptr, uintptr, *uintptr, uintptr, *uintptr) uintptr {
+			return 0
+		}
+		mu.Unlock()
+
+		var recovered any
+		output := captureDiagnosticStderr(t, func() {
+			SetDiagnosticHandler(diagnosticPanicHandler{value: panicValue})
+			func() {
+				defer func() {
+					recovered = recover()
+				}()
+				_ = completeEnvironmentInitialization("1.21.4", true, nil)
+			}()
+		})
+
+		if recovered != panicValue {
+			t.Fatalf("recovered panic = %#v, want original sentinel %#v", recovered, panicValue)
+		}
+		if closeCount != 1 {
+			t.Fatalf("library close count = %d, want 1", closeCount)
+		}
+		if !strings.Contains(output, closeCause.Error()) {
+			t.Fatalf("rollback stderr output = %q, want close cause", output)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if refCount != 0 || ortLib != 0 || runSessionFunc != nil {
+			t.Fatalf(
+				"rollback state = refCount %d, ortLib %d, runSessionFunc nil %t",
+				refCount,
+				ortLib,
+				runSessionFunc == nil,
+			)
+		}
+	})
+}
+
+func TestLifecycleLockHierarchyDocumentation(t *testing.T) {
+	parsed, err := parser.ParseFile(
+		token.NewFileSet(),
+		"environment.go",
+		nil,
+		parser.ParseComments,
+	)
+	if err != nil {
+		t.Fatalf("parse environment.go: %v", err)
+	}
+
+	var documentation string
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		spec, ok := node.(*ast.ValueSpec)
+		if !ok || len(spec.Names) == 0 || spec.Names[0].Name != "mu" || spec.Doc == nil {
+			return true
+		}
+		documentation = spec.Doc.Text()
+		return false
+	})
+	if documentation == "" {
+		t.Fatal("mu declaration has no lock hierarchy documentation")
+	}
+
+	for _, fact := range []string{
+		"partial order",
+		"AdvancedSession.runMu -> ortCallMu",
+		"ortCallMu -> SessionOptions.handleMu, mu, Tensor.runMu, MemoryInfo.handleMu",
+		"SessionOptions.handleMu -> mu only when both are held",
+		"mu is released before Tensor.runMu or MemoryInfo.handleMu",
+		"Tensor.runMu and MemoryInfo.handleMu are never nested with each other",
+	} {
+		if !strings.Contains(documentation, fact) {
+			t.Errorf("mu documentation missing %q:\n%s", fact, documentation)
+		}
+	}
 }
 
 func TestInitializeEnvironmentDiagnosticHandlerCanQueryRuntime(t *testing.T) {

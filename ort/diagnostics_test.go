@@ -5,18 +5,32 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 )
 
 func TestDiagnostic(t *testing.T) {
-	t.Run("silent default and nil reset", func(t *testing.T) {
-		if got := diagnostics.Load().logger.Handler(); got != slog.DiscardHandler {
-			t.Fatalf("initial handler: got %T, want slog.DiscardHandler", got)
-		}
+	t.Run("default warning reaches stderr while info remains quiet", func(t *testing.T) {
+		output := captureDiagnosticStderr(t, func() {
+			SetDiagnosticHandler(nil)
+			emitDiagnostic(context.Background(), slog.LevelInfo, "quiet lock wait")
+			emitDiagnostic(context.Background(), slog.LevelWarn, "visible runtime warning")
+		})
 
+		if strings.Contains(output, "quiet lock wait") {
+			t.Fatalf("default stderr output contains info diagnostic: %q", output)
+		}
+		if !strings.Contains(output, "visible runtime warning") {
+			t.Fatalf("default stderr output = %q, want warning", output)
+		}
+	})
+
+	t.Run("nil reset restores warning stderr default", func(t *testing.T) {
 		handler := &diagnosticCountingHandler{}
 		SetDiagnosticHandler(handler)
 		t.Cleanup(func() { SetDiagnosticHandler(nil) })
@@ -26,14 +40,15 @@ func TestDiagnostic(t *testing.T) {
 			t.Fatalf("configured handler count: got %d, want 1", got)
 		}
 
-		SetDiagnosticHandler(nil)
-		if got := diagnostics.Load().logger.Handler(); got != slog.DiscardHandler {
-			t.Fatalf("reset handler: got %T, want slog.DiscardHandler", got)
-		}
-
-		emitDiagnostic(context.Background(), slog.LevelWarn, "not observable")
+		output := captureDiagnosticStderr(t, func() {
+			SetDiagnosticHandler(nil)
+			emitDiagnostic(context.Background(), slog.LevelWarn, "reset warning")
+		})
 		if got := handler.count.Load(); got != 1 {
 			t.Fatalf("nil-reset handler count: got %d, want 1", got)
+		}
+		if !strings.Contains(output, "reset warning") {
+			t.Fatalf("nil-reset stderr output = %q, want warning", output)
 		}
 	})
 
@@ -163,11 +178,17 @@ func TestDiagnostic(t *testing.T) {
 		}
 	})
 
-	t.Run("finalizer diagnostic contains handler panic", func(t *testing.T) {
-		SetDiagnosticHandler(diagnosticPanicHandler{value: "handler panic"})
-		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+	t.Run("finalizer handler panic falls back to stderr", func(t *testing.T) {
+		output := captureDiagnosticStderr(t, func() {
+			SetDiagnosticHandler(diagnosticPanicHandler{value: "handler panic"})
+			emitFinalizerDiagnostic("session", errors.New("release failed"))
+		})
 
-		emitFinalizerDiagnostic("session", errors.New("release failed"))
+		for _, want := range []string{"session", "release failed", "handler panic"} {
+			if !strings.Contains(output, want) {
+				t.Fatalf("emergency stderr output = %q, want %q", output, want)
+			}
+		}
 	})
 
 	t.Run("general diagnostic propagates handler panic", func(t *testing.T) {
@@ -200,6 +221,34 @@ func TestDiagnostic(t *testing.T) {
 			t.Fatalf("returned error produced %d diagnostic records, want 0", got)
 		}
 	})
+}
+
+func captureDiagnosticStderr(t *testing.T, operation func()) string {
+	t.Helper()
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe: %v", err)
+	}
+	original := os.Stderr
+	os.Stderr = writer
+
+	defer func() {
+		os.Stderr = original
+		SetDiagnosticHandler(nil)
+		_ = writer.Close()
+		_ = reader.Close()
+	}()
+
+	operation()
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	return string(output)
 }
 
 func decodeDiagnosticRecord(t *testing.T, output *bytes.Buffer) map[string]any {
