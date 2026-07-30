@@ -310,7 +310,10 @@ func TestEnsureOnnxRuntimeSharedLibraryWithExplicitPath(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want, _ := filepath.Abs(libPath)
+	want, err := filepath.EvalSymlinks(libPath)
+	if err != nil {
+		t.Fatalf("resolve expected library path: %v", err)
+	}
 	if resolved != want {
 		t.Fatalf("unexpected resolved path: got %q, want %q", resolved, want)
 	}
@@ -354,7 +357,7 @@ func TestEnsureOnnxRuntimeSharedLibraryExplicitSymlink(t *testing.T) {
 			if err != nil {
 				t.Fatalf("resolve explicit library symlink: %v", err)
 			}
-			want, err := filepath.Abs(target)
+			want, err := filepath.EvalSymlinks(target)
 			if err != nil {
 				t.Fatalf("resolve expected target path: %v", err)
 			}

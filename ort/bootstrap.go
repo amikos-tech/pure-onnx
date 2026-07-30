@@ -261,7 +261,7 @@ func EnsureOnnxRuntimeSharedLibrary(opts ...BootstrapOption) (string, error) {
 	}
 
 	if cfg.libraryPath != "" {
-		return validateLibraryFile(cfg.libraryPath)
+		return validateExplicitLibraryFile(cfg.libraryPath)
 	}
 
 	artifact, err := resolveRuntimeArtifact(cfg.goos, cfg.goarch)
@@ -1644,6 +1644,33 @@ func validateBootstrapDirectoryTrust(path string) error {
 		return fmt.Errorf("bootstrap path is not a directory: %q", path)
 	}
 	return validateBootstrapPathOwnershipAndMode(path, info)
+}
+
+func validateExplicitLibraryFile(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("library path is empty: %w", ErrInvalidArgument)
+	}
+
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve absolute path for %q: %w", path, err)
+	}
+
+	resolvedPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf(
+				"failed to resolve explicit library path %q: %w: %w",
+				absPath,
+				ErrSharedLibraryNotFound,
+				err,
+			)
+		}
+		return "", fmt.Errorf("failed to resolve explicit library path %q: %w", absPath, err)
+	}
+
+	return validateLibraryFile(resolvedPath)
 }
 
 func validateLibraryFile(path string) (string, error) {
