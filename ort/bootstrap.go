@@ -247,11 +247,11 @@ type bootstrapManifestFile struct {
 // When set, bootstrap download and cache resolution are bypassed.
 func WithBootstrapLibraryPath(path string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
-		path = strings.TrimSpace(path)
-		if path == "" {
+		normalizedPath := strings.TrimSpace(path)
+		if normalizedPath == "" {
 			return fmt.Errorf("bootstrap library path cannot be empty: %w", ErrInvalidArgument)
 		}
-		cfg.libraryPath = path
+		cfg.libraryPath = normalizedPath
 		return nil
 	}
 }
@@ -259,11 +259,11 @@ func WithBootstrapLibraryPath(path string) BootstrapOption {
 // WithBootstrapCacheDir sets the cache directory used by bootstrap downloads and extraction.
 func WithBootstrapCacheDir(dir string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
-		dir = strings.TrimSpace(dir)
-		if dir == "" {
+		normalizedCacheDir := strings.TrimSpace(dir)
+		if normalizedCacheDir == "" {
 			return fmt.Errorf("bootstrap cache directory cannot be empty: %w", ErrInvalidArgument)
 		}
-		cfg.cacheDir = dir
+		cfg.cacheDir = normalizedCacheDir
 		return nil
 	}
 }
@@ -271,11 +271,11 @@ func WithBootstrapCacheDir(dir string) BootstrapOption {
 // WithBootstrapVersion sets the ONNX Runtime version to download (for example: 1.24.1).
 func WithBootstrapVersion(version string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
-		version = strings.TrimSpace(version)
-		if version == "" {
+		normalizedVersion := strings.TrimSpace(version)
+		if normalizedVersion == "" {
 			return fmt.Errorf("bootstrap version cannot be empty: %w", ErrInvalidArgument)
 		}
-		cfg.version = version
+		cfg.version = normalizedVersion
 		return nil
 	}
 }
@@ -302,28 +302,28 @@ func WithBootstrapAllowSharedCache(allow bool) BootstrapOption {
 // For the official ONNX Runtime source, this value is cross-validated against release metadata.
 func WithBootstrapExpectedSHA256(checksum string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
-		checksum = strings.TrimSpace(strings.ToLower(checksum))
-		if checksum == "" {
+		normalizedChecksum := strings.TrimSpace(strings.ToLower(checksum))
+		if normalizedChecksum == "" {
 			return fmt.Errorf("expected SHA256 checksum cannot be empty: %w", ErrInvalidArgument)
 		}
-		if !looksLikeSHA256(checksum) {
+		if !looksLikeSHA256(normalizedChecksum) {
 			return fmt.Errorf("expected SHA256 checksum must be 64 hex characters (0-9, a-f): %w", ErrInvalidArgument)
 		}
-		cfg.expectedSHA256 = checksum
+		cfg.expectedSHA256 = normalizedChecksum
 		return nil
 	}
 }
 
 func withBootstrapBaseURL(baseURL string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
-		baseURL = strings.TrimSpace(baseURL)
-		if baseURL == "" {
+		normalizedBaseURL := strings.TrimSpace(baseURL)
+		if normalizedBaseURL == "" {
 			return fmt.Errorf("bootstrap base URL cannot be empty: %w", ErrInvalidArgument)
 		}
-		if err := validateBootstrapBaseURL(baseURL); err != nil {
+		if err := validateBootstrapBaseURL(normalizedBaseURL); err != nil {
 			return err
 		}
-		cfg.baseURL = baseURL
+		cfg.baseURL = normalizedBaseURL
 		return nil
 	}
 }
