@@ -24,8 +24,8 @@ func main() {
 	}
 
 	headerPath := os.Args[1]
-	// #nosec G304 -- Generator intentionally opens a caller-specified local header path.
-	file, err := os.Open(headerPath)
+	// G703 is not a typo: it is gosec's taint-analysis path-traversal analyzer, listed under analyzers/ rather than rules/.
+	file, err := os.Open(headerPath) // #nosec G304 G703 -- Generator intentionally opens a caller-specified local header path.
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open header file: %v\n", err)
 		os.Exit(1)

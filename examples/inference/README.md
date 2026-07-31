@@ -11,7 +11,7 @@ This example runs a real model inference using `ort.NewAdvancedSession` without 
 ## Optional environment variables
 
 - `ONNXRUNTIME_LIB_PATH`: explicit ONNX Runtime shared library path (`.so`, `.dylib`, or `.dll`)
-- `ONNXRUNTIME_VERSION`: bootstrap download version (default: `1.23.1`)
+- `ONNXRUNTIME_VERSION`: bootstrap download version (default: `1.24.1`)
 - `ONNXRUNTIME_CACHE_DIR`: bootstrap cache location
 - `ONNXRUNTIME_DISABLE_DOWNLOAD=1`: disable bootstrap download and require existing cache/path
 - `ONNXRUNTIME_SKIP_VERSION_CHECK=1`: skip runtime version warning during `InitializeEnvironment`
