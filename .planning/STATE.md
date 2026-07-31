@@ -4,8 +4,8 @@ milestone: v0.1.0
 milestone_name: "**Goal**: v0.1.0 is cut as a tagged, documented release with CI green across all supported platforms and every milestone issue closed."
 status: "Phase 02 shipped — PR #105"
 stopped_at: Phase 2 UAT complete, ready to discuss Phase 3
-last_updated: "2026-07-30T16:07:10.872Z"
-last_activity: 2026-07-30
+last_updated: "2026-07-31T00:00:00.000Z"
+last_activity: 2026-07-31
 progress:
   total_phases: 6
   completed_phases: 2
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-07-30)
 Phase: 3
 Plan: Not started
 Status: Phase 02 shipped — PR #105
-Last activity: 2026-07-30 - Completed quick task 260730-qjz: address PR 105 review feedback
+Last activity: 2026-07-31 - Completed quick task 260731-j0t: address concurrency regression review findings
 
 Progress: [████████████████████] 11/11 plans (100%)
 
@@ -91,6 +91,8 @@ None yet.
 | 260730-gye | Address all five review findings | 2026-07-30 | 0618207 |  | [260730-gye-address-all-five-review-findings](./quick/260730-gye-address-all-five-review-findings/) |
 | 260730-ink | Address the supplied diagnostics, locking, bootstrap cache validation and trust, concurrency coverage, and documentation findings | 2026-07-30 | e92b8a7 | Needs Review | [260730-ink-address-the-supplied-diagnostics-locking](./quick/260730-ink-address-the-supplied-diagnostics-locking/) |
 | 260730-qjz | address PR 105 review feedback | 2026-07-30 | 80dd73f |  | [260730-qjz-address-pr-105-review-feedback](./quick/260730-qjz-address-pr-105-review-feedback/) |
+| 260731-fxc | address issue #111 | 2026-07-31 | 0c637a9 | Shipped — PR #112 | [260731-fxc-address-issue-111](./quick/260731-fxc-address-issue-111/) |
+| 260731-j0t | address concurrency regression review findings | 2026-07-31 | b43a960 | Shipped — PR #112 | [260731-j0t-address-concurrency-regression-review-fi](./quick/260731-j0t-address-concurrency-regression-review-fi/) |
 
 ## Deferred Items
 
