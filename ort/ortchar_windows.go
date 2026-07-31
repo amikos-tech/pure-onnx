@@ -14,6 +14,9 @@ import (
 // has finished using the returned pointer (for example via runtime.KeepAlive
 // immediately after the ORT call).
 func goStringToORTChar(s string) (uintptr, any, error) {
+	if err := validateNativeString(s, "model path"); err != nil {
+		return 0, nil, err
+	}
 	utf16, err := windows.UTF16FromString(s)
 	if err != nil {
 		return 0, nil, fmt.Errorf("failed to convert path to UTF-16: %w", err)

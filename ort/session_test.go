@@ -1,6 +1,9 @@
 package ort
 
 import (
+	"bytes"
+	"errors"
+	"log/slog"
 	"os"
 	"slices"
 	"strings"
@@ -18,6 +21,7 @@ type fakeValue struct {
 
 func (f *fakeValue) Destroy() error          { return nil }
 func (f *fakeValue) Type() ValueType         { return ValueTypeTensor }
+func (f *fakeValue) ortValue()               {}
 func (f *fakeValue) ortValueHandle() uintptr { return f.handle }
 func (f *fakeValue) lockForRun() (uintptr, error) {
 	if f.handle == 0 {
@@ -31,6 +35,7 @@ type unsupportedValue struct{}
 
 func (u *unsupportedValue) Destroy() error  { return nil }
 func (u *unsupportedValue) Type() ValueType { return ValueTypeTensor }
+func (u *unsupportedValue) ortValue()       {}
 
 type blockingLeaseValue struct {
 	handle uintptr
@@ -57,6 +62,7 @@ func (v *blockingLeaseValue) Destroy() error {
 }
 
 func (v *blockingLeaseValue) Type() ValueType { return ValueTypeTensor }
+func (v *blockingLeaseValue) ortValue()       {}
 
 func (v *blockingLeaseValue) ortValueHandle() uintptr {
 	v.runMu.RLock()
@@ -96,6 +102,7 @@ type nonComparableLeaseValue struct {
 
 func (v nonComparableLeaseValue) Destroy() error          { return nil }
 func (v nonComparableLeaseValue) Type() ValueType         { return ValueTypeTensor }
+func (v nonComparableLeaseValue) ortValue()               {}
 func (v nonComparableLeaseValue) ortValueHandle() uintptr { return v.handle }
 func (v nonComparableLeaseValue) lockForRun() (uintptr, error) {
 	if v.handle == 0 {
@@ -105,21 +112,134 @@ func (v nonComparableLeaseValue) lockForRun() (uintptr, error) {
 }
 func (v nonComparableLeaseValue) unlockForRun() {}
 
-func TestValuesToHandlesDeduplicatesRepeatedLockableValue(t *testing.T) {
+type countingLeaseValue struct {
+	handle      uintptr
+	runMu       sync.RWMutex
+	lockCalls   atomic.Int32
+	unlockCalls atomic.Int32
+	released    chan<- uintptr
+}
+
+func (v *countingLeaseValue) Destroy() error {
+	v.runMu.Lock()
+	v.handle = 0
+	v.runMu.Unlock()
+	return nil
+}
+
+func (v *countingLeaseValue) Type() ValueType { return ValueTypeTensor }
+func (v *countingLeaseValue) ortValue()       {}
+func (v *countingLeaseValue) ortValueHandle() uintptr {
+	v.runMu.RLock()
+	defer v.runMu.RUnlock()
+	return v.handle
+}
+func (v *countingLeaseValue) lockForRun() (uintptr, error) {
+	v.runMu.RLock()
+	if v.handle == 0 {
+		v.runMu.RUnlock()
+		return 0, errValueDestroyed
+	}
+	v.lockCalls.Add(1)
+	return v.handle, nil
+}
+func (v *countingLeaseValue) unlockForRun() {
+	v.unlockCalls.Add(1)
+	if v.released != nil {
+		v.released <- v.handle
+	}
+	v.runMu.RUnlock()
+}
+
+type sessionStatusProbe struct {
+	handle   uintptr
+	code     ErrorCode
+	releases atomic.Int32
+}
+
+func installSessionStatusProbe(t *testing.T, code ErrorCode) *sessionStatusProbe {
+	t.Helper()
+
+	probe := &sessionStatusProbe{
+		handle: 9001,
+		code:   code,
+	}
+
+	mu.Lock()
+	getErrorCodeFunc = func(status uintptr) ErrorCode {
+		if status != probe.handle {
+			t.Errorf("GetErrorCode status = %d, want %d", status, probe.handle)
+		}
+		return probe.code
+	}
+	getErrorMessageFunc = func(status uintptr) uintptr {
+		if status != probe.handle {
+			t.Errorf("GetErrorMessage status = %d, want %d", status, probe.handle)
+		}
+		// Keep the production call-site proof race/checkptr safe. Non-empty
+		// copy-before-release semantics are covered by TestStatusToError.
+		return 0
+	}
+	releaseStatusFunc = func(status uintptr) {
+		if status != probe.handle {
+			t.Errorf("ReleaseStatus status = %d, want %d", status, probe.handle)
+		}
+		probe.releases.Add(1)
+	}
+	mu.Unlock()
+
+	return probe
+}
+
+func requireSessionORTError(
+	t *testing.T,
+	err error,
+	operation string,
+	code ErrorCode,
+	message string,
+	releases *atomic.Int32,
+) {
+	t.Helper()
+
+	var nativeErr *ORTError
+	if !errors.As(err, &nativeErr) {
+		t.Fatalf("errors.As(%v, *ORTError) = false", err)
+	}
+	if nativeErr.Operation != operation {
+		t.Fatalf("operation = %q, want %q", nativeErr.Operation, operation)
+	}
+	if nativeErr.Code != code {
+		t.Fatalf("code = %d, want %d", nativeErr.Code, code)
+	}
+	if nativeErr.Message != message {
+		t.Fatalf("message = %q, want %q", nativeErr.Message, message)
+	}
+	if got := releases.Load(); got != 1 {
+		t.Fatalf("status release count = %d, want 1", got)
+	}
+}
+
+func TestAcquireValueLeasesDeduplicatesRepeatedLockableValue(t *testing.T) {
 	value := newBlockingLeaseValue(42)
 
-	type valuesToHandlesResult struct {
+	type leaseResult struct {
 		handles []uintptr
-		release func()
+		leases  *valueLeaseSet
 		err     error
 	}
 
-	resultCh := make(chan valuesToHandlesResult, 1)
+	resultCh := make(chan leaseResult, 1)
 	go func() {
-		handles, release, err := valuesToHandles([]Value{value, value}, "input")
-		resultCh <- valuesToHandlesResult{
+		values := []Value{value, value}
+		leases, err := acquireValueLeases(valueRoleValues{role: "input", values: values})
+		if err != nil {
+			resultCh <- leaseResult{err: err}
+			return
+		}
+		handles, err := handlesFromLeasedValues(values, "input", leases)
+		resultCh <- leaseResult{
 			handles: handles,
-			release: release,
+			leases:  leases,
 			err:     err,
 		}
 	}()
@@ -134,7 +254,7 @@ func TestValuesToHandlesDeduplicatesRepeatedLockableValue(t *testing.T) {
 
 	close(value.allowFirstLeaseReturn)
 
-	var result valuesToHandlesResult
+	var result leaseResult
 	require.Eventually(t, func() bool {
 		select {
 		case result = <-resultCh:
@@ -142,10 +262,10 @@ func TestValuesToHandlesDeduplicatesRepeatedLockableValue(t *testing.T) {
 		default:
 			return false
 		}
-	}, 2*time.Second, 10*time.Millisecond, "valuesToHandles blocked while acquiring repeated lockable value")
+	}, 2*time.Second, 10*time.Millisecond, "acquireValueLeases blocked while acquiring repeated lockable value")
 
 	if result.err != nil {
-		t.Fatalf("valuesToHandles failed: %v", result.err)
+		t.Fatalf("production lease path failed: %v", result.err)
 	}
 	if got := len(result.handles); got != 2 {
 		t.Fatalf("expected two handles, got %d", got)
@@ -160,7 +280,7 @@ func TestValuesToHandlesDeduplicatesRepeatedLockableValue(t *testing.T) {
 	default:
 	}
 
-	result.release()
+	result.leases.Release()
 
 	require.Eventually(t, func() bool {
 		select {
@@ -172,49 +292,133 @@ func TestValuesToHandlesDeduplicatesRepeatedLockableValue(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond, "destroy did not complete after release()")
 }
 
-func TestValuesToHandlesReleasesPriorLeasesOnError(t *testing.T) {
-	value := newBlockingLeaseValue(42)
-	close(value.allowFirstLeaseReturn)
+func TestAcquireValueLeasesReleasesPriorLeasesOnError(t *testing.T) {
+	first := &countingLeaseValue{handle: 42}
+	second := &countingLeaseValue{}
+	firstKey, _ := valueLeaseOrderKey(first)
+	secondKey, _ := valueLeaseOrderKey(second)
+	if firstKey > secondKey {
+		first, second = second, first
+		first.handle = 42
+		second.handle = 0
+	}
 
-	_, release, err := valuesToHandles([]Value{value, &fakeValue{handle: 0}}, "input")
+	leases, err := acquireValueLeases(valueRoleValues{
+		role:   "input",
+		values: []Value{first, second},
+	})
 	if err == nil || !strings.Contains(err.Error(), "input value at index 1 has been destroyed") {
 		t.Fatalf("expected destroyed-value error at index 1, got: %v", err)
 	}
-	if release == nil {
-		t.Fatalf("expected non-nil release callback on error")
+	if leases != nil {
+		t.Fatalf("leases = %#v, want nil after acquisition failure", leases)
 	}
-	release()
-
-	destroyDone := make(chan struct{})
-	go func() {
-		_ = value.Destroy()
-		close(destroyDone)
-	}()
-
-	require.Eventually(t, func() bool {
-		select {
-		case <-destroyDone:
-			return true
-		default:
-			return false
-		}
-	}, 2*time.Second, 10*time.Millisecond, "destroy should not block; prior leases should have been released on error")
+	if got := first.lockCalls.Load(); got != 1 {
+		t.Fatalf("first value lock count = %d, want 1", got)
+	}
+	if got := first.unlockCalls.Load(); got != 1 {
+		t.Fatalf("first value unlock count = %d, want 1 after later failure", got)
+	}
 }
 
-func TestValuesToHandlesRejectsNonComparableLockable(t *testing.T) {
+func TestAcquireValueLeasesRejectsNonComparableLockable(t *testing.T) {
 	value := nonComparableLeaseValue{
 		handle:  7,
 		payload: []int{1, 2, 3},
 	}
 
-	_, release, err := valuesToHandles([]Value{value}, "input")
+	leases, err := acquireValueLeases(valueRoleValues{
+		role:   "input",
+		values: []Value{value},
+	})
 	if err == nil || !strings.Contains(err.Error(), "must be comparable") {
 		t.Fatalf("expected non-comparable lockable error, got: %v", err)
 	}
-	if release == nil {
-		t.Fatalf("expected non-nil release callback on error")
+	if leases != nil {
+		t.Fatalf("leases = %#v, want nil after non-comparable rejection", leases)
 	}
-	release()
+}
+
+func TestSessionLeaseDocumentation(t *testing.T) {
+	source, err := os.ReadFile("session.go")
+	if err != nil {
+		t.Fatalf("read session.go: %v", err)
+	}
+
+	for _, phrase := range []string{
+		"value-local synchronized check",
+		"does not lease the handle",
+		"acquireUniqueValueLeases prevents handle release during native Run",
+	} {
+		if !bytes.Contains(source, []byte(phrase)) {
+			t.Errorf("session.go documentation is missing %q", phrase)
+		}
+	}
+	if bytes.Contains(source, []byte("func valuesToHandles(")) {
+		t.Error("session.go still contains the production-dead valuesToHandles helper")
+	}
+}
+
+func TestAdvancedSessionRunSharedInputOutputDoesNotDeadlockDestroy(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	runSessionFunc = func(_ uintptr, _ uintptr, _ *uintptr, inputValues *uintptr, _ uintptr, _ *uintptr, _ uintptr, outputValues *uintptr) uintptr {
+		if *inputValues != 42 || *outputValues != 42 {
+			t.Errorf("run handles = (%d, %d), want (42, 42)", *inputValues, *outputValues)
+		}
+		return 0
+	}
+	mu.Unlock()
+
+	value := newBlockingLeaseValue(42)
+	session := &AdvancedSession{
+		handle:       700,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{value},
+		outputValues: []Value{value},
+	}
+
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- session.Run()
+	}()
+	<-value.firstLeaseAcquired
+
+	destroyDone := make(chan error, 1)
+	go func() {
+		destroyDone <- value.Destroy()
+	}()
+
+	require.Eventually(t, func() bool {
+		if value.runMu.TryRLock() {
+			value.runMu.RUnlock()
+			return false
+		}
+		return true
+	}, 2*time.Second, 10*time.Millisecond, "Destroy did not queue for the value write lock")
+
+	close(value.allowFirstLeaseReturn)
+
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run deadlocked while the same value was used for input and output")
+	}
+	select {
+	case err := <-destroyDone:
+		if err != nil {
+			t.Fatalf("Destroy failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Destroy did not complete after Run released the unique value lease")
+	}
 }
 
 func TestNewAdvancedSessionValidation(t *testing.T) {
@@ -255,6 +459,33 @@ func TestNewAdvancedSessionValidation(t *testing.T) {
 			inputValues:  []Value{validValue},
 			outputValues: []Value{validValue},
 			wantErr:      "at least one output name is required",
+		},
+		{
+			name:         "model path contains embedded NUL",
+			modelPath:    "model.onnx\x00other.onnx",
+			inputNames:   []string{"input"},
+			outputNames:  []string{"output"},
+			inputValues:  []Value{validValue},
+			outputValues: []Value{validValue},
+			wantErr:      "model path contains an embedded NUL",
+		},
+		{
+			name:         "input name contains embedded NUL",
+			modelPath:    "model.onnx",
+			inputNames:   []string{"input\x00other"},
+			outputNames:  []string{"output"},
+			inputValues:  []Value{validValue},
+			outputValues: []Value{validValue},
+			wantErr:      "input name at index 0 contains an embedded NUL",
+		},
+		{
+			name:         "output name contains embedded NUL",
+			modelPath:    "model.onnx",
+			inputNames:   []string{"input"},
+			outputNames:  []string{"output\x00other"},
+			inputValues:  []Value{validValue},
+			outputValues: []Value{validValue},
+			wantErr:      "output name at index 0 contains an embedded NUL",
 		},
 		{
 			name:         "input name/value mismatch",
@@ -355,6 +586,209 @@ func TestNewAdvancedSessionWithUninitializedSessionOptions(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "session options handle is not initialized") {
 		t.Fatalf("expected session options error, got: %v", err)
 	}
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("NewAdvancedSession error = %v, want ErrInvalidArgument", err)
+	}
+	if errors.Is(err, ErrDestroyed) {
+		t.Fatalf("NewAdvancedSession error = %v, do not want ErrDestroyed", err)
+	}
+}
+
+func TestNewAdvancedSessionWithDestroyedSessionOptions(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	var releases atomic.Int32
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	createSessionOptionsFunc = func(out *uintptr) uintptr {
+		*out = 777
+		return 0
+	}
+	releaseSessionOptionsFunc = func(handle uintptr) {
+		if handle != 777 {
+			t.Errorf("released session options handle = %d, want 777", handle)
+		}
+		releases.Add(1)
+	}
+	getErrorCodeFunc = func(uintptr) ErrorCode { return ErrorCodeFail }
+	getErrorMessageFunc = func(uintptr) uintptr { return 0 }
+	releaseStatusFunc = func(uintptr) {}
+	mu.Unlock()
+
+	options, err := NewSessionOptions()
+	if err != nil {
+		t.Fatalf("NewSessionOptions: %v", err)
+	}
+	if err := options.Destroy(); err != nil {
+		t.Fatalf("Destroy session options: %v", err)
+	}
+
+	_, err = NewAdvancedSession(
+		"model.onnx",
+		[]string{"input"},
+		[]string{"output"},
+		[]Value{&fakeValue{handle: 1}},
+		[]Value{&fakeValue{handle: 2}},
+		options,
+	)
+	if !errors.Is(err, ErrDestroyed) {
+		t.Fatalf("NewAdvancedSession error = %v, want ErrDestroyed", err)
+	}
+	if errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("NewAdvancedSession error = %v, do not want ErrInvalidArgument", err)
+	}
+	if got := releases.Load(); got != 1 {
+		t.Fatalf("session-options release count = %d, want 1", got)
+	}
+}
+
+func TestSessionOptionsLifecycle(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	if _, err := NewSessionOptions(); !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("NewSessionOptions before initialization error = %v, want ErrNotInitialized", err)
+	}
+
+	var releases atomic.Int32
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	createSessionOptionsFunc = func(out *uintptr) uintptr {
+		*out = 776
+		return 0
+	}
+	releaseSessionOptionsFunc = func(handle uintptr) {
+		if handle != 776 {
+			t.Errorf("released session options handle = %d, want 776", handle)
+		}
+		releases.Add(1)
+	}
+	getErrorCodeFunc = func(uintptr) ErrorCode { return ErrorCodeFail }
+	getErrorMessageFunc = func(uintptr) uintptr { return 0 }
+	releaseStatusFunc = func(uintptr) {}
+	mu.Unlock()
+
+	options, err := NewSessionOptions()
+	if err != nil {
+		t.Fatalf("NewSessionOptions: %v", err)
+	}
+	if !options.IsValid() {
+		t.Fatal("new session options are invalid")
+	}
+	if err := options.Destroy(); err != nil {
+		t.Fatalf("Destroy session options: %v", err)
+	}
+	if options.IsValid() {
+		t.Fatal("destroyed session options remain valid")
+	}
+	if err := options.Destroy(); err != nil {
+		t.Fatalf("second Destroy session options: %v", err)
+	}
+	if got := releases.Load(); got != 1 {
+		t.Fatalf("session options release count = %d, want 1", got)
+	}
+}
+
+func TestSessionConstructorsRejectZeroHandles(t *testing.T) {
+	t.Run("public session options", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		createSessionOptionsFunc = func(*uintptr) uintptr { return 0 }
+		releaseSessionOptionsFunc = func(uintptr) {
+			t.Fatal("ReleaseSessionOptions called for a zero handle")
+		}
+		getErrorCodeFunc = func(uintptr) ErrorCode { return ErrorCodeFail }
+		getErrorMessageFunc = func(uintptr) uintptr { return 0 }
+		releaseStatusFunc = func(uintptr) {}
+		mu.Unlock()
+
+		options, err := NewSessionOptions()
+		if options != nil {
+			t.Fatalf("session options = %#v, want nil", options)
+		}
+		if !errors.Is(err, ErrNativeContract) {
+			t.Fatalf("NewSessionOptions error = %v, want ErrNativeContract", err)
+		}
+	})
+
+	t.Run("automatic session options", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		ortEnv = 801
+		createSessionOptionsFunc = func(*uintptr) uintptr { return 0 }
+		releaseSessionOptionsFunc = func(uintptr) {
+			t.Fatal("ReleaseSessionOptions called for a zero handle")
+		}
+		createSessionFunc = func(_ uintptr, _ uintptr, _ uintptr, _ *uintptr) uintptr {
+			t.Fatal("CreateSession called after a zero session-options handle")
+			return 0
+		}
+		mu.Unlock()
+
+		session, err := NewAdvancedSession(
+			"model.onnx",
+			[]string{"input"},
+			[]string{"output"},
+			[]Value{&fakeValue{handle: 1}},
+			[]Value{&fakeValue{handle: 2}},
+			nil,
+		)
+		if session != nil {
+			t.Fatalf("session = %#v, want nil", session)
+		}
+		if !errors.Is(err, ErrNativeContract) {
+			t.Fatalf("NewAdvancedSession error = %v, want ErrNativeContract", err)
+		}
+	})
+
+	t.Run("session", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		var optionReleases atomic.Int32
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		ortEnv = 802
+		createSessionOptionsFunc = func(out *uintptr) uintptr {
+			*out = 803
+			return 0
+		}
+		releaseSessionOptionsFunc = func(handle uintptr) {
+			if handle != 803 {
+				t.Errorf("ReleaseSessionOptions handle = %d, want 803", handle)
+			}
+			optionReleases.Add(1)
+		}
+		createSessionFunc = func(_ uintptr, _ uintptr, _ uintptr, _ *uintptr) uintptr {
+			return 0
+		}
+		mu.Unlock()
+
+		session, err := NewAdvancedSession(
+			"model.onnx",
+			[]string{"input"},
+			[]string{"output"},
+			[]Value{&fakeValue{handle: 1}},
+			[]Value{&fakeValue{handle: 2}},
+			nil,
+		)
+		if session != nil {
+			t.Fatalf("session = %#v, want nil", session)
+		}
+		if !errors.Is(err, ErrNativeContract) {
+			t.Fatalf("NewAdvancedSession error = %v, want ErrNativeContract", err)
+		}
+		if got := optionReleases.Load(); got != 1 {
+			t.Fatalf("session-options release count = %d, want 1", got)
+		}
+	})
 }
 
 func TestNewAdvancedSessionWithProvidedSessionOptionsHandle(t *testing.T) {
@@ -424,6 +858,132 @@ func TestNewAdvancedSessionWithProvidedSessionOptionsHandle(t *testing.T) {
 	}
 }
 
+func TestNewAdvancedSessionBorrowedOptionsBlocksConcurrentDestroy(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	createEntered := make(chan struct{})
+	allowCreateReturn := make(chan struct{})
+	var unblockCreate sync.Once
+	unblock := func() {
+		unblockCreate.Do(func() { close(allowCreateReturn) })
+	}
+	t.Cleanup(unblock)
+
+	var (
+		optionsReleases atomic.Int32
+		sessionReleases atomic.Int32
+		receivedOptions uintptr
+	)
+	mu.Lock()
+	ortAPI = &OrtApi{}
+	ortEnv = 901
+	createSessionOptionsFunc = func(*uintptr) uintptr {
+		t.Error("CreateSessionOptions called for supplied options")
+		return 0
+	}
+	releaseSessionOptionsFunc = func(handle uintptr) {
+		if handle != 777 {
+			t.Errorf("released session options handle = %d, want 777", handle)
+		}
+		optionsReleases.Add(1)
+	}
+	createSessionFunc = func(_ uintptr, _ uintptr, sessionOptions uintptr, out *uintptr) uintptr {
+		receivedOptions = sessionOptions
+		close(createEntered)
+		<-allowCreateReturn
+		*out = 902
+		return 0
+	}
+	releaseSessionFunc = func(handle uintptr) {
+		if handle != 902 {
+			t.Errorf("released session handle = %d, want 902", handle)
+		}
+		sessionReleases.Add(1)
+	}
+	mu.Unlock()
+
+	options := &SessionOptions{handle: 777}
+	type sessionResult struct {
+		session *AdvancedSession
+		err     error
+	}
+	sessionDone := make(chan sessionResult, 1)
+	go func() {
+		session, err := NewAdvancedSession(
+			"model.onnx",
+			[]string{"input"},
+			[]string{"output"},
+			[]Value{&fakeValue{handle: 1}},
+			[]Value{&fakeValue{handle: 2}},
+			options,
+		)
+		sessionDone <- sessionResult{session: session, err: err}
+	}()
+
+	select {
+	case <-createEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("session creation did not enter the native callback")
+	}
+	if receivedOptions != 777 {
+		t.Fatalf("native callback received options handle %d, want 777", receivedOptions)
+	}
+	if options.handleMu.TryLock() {
+		options.handleMu.Unlock()
+		t.Fatal("session constructor did not retain the SessionOptions read lease")
+	}
+
+	destroyStarted := make(chan struct{})
+	destroyDone := make(chan error, 1)
+	go func() {
+		close(destroyStarted)
+		destroyDone <- options.Destroy()
+	}()
+	<-destroyStarted
+
+	select {
+	case err := <-destroyDone:
+		t.Fatalf("SessionOptions.Destroy returned during native creation: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := optionsReleases.Load(); got != 0 {
+		t.Fatalf("session options released during native creation %d times", got)
+	}
+
+	unblock()
+	var result sessionResult
+	select {
+	case result = <-sessionDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("session constructor did not return after native creation unblocked")
+	}
+	if result.err != nil {
+		t.Fatalf("NewAdvancedSession: %v", result.err)
+	}
+	if result.session == nil {
+		t.Fatal("NewAdvancedSession returned a nil session")
+	}
+	select {
+	case err := <-destroyDone:
+		if err != nil {
+			t.Fatalf("SessionOptions.Destroy: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SessionOptions.Destroy did not finish after construction returned")
+	}
+	if got := optionsReleases.Load(); got != 1 {
+		t.Fatalf("session-options release count = %d, want 1", got)
+	}
+
+	if err := result.session.Destroy(); err != nil {
+		t.Fatalf("destroy returned session: %v", err)
+	}
+	if got := sessionReleases.Load(); got != 1 {
+		t.Fatalf("session release count = %d, want 1", got)
+	}
+}
+
 func TestAdvancedSessionRunNil(t *testing.T) {
 	var session *AdvancedSession
 	err := session.Run()
@@ -456,6 +1016,705 @@ func TestAdvancedSessionRunDestroyed(t *testing.T) {
 		t.Fatalf("expected destroyed session error, got: %v", err)
 	}
 
+}
+
+func TestAdvancedSessionRunWithValues(t *testing.T) {
+	t.Run("uses supplied handles and preserves bound handles for Run", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		type runCall struct {
+			inputNamePresent  bool
+			outputNamePresent bool
+			inputHandle       uintptr
+			outputHandle      uintptr
+		}
+		calls := make([]runCall, 0, 2)
+
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		runSessionFunc = func(_ uintptr, _ uintptr, inputNames *uintptr, inputValues *uintptr, _ uintptr, outputNames *uintptr, _ uintptr, outputValues *uintptr) uintptr {
+			calls = append(calls, runCall{
+				inputNamePresent:  inputNames != nil && *inputNames != 0,
+				outputNamePresent: outputNames != nil && *outputNames != 0,
+				inputHandle:       *inputValues,
+				outputHandle:      *outputValues,
+			})
+			return 0
+		}
+		mu.Unlock()
+
+		boundInput := &fakeValue{handle: 11}
+		boundOutput := &fakeValue{handle: 12}
+		session := &AdvancedSession{
+			handle:       100,
+			inputNames:   []string{"fixed_input"},
+			outputNames:  []string{"fixed_output"},
+			inputValues:  []Value{boundInput},
+			outputValues: []Value{boundOutput},
+		}
+
+		if err := session.RunWithValues(
+			[]Value{&fakeValue{handle: 21}},
+			[]Value{&fakeValue{handle: 22}},
+		); err != nil {
+			t.Fatalf("RunWithValues failed: %v", err)
+		}
+		if err := session.Run(); err != nil {
+			t.Fatalf("Run failed after RunWithValues: %v", err)
+		}
+
+		want := []runCall{
+			{inputNamePresent: true, outputNamePresent: true, inputHandle: 21, outputHandle: 22},
+			{inputNamePresent: true, outputNamePresent: true, inputHandle: 11, outputHandle: 12},
+		}
+		if !slices.Equal(calls, want) {
+			t.Fatalf("run calls = %#v, want %#v", calls, want)
+		}
+		if session.inputValues[0] != boundInput || session.outputValues[0] != boundOutput {
+			t.Fatal("RunWithValues changed the session's bound values")
+		}
+		if !slices.Equal(session.inputNames, []string{"fixed_input"}) ||
+			!slices.Equal(session.outputNames, []string{"fixed_output"}) {
+			t.Fatal("RunWithValues changed the session's fixed names")
+		}
+	})
+
+	t.Run("normally constructed session may use only supplied values", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		var gotInput, gotOutput uintptr
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		ortEnv = 99
+		createSessionOptionsFunc = func(out *uintptr) uintptr {
+			*out = 200
+			return 0
+		}
+		releaseSessionOptionsFunc = func(uintptr) {}
+		createSessionFunc = func(_ uintptr, _ uintptr, _ uintptr, out *uintptr) uintptr {
+			*out = 201
+			return 0
+		}
+		runSessionFunc = func(_ uintptr, _ uintptr, _ *uintptr, inputValues *uintptr, _ uintptr, _ *uintptr, _ uintptr, outputValues *uintptr) uintptr {
+			gotInput = *inputValues
+			gotOutput = *outputValues
+			return 0
+		}
+		releaseSessionFunc = func(uintptr) {}
+		mu.Unlock()
+
+		boundInput := &fakeValue{handle: 31}
+		boundOutput := &fakeValue{handle: 32}
+		session, err := NewAdvancedSession(
+			"model.onnx",
+			[]string{"input"},
+			[]string{"output"},
+			[]Value{boundInput},
+			[]Value{boundOutput},
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("NewAdvancedSession failed: %v", err)
+		}
+		t.Cleanup(func() {
+			if destroyErr := session.Destroy(); destroyErr != nil {
+				t.Errorf("session destroy failed: %v", destroyErr)
+			}
+		})
+
+		if err := session.RunWithValues(
+			[]Value{&fakeValue{handle: 41}},
+			[]Value{&fakeValue{handle: 42}},
+		); err != nil {
+			t.Fatalf("RunWithValues failed: %v", err)
+		}
+		if gotInput != 41 || gotOutput != 42 {
+			t.Fatalf("runtime received handles (%d, %d), want (41, 42)", gotInput, gotOutput)
+		}
+		if session.inputValues[0] != boundInput || session.outputValues[0] != boundOutput {
+			t.Fatal("RunWithValues changed constructor-bound values")
+		}
+	})
+
+	t.Run("rejects invalid counts and values before FFI", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		var runCalls atomic.Int32
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		runSessionFunc = func(_ uintptr, _ uintptr, _ *uintptr, _ *uintptr, _ uintptr, _ *uintptr, _ uintptr, _ *uintptr) uintptr {
+			runCalls.Add(1)
+			return 0
+		}
+		mu.Unlock()
+
+		session := &AdvancedSession{
+			handle:       300,
+			inputNames:   []string{"input"},
+			outputNames:  []string{"output"},
+			inputValues:  []Value{&fakeValue{handle: 1}},
+			outputValues: []Value{&fakeValue{handle: 2}},
+		}
+		validInput := []Value{&fakeValue{handle: 51}}
+		validOutput := []Value{&fakeValue{handle: 52}}
+		tests := []struct {
+			name    string
+			inputs  []Value
+			outputs []Value
+			want    error
+		}{
+			{name: "input count mismatch", inputs: nil, outputs: validOutput, want: ErrInvalidArgument},
+			{name: "output count mismatch", inputs: validInput, outputs: nil, want: ErrInvalidArgument},
+			{name: "nil input", inputs: []Value{nil}, outputs: validOutput, want: ErrInvalidArgument},
+			{name: "unsupported input", inputs: []Value{&unsupportedValue{}}, outputs: validOutput, want: ErrInvalidArgument},
+			{name: "destroyed input", inputs: []Value{&fakeValue{}}, outputs: validOutput, want: ErrDestroyed},
+			{name: "nil output", inputs: validInput, outputs: []Value{nil}, want: ErrInvalidArgument},
+			{name: "destroyed output", inputs: validInput, outputs: []Value{&fakeValue{}}, want: ErrDestroyed},
+		}
+		for _, tt := range tests {
+			err := session.RunWithValues(tt.inputs, tt.outputs)
+			if !errors.Is(err, tt.want) {
+				t.Errorf("%s: error = %v, want errors.Is(..., %v)", tt.name, err, tt.want)
+			}
+		}
+		if got := runCalls.Load(); got != 0 {
+			t.Fatalf("runtime called %d times for locally invalid values", got)
+		}
+	})
+
+	t.Run("serializes same session and leaves unrelated sessions independent", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		var inFlight, maxInFlight atomic.Int32
+		entered := make(chan uintptr, 2)
+		allowReturn := make(chan struct{})
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		runSessionFunc = func(session uintptr, _ uintptr, _ *uintptr, _ *uintptr, _ uintptr, _ *uintptr, _ uintptr, _ *uintptr) uintptr {
+			current := inFlight.Add(1)
+			for {
+				seen := maxInFlight.Load()
+				if current <= seen || maxInFlight.CompareAndSwap(seen, current) {
+					break
+				}
+			}
+			entered <- session
+			<-allowReturn
+			inFlight.Add(-1)
+			return 0
+		}
+		mu.Unlock()
+
+		newSession := func(handle uintptr) *AdvancedSession {
+			return &AdvancedSession{
+				handle:       handle,
+				inputNames:   []string{"input"},
+				outputNames:  []string{"output"},
+				inputValues:  []Value{&fakeValue{handle: handle + 10}},
+				outputValues: []Value{&fakeValue{handle: handle + 20}},
+			}
+		}
+		sameSession := newSession(400)
+		firstErr := make(chan error, 1)
+		secondErr := make(chan error, 1)
+		go func() {
+			firstErr <- sameSession.RunWithValues(
+				[]Value{&fakeValue{handle: 61}},
+				[]Value{&fakeValue{handle: 62}},
+			)
+		}()
+		<-entered
+		go func() {
+			secondErr <- sameSession.Run()
+		}()
+		if sameSession.runMu.TryLock() {
+			sameSession.runMu.Unlock()
+			t.Fatal("same-session RunWithValues did not hold runMu")
+		}
+		close(allowReturn)
+		if err := <-firstErr; err != nil {
+			t.Fatalf("first same-session run failed: %v", err)
+		}
+		if err := <-secondErr; err != nil {
+			t.Fatalf("second same-session run failed: %v", err)
+		}
+		if got := maxInFlight.Load(); got != 1 {
+			t.Fatalf("same-session max in-flight = %d, want 1", got)
+		}
+
+		inFlight.Store(0)
+		maxInFlight.Store(0)
+		entered = make(chan uintptr, 2)
+		allowReturn = make(chan struct{})
+		sharedInput := &Tensor[float32]{handle: 71}
+		firstSession := newSession(401)
+		secondSession := newSession(402)
+		firstErr = make(chan error, 1)
+		secondErr = make(chan error, 1)
+		go func() {
+			firstErr <- firstSession.RunWithValues(
+				[]Value{sharedInput},
+				[]Value{&fakeValue{handle: 72}},
+			)
+		}()
+		go func() {
+			secondErr <- secondSession.RunWithValues(
+				[]Value{sharedInput},
+				[]Value{&fakeValue{handle: 73}},
+			)
+		}()
+		for i := 0; i < 2; i++ {
+			select {
+			case <-entered:
+			case <-time.After(2 * time.Second):
+				t.Fatal("unrelated sessions did not reach the runtime concurrently")
+			}
+		}
+		if got := maxInFlight.Load(); got != 2 {
+			t.Fatalf("unrelated-session max in-flight = %d, want 2", got)
+		}
+		close(allowReturn)
+		if err := <-firstErr; err != nil {
+			t.Fatalf("first unrelated-session run failed: %v", err)
+		}
+		if err := <-secondErr; err != nil {
+			t.Fatalf("second unrelated-session run failed: %v", err)
+		}
+	})
+
+	t.Run("holds supplied tensor lease until the call returns", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		runEntered := make(chan struct{})
+		allowReturn := make(chan struct{})
+		var enterOnce sync.Once
+		var eventsMu sync.Mutex
+		var events []string
+		record := func(event string) {
+			eventsMu.Lock()
+			events = append(events, event)
+			eventsMu.Unlock()
+		}
+
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		runSessionFunc = func(_ uintptr, _ uintptr, _ *uintptr, _ *uintptr, _ uintptr, _ *uintptr, _ uintptr, _ *uintptr) uintptr {
+			enterOnce.Do(func() { close(runEntered) })
+			<-allowReturn
+			record("run returned")
+			return 0
+		}
+		releaseValueFunc = func(uintptr) {
+			record("tensor released")
+		}
+		mu.Unlock()
+
+		input := &Tensor[float32]{handle: 81}
+		session := &AdvancedSession{
+			handle:       500,
+			inputNames:   []string{"input"},
+			outputNames:  []string{"output"},
+			inputValues:  []Value{&fakeValue{handle: 1}},
+			outputValues: []Value{&fakeValue{handle: 2}},
+		}
+		runErr := make(chan error, 1)
+		go func() {
+			runErr <- session.RunWithValues(
+				[]Value{input},
+				[]Value{&fakeValue{handle: 82}},
+			)
+		}()
+		<-runEntered
+		if input.runMu.TryLock() {
+			input.runMu.Unlock()
+			t.Fatal("RunWithValues did not retain the supplied tensor lease")
+		}
+
+		destroyErr := make(chan error, 1)
+		go func() {
+			destroyErr <- input.Destroy()
+		}()
+		close(allowReturn)
+		if err := <-runErr; err != nil {
+			t.Fatalf("RunWithValues failed: %v", err)
+		}
+		if err := <-destroyErr; err != nil {
+			t.Fatalf("tensor destroy failed: %v", err)
+		}
+		eventsMu.Lock()
+		got := append([]string(nil), events...)
+		eventsMu.Unlock()
+		if want := []string{"run returned", "tensor released"}; !slices.Equal(got, want) {
+			t.Fatalf("events = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("deduplicates across roles and releases in reverse order", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		runSessionFunc = func(_ uintptr, _ uintptr, _ *uintptr, _ *uintptr, _ uintptr, _ *uintptr, _ uintptr, _ *uintptr) uintptr {
+			return 0
+		}
+		mu.Unlock()
+
+		released := make(chan uintptr, 3)
+		shared := &countingLeaseValue{handle: 91, released: released}
+		inputOnly := &countingLeaseValue{handle: 92, released: released}
+		outputOnly := &countingLeaseValue{handle: 93, released: released}
+		session := &AdvancedSession{
+			handle:       600,
+			inputNames:   []string{"input_a", "input_b", "input_c"},
+			outputNames:  []string{"output_a", "output_b", "output_c"},
+			inputValues:  []Value{shared, inputOnly, shared},
+			outputValues: []Value{shared, outputOnly, shared},
+		}
+		if err := session.RunWithValues(
+			[]Value{shared, inputOnly, shared},
+			[]Value{shared, outputOnly, shared},
+		); err != nil {
+			t.Fatalf("RunWithValues failed: %v", err)
+		}
+
+		if got := shared.lockCalls.Load(); got != 1 {
+			t.Fatalf("shared value lease count = %d, want one across both roles", got)
+		}
+		if got := shared.unlockCalls.Load(); got != 1 {
+			t.Fatalf("shared value unlock count = %d, want one across both roles", got)
+		}
+		if got := inputOnly.lockCalls.Load(); got != 1 {
+			t.Fatalf("input-only lease count = %d, want 1", got)
+		}
+		if got := outputOnly.lockCalls.Load(); got != 1 {
+			t.Fatalf("output-only lease count = %d, want 1", got)
+		}
+		ordered := []struct {
+			value  *countingLeaseValue
+			handle uintptr
+		}{
+			{value: shared, handle: 91},
+			{value: inputOnly, handle: 92},
+			{value: outputOnly, handle: 93},
+		}
+		slices.SortFunc(ordered, func(a, b struct {
+			value  *countingLeaseValue
+			handle uintptr
+		}) int {
+			aKey, _ := valueLeaseOrderKey(a.value)
+			bKey, _ := valueLeaseOrderKey(b.value)
+			switch {
+			case aKey < bKey:
+				return -1
+			case aKey > bKey:
+				return 1
+			default:
+				return 0
+			}
+		})
+		gotReleaseOrder := []uintptr{<-released, <-released, <-released}
+		wantReleaseOrder := []uintptr{ordered[2].handle, ordered[1].handle, ordered[0].handle}
+		if !slices.Equal(gotReleaseOrder, wantReleaseOrder) {
+			t.Fatalf("release order = %v, want %v", gotReleaseOrder, wantReleaseOrder)
+		}
+	})
+
+	t.Run("fills caller output in place and leaves it caller destroyable", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		var releasedHandle atomic.Uintptr
+		output := &Tensor[float32]{handle: 102, data: []float32{0}}
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		runSessionFunc = func(_ uintptr, _ uintptr, _ *uintptr, _ *uintptr, _ uintptr, _ *uintptr, _ uintptr, outputValues *uintptr) uintptr {
+			if got := *outputValues; got != output.handle {
+				t.Errorf("runtime output handle = %d, want caller handle %d", got, output.handle)
+			}
+			output.data[0] = 42
+			return 0
+		}
+		releaseValueFunc = func(handle uintptr) {
+			releasedHandle.Store(handle)
+		}
+		mu.Unlock()
+
+		session := &AdvancedSession{
+			handle:       700,
+			inputNames:   []string{"input"},
+			outputNames:  []string{"output"},
+			inputValues:  []Value{&fakeValue{handle: 1}},
+			outputValues: []Value{&fakeValue{handle: 2}},
+		}
+		if err := session.RunWithValues(
+			[]Value{&fakeValue{handle: 101}},
+			[]Value{output},
+		); err != nil {
+			t.Fatalf("RunWithValues failed: %v", err)
+		}
+		if got := output.GetData()[0]; got != 42 {
+			t.Fatalf("caller output data = %v, want 42", got)
+		}
+		if err := output.Destroy(); err != nil {
+			t.Fatalf("caller output destroy failed: %v", err)
+		}
+		if got := releasedHandle.Load(); got != 102 {
+			t.Fatalf("released output handle = %d, want 102", got)
+		}
+	})
+}
+
+func TestAdvancedSessionErrorContracts(t *testing.T) {
+	t.Run("CreateSessionOptions status", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		probe := installSessionStatusProbe(t, ErrorCodeInvalidArgument)
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		ortEnv = 100
+		createSessionOptionsFunc = func(*uintptr) uintptr {
+			return probe.handle
+		}
+		releaseSessionOptionsFunc = func(uintptr) {}
+		createSessionFunc = func(_ uintptr, _ uintptr, _ uintptr, _ *uintptr) uintptr {
+			t.Fatal("CreateSession called after CreateSessionOptions failed")
+			return 0
+		}
+		mu.Unlock()
+
+		_, err := NewAdvancedSession(
+			"model.onnx",
+			[]string{"input"},
+			[]string{"output"},
+			[]Value{&fakeValue{handle: 1}},
+			[]Value{&fakeValue{handle: 2}},
+			nil,
+		)
+		requireSessionORTError(
+			t,
+			err,
+			"create session options",
+			ErrorCodeInvalidArgument,
+			"",
+			&probe.releases,
+		)
+	})
+
+	t.Run("CreateSession status", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		probe := installSessionStatusProbe(t, ErrorCodeNoSuchFile)
+		var releasedOptions atomic.Int32
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		ortEnv = 101
+		createSessionOptionsFunc = func(out *uintptr) uintptr {
+			*out = 102
+			return 0
+		}
+		releaseSessionOptionsFunc = func(uintptr) {
+			releasedOptions.Add(1)
+		}
+		createSessionFunc = func(_ uintptr, _ uintptr, _ uintptr, _ *uintptr) uintptr {
+			return probe.handle
+		}
+		mu.Unlock()
+
+		_, err := NewAdvancedSession(
+			"missing.onnx",
+			[]string{"input"},
+			[]string{"output"},
+			[]Value{&fakeValue{handle: 1}},
+			[]Value{&fakeValue{handle: 2}},
+			nil,
+		)
+		requireSessionORTError(
+			t,
+			err,
+			"create session",
+			ErrorCodeNoSuchFile,
+			"",
+			&probe.releases,
+		)
+		if got := releasedOptions.Load(); got != 1 {
+			t.Fatalf("created session options release count = %d, want 1", got)
+		}
+	})
+
+	t.Run("Run status", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		probe := installSessionStatusProbe(t, ErrorCodeRuntimeException)
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		runSessionFunc = func(_ uintptr, _ uintptr, _ *uintptr, _ *uintptr, _ uintptr, _ *uintptr, _ uintptr, _ *uintptr) uintptr {
+			return probe.handle
+		}
+		mu.Unlock()
+
+		session := &AdvancedSession{
+			handle:       103,
+			inputNames:   []string{"input"},
+			outputNames:  []string{"output"},
+			inputValues:  []Value{&fakeValue{handle: 1}},
+			outputValues: []Value{&fakeValue{handle: 2}},
+		}
+		err := session.Run()
+		requireSessionORTError(
+			t,
+			err,
+			"run inference",
+			ErrorCodeRuntimeException,
+			"",
+			&probe.releases,
+		)
+	})
+
+	t.Run("local failures retain public sentinels", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		var nilSession *AdvancedSession
+		if err := nilSession.Run(); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("nil Run error = %v, want ErrInvalidArgument", err)
+		}
+		if err := nilSession.RunWithValues(nil, nil); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("nil RunWithValues error = %v, want ErrInvalidArgument", err)
+		}
+
+		_, err := NewAdvancedSession("", nil, nil, nil, nil, nil)
+		if !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("invalid constructor error = %v, want ErrInvalidArgument", err)
+		}
+
+		_, err = NewAdvancedSession(
+			"model.onnx",
+			[]string{"input"},
+			[]string{"output"},
+			[]Value{&fakeValue{handle: 1}},
+			[]Value{&fakeValue{handle: 2}},
+			nil,
+		)
+		if !errors.Is(err, ErrNotInitialized) {
+			t.Fatalf("uninitialized constructor error = %v, want ErrNotInitialized", err)
+		}
+
+		destroyed := &AdvancedSession{
+			inputNames:  []string{"input"},
+			outputNames: []string{"output"},
+		}
+		if err := destroyed.RunWithValues(
+			[]Value{&fakeValue{handle: 1}},
+			[]Value{&fakeValue{handle: 2}},
+		); !errors.Is(err, ErrDestroyed) {
+			t.Fatalf("destroyed RunWithValues error = %v, want ErrDestroyed", err)
+		}
+
+		releaseUnavailable := &AdvancedSession{handle: 104}
+		if err := releaseUnavailable.Destroy(); !errors.Is(err, ErrNotInitialized) {
+			t.Fatalf("Destroy error = %v, want ErrNotInitialized", err)
+		}
+	})
+}
+
+func TestAdvancedSessionDiagnosticPolicy(t *testing.T) {
+	t.Run("returned failures emit no records", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		handler := &diagnosticCountingHandler{}
+		SetDiagnosticHandler(handler)
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+		if _, err := NewAdvancedSession("", nil, nil, nil, nil, nil); err == nil {
+			t.Fatal("invalid constructor returned nil error")
+		}
+
+		destroyed := &AdvancedSession{
+			inputNames:  []string{"input"},
+			outputNames: []string{"output"},
+		}
+		if err := destroyed.Run(); err == nil {
+			t.Fatal("destroyed Run returned nil error")
+		}
+
+		uninitialized := &AdvancedSession{
+			handle:       200,
+			inputNames:   []string{"input"},
+			outputNames:  []string{"output"},
+			inputValues:  []Value{&fakeValue{handle: 1}},
+			outputValues: []Value{&fakeValue{handle: 2}},
+		}
+		if err := uninitialized.Run(); err == nil {
+			t.Fatal("uninitialized Run returned nil error")
+		}
+
+		releaseUnavailable := &AdvancedSession{handle: 201}
+		if err := releaseUnavailable.Destroy(); err == nil {
+			t.Fatal("release-unavailable Destroy returned nil error")
+		}
+
+		probe := installSessionStatusProbe(t, ErrorCodeFail)
+		mu.Lock()
+		ortAPI = &OrtApi{}
+		runSessionFunc = func(_ uintptr, _ uintptr, _ *uintptr, _ *uintptr, _ uintptr, _ *uintptr, _ uintptr, _ *uintptr) uintptr {
+			return probe.handle
+		}
+		mu.Unlock()
+		nativeFailure := &AdvancedSession{
+			handle:       202,
+			inputNames:   []string{"input"},
+			outputNames:  []string{"output"},
+			inputValues:  []Value{&fakeValue{handle: 1}},
+			outputValues: []Value{&fakeValue{handle: 2}},
+		}
+		if err := nativeFailure.Run(); err == nil {
+			t.Fatal("native Run returned nil error")
+		}
+
+		if got := handler.count.Load(); got != 0 {
+			t.Fatalf("returned session failures emitted %d diagnostic records, want 0", got)
+		}
+	})
+
+	t.Run("finalizer-only failure emits one structured warning", func(t *testing.T) {
+		resetEnvironmentState()
+		t.Cleanup(resetEnvironmentState)
+
+		var output bytes.Buffer
+		SetDiagnosticHandler(slog.NewJSONHandler(&output, nil))
+		t.Cleanup(func() { SetDiagnosticHandler(nil) })
+
+		session := &AdvancedSession{handle: 300}
+		finalizeAdvancedSession(session)
+		finalizeAdvancedSession(session)
+
+		if got := strings.Count(output.String(), "\n"); got != 1 {
+			t.Fatalf("finalizer diagnostic record count = %d, want 1", got)
+		}
+		record := decodeDiagnosticRecord(t, &output)
+		if got := record["level"]; got != "WARN" {
+			t.Fatalf("level = %v, want WARN", got)
+		}
+		if got := record["msg"]; got != "finalizer cleanup failed" {
+			t.Fatalf("message = %v, want finalizer cleanup failed", got)
+		}
+		if got := record["resource"]; got != "session" {
+			t.Fatalf("resource = %v, want session", got)
+		}
+		if got := record["error"]; got == nil || !strings.Contains(got.(string), "release function unavailable") {
+			t.Fatalf("error attr = %v, want release-function failure", got)
+		}
+	})
 }
 
 func TestAdvancedSessionDestroy(t *testing.T) {
@@ -534,28 +1793,17 @@ func TestAdvancedSessionRunConcurrent(t *testing.T) {
 
 	const runCalls = 32
 
-	var (
-		calls       int32
-		inFlight    int32
-		maxInFlight int32
-	)
+	var calls int32
+	firstEntered := make(chan struct{})
+	allowFirstReturn := make(chan struct{})
 
 	mu.Lock()
 	ortAPI = &OrtApi{}
 	runSessionFunc = func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr {
-		atomic.AddInt32(&calls, 1)
-		current := atomic.AddInt32(&inFlight, 1)
-		for {
-			seen := atomic.LoadInt32(&maxInFlight)
-			if current <= seen {
-				break
-			}
-			if atomic.CompareAndSwapInt32(&maxInFlight, seen, current) {
-				break
-			}
+		if atomic.AddInt32(&calls, 1) == 1 {
+			close(firstEntered)
+			<-allowFirstReturn
 		}
-		time.Sleep(1 * time.Millisecond)
-		atomic.AddInt32(&inFlight, -1)
 		return 0
 	}
 	mu.Unlock()
@@ -568,32 +1816,45 @@ func TestAdvancedSessionRunConcurrent(t *testing.T) {
 		outputValues: []Value{&fakeValue{handle: 2}},
 	}
 
-	start := make(chan struct{})
 	errCh := make(chan error, runCalls)
-	var wg sync.WaitGroup
-	for i := 0; i < runCalls; i++ {
-		wg.Add(1)
+	go func() {
+		errCh <- session.Run()
+	}()
+
+	select {
+	case <-firstEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Run call did not enter the native callback")
+	}
+
+	runMuWasHeld := !session.runMu.TryLock()
+	if !runMuWasHeld {
+		session.runMu.Unlock()
+	}
+
+	for i := 1; i < runCalls; i++ {
 		go func() {
-			defer wg.Done()
-			<-start
 			errCh <- session.Run()
 		}()
 	}
-	close(start)
-	wg.Wait()
-	close(errCh)
 
-	for err := range errCh {
-		if err != nil {
-			t.Fatalf("concurrent run failed: %v", err)
+	close(allowFirstReturn)
+	for i := 0; i < runCalls; i++ {
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("concurrent run failed: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for Run call %d of %d", i+1, runCalls)
 		}
 	}
 
+	if !runMuWasHeld {
+		t.Fatal("session run mutex was not held while the native callback was in flight")
+	}
 	if got := atomic.LoadInt32(&calls); got != runCalls {
 		t.Fatalf("expected %d Run() calls to reach runtime, got %d", runCalls, got)
-	}
-	if got := atomic.LoadInt32(&maxInFlight); got != 1 {
-		t.Fatalf("expected Run() calls to be serialized per session, max in-flight=%d", got)
 	}
 }
 
@@ -777,6 +2038,204 @@ func TestAdvancedSessionRunAndDestroyConcurrent(t *testing.T) {
 
 	if err := session.Run(); err == nil || !strings.Contains(err.Error(), "session has been destroyed") {
 		t.Fatalf("expected destroyed session error after concurrent destroy, got: %v", err)
+	}
+}
+
+func TestDestroyEnvironmentWaitsForInFlightSessionRun(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	runEntered := make(chan struct{})
+	allowRunReturn := make(chan struct{})
+	var unblockRun sync.Once
+	unblock := func() {
+		unblockRun.Do(func() { close(allowRunReturn) })
+	}
+	t.Cleanup(unblock)
+
+	var (
+		sessionReleases atomic.Int32
+		tensorReleases  atomic.Int32
+		eventsMu        sync.Mutex
+		events          []string
+	)
+	record := func(event string) {
+		eventsMu.Lock()
+		events = append(events, event)
+		eventsMu.Unlock()
+	}
+
+	mu.Lock()
+	refCount = 1
+	ortAPI = &OrtApi{}
+	runSessionFunc = func(_ uintptr, _ uintptr, _ *uintptr, _ *uintptr, _ uintptr, _ *uintptr, _ uintptr, _ *uintptr) uintptr {
+		close(runEntered)
+		<-allowRunReturn
+		record("run returned")
+		return 0
+	}
+	releaseSessionFunc = func(uintptr) {
+		sessionReleases.Add(1)
+	}
+	releaseValueFunc = func(uintptr) {
+		tensorReleases.Add(1)
+	}
+	mu.Unlock()
+
+	input := &Tensor[float32]{
+		handle: 701,
+		data:   []float32{1},
+		shape:  Shape{1},
+	}
+	session := &AdvancedSession{
+		handle:       702,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{input},
+		outputValues: []Value{&fakeValue{handle: 703}},
+	}
+
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- session.Run()
+	}()
+	select {
+	case <-runEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("session Run did not enter the native callback")
+	}
+
+	if session.runMu.TryLock() {
+		session.runMu.Unlock()
+		t.Fatal("session.runMu was not held during native Run")
+	}
+	if ortCallMu.TryLock() {
+		ortCallMu.Unlock()
+		t.Fatal("ortCallMu exclusive lock was available during native Run")
+	}
+	if input.runMu.TryLock() {
+		input.runMu.Unlock()
+		t.Fatal("tensor write lock was available during native Run")
+	}
+
+	destroyStarted := make(chan struct{})
+	destroyDone := make(chan error, 1)
+	go func() {
+		close(destroyStarted)
+		err := DestroyEnvironment()
+		record("environment destroyed")
+		destroyDone <- err
+	}()
+	<-destroyStarted
+
+	select {
+	case err := <-destroyDone:
+		t.Fatalf("DestroyEnvironment returned during native Run: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	unblock()
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("session Run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("session Run did not return after native callback unblocked")
+	}
+	select {
+	case err := <-destroyDone:
+		if err != nil {
+			t.Fatalf("DestroyEnvironment: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("DestroyEnvironment did not return after Run completed")
+	}
+
+	eventsMu.Lock()
+	gotEvents := append([]string(nil), events...)
+	eventsMu.Unlock()
+	if want := []string{"run returned", "environment destroyed"}; !slices.Equal(gotEvents, want) {
+		t.Fatalf("events = %v, want %v", gotEvents, want)
+	}
+	if got := sessionReleases.Load(); got != 0 {
+		t.Fatalf("environment teardown released session %d times, want 0", got)
+	}
+	if got := tensorReleases.Load(); got != 0 {
+		t.Fatalf("environment teardown released tensor %d times, want 0", got)
+	}
+
+	mu.Lock()
+	gotRefCount := refCount
+	gotAPI := ortAPI
+	gotRun := runSessionFunc
+	gotReleaseSession := releaseSessionFunc
+	gotReleaseValue := releaseValueFunc
+	mu.Unlock()
+	if gotRefCount != 0 || gotAPI != nil || gotRun != nil || gotReleaseSession != nil || gotReleaseValue != nil {
+		t.Fatalf(
+			"environment globals not cleared: refCount=%d api=%p run=%v releaseSession=%v releaseValue=%v",
+			gotRefCount,
+			gotAPI,
+			gotRun != nil,
+			gotReleaseSession != nil,
+			gotReleaseValue != nil,
+		)
+	}
+}
+
+func TestAdvancedSessionDestroyConcurrentCallsReleaseOnce(t *testing.T) {
+	resetEnvironmentState()
+	t.Cleanup(resetEnvironmentState)
+
+	var releases atomic.Int32
+	mu.Lock()
+	releaseSessionFunc = func(handle uintptr) {
+		if handle != 704 {
+			t.Errorf("released session handle = %d, want 704", handle)
+		}
+		releases.Add(1)
+	}
+	mu.Unlock()
+
+	session := &AdvancedSession{
+		handle:       704,
+		inputNames:   []string{"input"},
+		outputNames:  []string{"output"},
+		inputValues:  []Value{&fakeValue{handle: 705}},
+		outputValues: []Value{&fakeValue{handle: 706}},
+	}
+
+	const workers = 32
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var workersDone sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		workersDone.Add(1)
+		go func() {
+			defer workersDone.Done()
+			<-start
+			errs <- session.Destroy()
+		}()
+	}
+	close(start)
+	workersDone.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent session destroy: %v", err)
+		}
+	}
+	if got := releases.Load(); got != 1 {
+		t.Fatalf("session release count = %d, want 1", got)
+	}
+	if session.handle != 0 ||
+		session.inputNames != nil ||
+		session.outputNames != nil ||
+		session.inputValues != nil ||
+		session.outputValues != nil {
+		t.Fatalf("destroyed session retained owned state: %#v", session)
 	}
 }
 
@@ -1090,7 +2549,10 @@ func TestAdvancedSessionRunDestroyedInputTensor(t *testing.T) {
 }
 
 func TestMakeCStringPointerArrayEmpty(t *testing.T) {
-	backings, ptrs := makeCStringPointerArray(nil)
+	backings, ptrs, err := makeCStringPointerArray(nil, "name")
+	if err != nil {
+		t.Fatalf("nil input: %v", err)
+	}
 	if backings != nil {
 		t.Fatalf("expected nil backings for empty input")
 	}
@@ -1098,12 +2560,19 @@ func TestMakeCStringPointerArrayEmpty(t *testing.T) {
 		t.Fatalf("expected nil ptrs for empty input")
 	}
 
-	backings, ptrs = makeCStringPointerArray([]string{})
+	backings, ptrs, err = makeCStringPointerArray([]string{}, "name")
+	if err != nil {
+		t.Fatalf("empty input: %v", err)
+	}
 	if backings != nil {
 		t.Fatalf("expected nil backings for empty slice")
 	}
 	if ptrs != nil {
 		t.Fatalf("expected nil ptrs for empty slice")
+	}
+
+	if _, _, err := makeCStringPointerArray([]string{"valid", "bad\x00name"}, "name"); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("embedded-NUL array error = %v, want ErrInvalidArgument", err)
 	}
 }
 
@@ -1218,6 +2687,110 @@ func TestAdvancedSessionRunWithRealModel(t *testing.T) {
 
 	if err := session.Run(); err != nil {
 		t.Fatalf("session run failed: %v", err)
+	}
+}
+
+func TestAdvancedSessionRunWithValuesRealModel(t *testing.T) {
+	cleanup := setupTestEnvironment(t)
+	t.Cleanup(cleanup)
+
+	modelPath := resolveAllMiniLMModelPath(t)
+	sequenceLength := allMiniLMSequenceLength(t)
+	inputShape := Shape{1, int64(sequenceLength)}
+	outputShape := Shape{1, int64(sequenceLength), allMiniLMOutputEmbeddingDim}
+	inputIDs, attentionMask, tokenTypeIDs := makeAllMiniLMInputs(t, sequenceLength)
+
+	newInputs := func(label string) []*Tensor[int64] {
+		t.Helper()
+
+		values := [][]int64{inputIDs, attentionMask, tokenTypeIDs}
+		tensors := make([]*Tensor[int64], len(values))
+		for i, value := range values {
+			tensor, err := NewTensor[int64](inputShape, append([]int64(nil), value...))
+			if err != nil {
+				t.Fatalf("create %s input %d: %v", label, i, err)
+			}
+			tensors[i] = tensor
+			t.Cleanup(func() {
+				requireDestroy(t, label+" input", tensor.Destroy)
+			})
+		}
+		return tensors
+	}
+
+	boundInputs := newInputs("bound")
+	suppliedInputs := newInputs("supplied")
+	boundOutput, err := NewEmptyTensor[float32](outputShape)
+	if err != nil {
+		t.Fatalf("create bound output: %v", err)
+	}
+	t.Cleanup(func() { requireDestroy(t, "bound output", boundOutput.Destroy) })
+	suppliedOutput, err := NewEmptyTensor[float32](outputShape)
+	if err != nil {
+		t.Fatalf("create supplied output: %v", err)
+	}
+	t.Cleanup(func() { requireDestroy(t, "supplied output", suppliedOutput.Destroy) })
+
+	session, err := NewAdvancedSession(
+		modelPath,
+		[]string{"input_ids", "attention_mask", "token_type_ids"},
+		[]string{"last_hidden_state"},
+		[]Value{boundInputs[0], boundInputs[1], boundInputs[2]},
+		[]Value{boundOutput},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("create all-MiniLM session: %v", err)
+	}
+	t.Cleanup(func() { requireDestroy(t, "session", session.Destroy) })
+
+	if err := session.RunWithValues(
+		[]Value{suppliedInputs[0], suppliedInputs[1], suppliedInputs[2]},
+		[]Value{suppliedOutput},
+	); err != nil {
+		t.Fatalf("RunWithValues all-MiniLM inference: %v", err)
+	}
+
+	output := suppliedOutput.GetData()
+	wantOutputLength := sequenceLength * int(allMiniLMOutputEmbeddingDim)
+	if got := len(output); got != wantOutputLength {
+		t.Fatalf("supplied output length = %d, want %d", got, wantOutputLength)
+	}
+	requireFiniteFloat32Slice(t, "RunWithValues all-MiniLM output", output)
+	allZero := true
+	for _, value := range output {
+		if value != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		t.Fatal("RunWithValues all-MiniLM output is unexpectedly all zero")
+	}
+	for i, value := range boundOutput.GetData() {
+		if value != 0 {
+			t.Fatalf("bound output changed at index %d: %v", i, value)
+		}
+	}
+
+	if err := session.Destroy(); err != nil {
+		t.Fatalf("destroy session: %v", err)
+	}
+	for i := len(suppliedInputs) - 1; i >= 0; i-- {
+		if err := suppliedInputs[i].Destroy(); err != nil {
+			t.Fatalf("destroy supplied input %d: %v", i, err)
+		}
+	}
+	if err := suppliedOutput.Destroy(); err != nil {
+		t.Fatalf("destroy supplied output: %v", err)
+	}
+	for i := len(boundInputs) - 1; i >= 0; i-- {
+		if err := boundInputs[i].Destroy(); err != nil {
+			t.Fatalf("destroy bound input %d: %v", i, err)
+		}
+	}
+	if err := boundOutput.Destroy(); err != nil {
+		t.Fatalf("destroy bound output: %v", err)
 	}
 }
 

@@ -21,6 +21,8 @@ Run ONNX Runtime inference from Go with zero CGO — if that stops working, noth
 - ✓ Runtime bootstrap: download/cache/checksum/lock of ONNX Runtime shared libs (`EnsureOnnxRuntimeSharedLibrary`) — existing
 - ✓ Embedding adapters: `minilm` (dense), `splade` (sparse), `openclip` (CLIP) with tokenizer + pooling — existing
 - ✓ Runnable examples (`basic`, `inference`, `openclip`) and ORT API generation tooling (`gen_ortapi.go`) — existing
+- ✓ Comprehensive, inspectable error handling across the public `ort` API — validated in Phase 2: Core API — Errors & Values
+- ✓ Sealed `Value` interface with polymorphic session tensor handling — validated in Phase 2: Core API — Errors & Values
 
 ### Active
 
@@ -42,8 +44,6 @@ Run ONNX Runtime inference from Go with zero CGO — if that stops working, noth
 
 **Features**
 - [ ] Generalize embedder API and add sparse embeddings / SPLADE (#49)
-- [ ] Comprehensive error handling across the public API (#7)
-- [ ] `Value` interface for polymorphic tensor handling (#6)
 
 ### Out of Scope
 
@@ -58,8 +58,9 @@ Run ONNX Runtime inference from Go with zero CGO — if that stops working, noth
 - **Brownfield.** Mature codebase already mapped in `.planning/codebase/` (2026-03-18). Layered: FFI core (`ort/`) → embedding adapters (`embeddings/*`) → examples/tooling.
 - The public `CLAUDE.md` predates the embeddings work and under-describes the current surface; treat the codebase map + this doc as ground truth.
 - Issue #42 is partially resolved by prior work: the bootstrap rewrite (`resolveRuntimeArtifact`) already emits a fail-fast `GOOS=/GOARCH=`-labeled error. The remaining gap is example-only — surface a "set `ONNXRUNTIME_LIB_PATH`" hint when bootstrap fails.
-- ONNX Runtime C API version 22; default bootstrap runtime version tracks CI (currently `1.23.1`).
+- ONNX Runtime C API version 22; default bootstrap runtime version tracks CI (currently `1.24.1`, asserted by the version-match step in `ci.yml`).
 - CI runs on Go 1.24.x across Linux/macOS/Windows (amd64+arm64); `govulncheck` uses a patched Go 1.25.x toolchain.
+- Phase 2 is complete: public `ort` failures are inspectable, polymorphic `Value` handling is available, and race/native CI lanes cover the new contracts.
 
 ## Constraints
 
@@ -67,7 +68,7 @@ Run ONNX Runtime inference from Go with zero CGO — if that stops working, noth
 - **Interop**: All C pointers as `uintptr`; custom string conversion (`ort/cstring.go`), never `C.CString`/`C.GoString`
 - **Dependency**: `github.com/ebitengine/purego` is load-bearing for the entire binding strategy
 - **Compatibility**: Must keep working across Linux/macOS/Windows amd64+arm64 — the supported artifact matrix
-- **Workflow**: Feature branches + PRs for all changes; conventional commits; never push to `main` directly
+- **Workflow**: Feature branches + PRs for all changes; conventional commits; never push to `main` directly; squash merge on integration
 
 ## Key Decisions
 
@@ -76,6 +77,11 @@ Run ONNX Runtime inference from Go with zero CGO — if that stops working, noth
 | v0.1.0 = harden full milestone (all 11 issues), not a feature-tight subset | User chose to include features (#49/#7/#6) alongside DX/docs/lint | — Pending |
 | Definition of Done = tagged + documented release | All issues closed, full lint gate green, docs complete, CI green on all platforms, v0.1.0 tag + release notes | — Pending |
 | #42 fix stays in the example, not `ort/` | Issue is scoped "example UX only; no ort runtime changes" | — Pending |
+| Separate local error categories from native runtime detail | `errors.Is` remains stable for local lifecycle/validation failures while `errors.As` exposes `ORTError` operation, code, and message | ✓ Validated in Phase 2 |
+| Seal `Value` and keep tensor extraction exact | Only package-owned values can enter the native lease protocol; `AsTensor[T]` performs no coercion, copying, reflection, or allocation | ✓ Validated in Phase 2 |
+| Keep diagnostics opt-in and avoid logging returned errors | Silent defaults prevent surprise output; structured diagnostics are reserved for non-returnable notices and finalizer failures | ✓ Validated in Phase 2 |
+| Borrow per-call values through the existing session run core | `RunWithValues` preserves caller ownership and existing lock, lease, lifetime, and `Run` behavior | ✓ Validated in Phase 2 |
+| Keep race and native ABI verification in separate live-counted CI lanes | Exact selector counts prevent renamed tests from silently reducing coverage without disabling checkptr | ✓ Validated in Phase 2 |
 
 ## Evolution
 
@@ -95,4 +101,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-21 after initialization*
+*Last updated: 2026-07-30 after Phase 2 UAT completion*

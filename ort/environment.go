@@ -1,9 +1,10 @@
 package ort
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"runtime"
 	"strconv"
@@ -20,14 +21,15 @@ const (
 )
 
 var (
-	// Lock hierarchy across ORT lifecycle and calls:
-	// 1) AdvancedSession.runMu (session-local serialization)
-	// 2) ortCallMu (RLock for regular ORT calls; Lock for environment init/destroy
-	//    and selected object releases that must not overlap in-flight ORT use)
-	// 3) mu (global runtime pointers/function snapshots)
-	// 4) Tensor.runMu (value-local run lease lock; only acquired while ortCallMu is held)
-	//
-	// Keep this order to avoid deadlocks.
+	// Lock relationships across ORT lifecycle and calls form a partial order;
+	// an arrow means the lock on the left is acquired before the lock on the right:
+	// AdvancedSession.runMu -> ortCallMu.
+	// ortCallMu -> SessionOptions.handleMu, mu, Tensor.runMu, MemoryInfo.handleMu.
+	// SessionOptions.handleMu -> mu only when both are held.
+	// mu is released before Tensor.runMu or MemoryInfo.handleMu.
+	// Tensor.runMu and MemoryInfo.handleMu are never nested with each other.
+	// Multiple Tensor.runMu leases DO nest within one Run, ordered by pointer identity in acquireValueLeases.
+	// Not every listed lock is held in one operation.
 	mu                                 sync.Mutex
 	ortCallMu                          sync.RWMutex
 	refCount                           int
@@ -37,6 +39,7 @@ var (
 	libPath                            string
 	logLevel                           LoggingLevel = LoggingLevelWarning // Default to Warning
 	getVersionStringFunc               func() uintptr
+	getErrorCodeFunc                   func(uintptr) ErrorCode
 	getErrorMessageFunc                func(uintptr) uintptr
 	releaseStatusFunc                  func(uintptr)
 	createMemoryInfoFunc               func(name uintptr, allocatorType AllocatorType, deviceID int32, memType MemType, out *uintptr) uintptr
@@ -48,12 +51,20 @@ var (
 	createSessionFunc                  func(env uintptr, modelPath uintptr, sessionOptions uintptr, out *uintptr) uintptr
 	runSessionFunc                     func(session uintptr, runOptions uintptr, inputNames *uintptr, inputValues *uintptr, inputLen uintptr, outputNames *uintptr, outputLen uintptr, outputValues *uintptr) uintptr
 	releaseSessionFunc                 func(uintptr)
+	environmentLoadLibrary             = loadLibrary
+	environmentGetSymbol               = getSymbol
+	environmentCloseLibrary            = closeLibrary
 )
 
+// clearORTGlobalsLocked nils every ORT func global as one set, mirroring the single
+// purego.RegisterFunc block that populates them. Callers rely on that coupling: guarding
+// one global (e.g. runSessionFunc) is taken to imply the rest are non-nil too, so statusToError
+// needs no nil guard. Clearing or registering these individually breaks that invariant.
 func clearORTGlobalsLocked() {
 	ortAPI = nil
 	ortEnv = 0
 	getVersionStringFunc = nil
+	getErrorCodeFunc = nil
 	getErrorMessageFunc = nil
 	releaseStatusFunc = nil
 	createMemoryInfoFunc = nil
@@ -67,28 +78,128 @@ func clearORTGlobalsLocked() {
 	releaseSessionFunc = nil
 }
 
-// getErrorMessage extracts the error message from an ORT status code.
-// Returns empty string if status is 0 (success) or if the function is not initialized.
-func getErrorMessage(status uintptr) string {
-	if status == 0 || getErrorMessageFunc == nil {
-		return ""
-	}
-
-	msgPtr := getErrorMessageFunc(status)
-	return CstringToGo(msgPtr)
-}
-
-// releaseStatus releases an ORT status object to prevent memory leaks.
-func releaseStatus(status uintptr) {
-	if status == 0 || releaseStatusFunc == nil {
+func emitRuntimeVersionWarning(version string) {
+	version = strings.TrimSpace(version)
+	if version == "" {
 		return
 	}
 
-	releaseStatusFunc(status)
+	parts := strings.Split(version, ".")
+	if len(parts) < 2 {
+		emitDiagnostic(
+			context.Background(),
+			slog.LevelWarn,
+			"Could not parse ONNX Runtime version",
+			slog.String("runtime_version", version),
+			slog.Int("api_version", int(ORT_API_VERSION)),
+		)
+		return
+	}
+
+	major, majorErr := strconv.Atoi(parts[0])
+	minor, minorErr := strconv.Atoi(parts[1])
+	if majorErr != nil || minorErr != nil || major < 0 || minor < 0 {
+		emitDiagnostic(
+			context.Background(),
+			slog.LevelWarn,
+			"Could not parse ONNX Runtime version",
+			slog.String("runtime_version", version),
+			slog.Int("api_version", int(ORT_API_VERSION)),
+		)
+		return
+	}
+
+	if major > 1 || (major == 1 && minor >= 22) {
+		return
+	}
+
+	emitDiagnostic(
+		context.Background(),
+		slog.LevelWarn,
+		"ONNX Runtime version is older than the supported runtime",
+		slog.String("runtime_version", version),
+		slog.Int("api_version", int(ORT_API_VERSION)),
+	)
 }
 
-// InitializeEnvironment initializes the ONNX Runtime environment
-func InitializeEnvironment() (err error) {
+func createEnvironment(
+	createEnv func(logLevel int32, logID uintptr, out *uintptr) uintptr,
+	level LoggingLevel,
+) (uintptr, error) {
+	logIDBytes, logIDPtr := GoToCstring(defaultLogID)
+
+	var environment uintptr
+	// #nosec G115 -- LoggingLevel values are validated to the native 0-4 range.
+	status := createEnv(int32(level), logIDPtr, &environment)
+	runtime.KeepAlive(logIDBytes)
+	if err := statusToError(status, "create ONNX Runtime environment"); err != nil {
+		return 0, err
+	}
+	if environment == 0 {
+		return 0, fmt.Errorf(
+			"create ONNX Runtime environment returned a nil handle: %w",
+			ErrNativeContract,
+		)
+	}
+
+	return environment, nil
+}
+
+// InitializeEnvironment initializes the ONNX Runtime environment.
+func InitializeEnvironment() error {
+	return initializeEnvironmentAt("")
+}
+
+// initializeEnvironmentAt initializes the runtime with path as one atomic
+// lifecycle transition. An empty path keeps the value configured by
+// SetSharedLibraryPath.
+func initializeEnvironmentAt(path string) error {
+	return completeEnvironmentInitialization(initializeEnvironmentAtLocked(path))
+}
+
+func completeEnvironmentInitialization(runtimeVersion string, newlyInitialized bool, err error) error {
+	if err != nil || runtimeVersion == "" {
+		return err
+	}
+
+	if newlyInitialized {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				var (
+					rollbackErr   error
+					rollbackPanic any
+				)
+				func() {
+					defer func() {
+						rollbackPanic = recover()
+					}()
+					rollbackErr = DestroyEnvironment()
+				}()
+				if rollbackErr != nil {
+					emitEmergencyDiagnostic(
+						"environment rollback failed after diagnostic handler panic",
+						"environment",
+						rollbackErr,
+						recovered,
+					)
+				}
+				if rollbackPanic != nil {
+					emitEmergencyDiagnostic(
+						"environment rollback panicked after diagnostic handler panic",
+						"environment",
+						rollbackPanic,
+						recovered,
+					)
+				}
+				panic(recovered)
+			}
+		}()
+	}
+	emitRuntimeVersionWarning(runtimeVersion)
+	return err
+}
+
+func initializeEnvironmentAtLocked(path string) (runtimeVersion string, newlyInitialized bool, err error) {
 	ortCallMu.Lock()
 	defer ortCallMu.Unlock()
 
@@ -96,12 +207,25 @@ func InitializeEnvironment() (err error) {
 	defer mu.Unlock()
 
 	if refCount > 0 {
+		if path != "" && libPath != path {
+			return "", false, fmt.Errorf(
+				"cannot change library path after environment is initialized: configured %q, requested %q",
+				libPath,
+				path,
+			)
+		}
 		refCount++
-		return nil
+		return "", false, nil
 	}
 
+	if path != "" {
+		libPath = path
+	}
 	if libPath == "" {
-		return fmt.Errorf("library path not set, call SetSharedLibraryPath first")
+		return "", false, fmt.Errorf(
+			"library path not set; call SetSharedLibraryPath or InitializeEnvironmentWithBootstrap: %w",
+			ErrNotInitialized,
+		)
 	}
 
 	// Setup centralized cleanup for error paths
@@ -109,7 +233,7 @@ func InitializeEnvironment() (err error) {
 	defer func() {
 		if cleanupNeeded {
 			if ortLib != 0 {
-				if closeErr := closeLibrary(ortLib); closeErr != nil {
+				if closeErr := environmentCloseLibrary(ortLib); closeErr != nil {
 					closeErr = fmt.Errorf("failed to close ONNX Runtime library during initialization cleanup: %w", closeErr)
 					if err == nil {
 						err = closeErr
@@ -123,31 +247,45 @@ func InitializeEnvironment() (err error) {
 		}
 	}()
 
-	ortLib, err = loadLibrary(libPath)
+	ortLib, err = environmentLoadLibrary(libPath)
 	if err != nil {
-		return fmt.Errorf("failed to load ONNX Runtime library: %w", err)
+		return "", false, fmt.Errorf("failed to load ONNX Runtime library: %w", err)
 	}
 
-	sym, err := getSymbol(ortLib, "OrtGetApiBase")
+	sym, err := environmentGetSymbol(ortLib, "OrtGetApiBase")
 	if err != nil {
-		return fmt.Errorf("failed to get OrtGetApiBase symbol: %w", err)
+		return "", false, fmt.Errorf("failed to get OrtGetApiBase symbol: %w", err)
 	}
 
 	var ortGetApiBase func() *OrtApiBase
 	purego.RegisterFunc(&ortGetApiBase, sym)
 	apiBase := ortGetApiBase()
+	if apiBase == nil {
+		return "", false, fmt.Errorf("OrtGetApiBase returned nil: %w", ErrUnsupportedRuntime)
+	}
+	if apiBase.GetApi == 0 {
+		return "", false, fmt.Errorf("OrtApiBase.GetApi is nil: %w", ErrUnsupportedRuntime)
+	}
 
 	purego.RegisterFunc(&getVersionStringFunc, apiBase.GetVersionString)
 
 	var getApi func(uint32) uintptr
 	purego.RegisterFunc(&getApi, apiBase.GetApi)
 	apiPtr := getApi(ORT_API_VERSION)
+	if apiPtr == 0 {
+		return "", false, fmt.Errorf(
+			"runtime does not support ONNX Runtime API version %d: %w",
+			ORT_API_VERSION,
+			ErrUnsupportedRuntime,
+		)
+	}
 	// #nosec G103 -- This unsafe conversion is required for purego FFI.
 	// The OrtApi struct layout exactly matches the C API struct returned by GetApi.
 	// This pattern is the standard way to use purego for calling C libraries without CGO.
 	ortAPI = (*OrtApi)(unsafe.Pointer(apiPtr))
 
 	// Register frequently-used API functions once to avoid repeated RegisterFunc calls
+	purego.RegisterFunc(&getErrorCodeFunc, ortAPI.GetErrorCode)
 	purego.RegisterFunc(&getErrorMessageFunc, ortAPI.GetErrorMessage)
 	purego.RegisterFunc(&releaseStatusFunc, ortAPI.ReleaseStatus)
 	purego.RegisterFunc(&createMemoryInfoFunc, ortAPI.CreateMemoryInfo)
@@ -163,37 +301,21 @@ func InitializeEnvironment() (err error) {
 	// Validate ONNX Runtime version (warn if mismatch, unless explicitly skipped)
 	if os.Getenv("ONNXRUNTIME_SKIP_VERSION_CHECK") == "" {
 		versionPtr := getVersionStringFunc()
-		version := CstringToGo(versionPtr)
-
-		// Parse version string (format: "1.XX.Y")
-		parts := strings.Split(version, ".")
-		if len(parts) >= 2 {
-			minor, err := strconv.Atoi(parts[1])
-			if err == nil && minor < 22 {
-				log.Printf("WARNING: ONNX Runtime version %s is older than 1.22.0 (API version %d). "+
-					"This package was built against 1.22.0+. You may encounter compatibility issues. "+
-					"To suppress this warning, set ONNXRUNTIME_SKIP_VERSION_CHECK=1", version, ORT_API_VERSION)
-			}
-		}
+		runtimeVersion = CstringToGo(versionPtr)
 	}
 
 	var createEnv func(logLevel int32, logID uintptr, out *uintptr) uintptr
 	purego.RegisterFunc(&createEnv, ortAPI.CreateEnv)
 
-	logIDBytes, logIDPtr := GoToCstring(defaultLogID)
-	// #nosec G115 -- LoggingLevel values are constrained to 0-4 by type definition, no overflow possible
-	status := createEnv(int32(logLevel), logIDPtr, &ortEnv)
-	runtime.KeepAlive(logIDBytes) // Prevent GC from collecting bytes during C call
-	if status != 0 {
-		errMsg := getErrorMessage(status)
-		releaseStatus(status)
-		return fmt.Errorf("failed to create ONNX Runtime environment: %s", errMsg)
+	ortEnv, err = createEnvironment(createEnv, logLevel)
+	if err != nil {
+		return runtimeVersion, false, err
 	}
 
 	// Success - prevent cleanup
 	cleanupNeeded = false
 	refCount = 1
-	return nil
+	return runtimeVersion, true, nil
 }
 
 // DestroyEnvironment cleans up the ONNX Runtime environment
@@ -224,7 +346,7 @@ func DestroyEnvironment() error {
 
 	var closeErr error
 	if ortLib != 0 {
-		if err := closeLibrary(ortLib); err != nil {
+		if err := environmentCloseLibrary(ortLib); err != nil {
 			closeErr = fmt.Errorf("failed to close ONNX Runtime library: %w", err)
 		}
 		// Clear the handle even when close fails to avoid reusing stale symbols.
@@ -248,6 +370,10 @@ func IsInitialized() bool {
 // This must be called before InitializeEnvironment().
 // Returns an error if the environment is already initialized.
 func SetSharedLibraryPath(path string) error {
+	if path == "" {
+		return fmt.Errorf("set shared library path: %w", ErrInvalidArgument)
+	}
+
 	mu.Lock()
 	defer mu.Unlock()
 	if refCount > 0 {
@@ -263,6 +389,10 @@ func SetSharedLibraryPath(path string) error {
 // Default is LoggingLevelWarning.
 // Returns an error if the environment is already initialized.
 func SetLogLevel(level LoggingLevel) error {
+	if level < LoggingLevelVerbose || level > LoggingLevelFatal {
+		return fmt.Errorf("set log level %d: %w", level, ErrInvalidArgument)
+	}
+
 	mu.Lock()
 	defer mu.Unlock()
 	if refCount > 0 {
