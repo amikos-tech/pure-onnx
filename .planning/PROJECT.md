@@ -68,7 +68,7 @@ Run ONNX Runtime inference from Go with zero CGO — if that stops working, noth
 - **Interop**: All C pointers as `uintptr`; custom string conversion (`ort/cstring.go`), never `C.CString`/`C.GoString`
 - **Dependency**: `github.com/ebitengine/purego` is load-bearing for the entire binding strategy
 - **Compatibility**: Must keep working across Linux/macOS/Windows amd64+arm64 — the supported artifact matrix
-- **Workflow**: Feature branches + PRs for all changes; conventional commits; never push to `main` directly
+- **Workflow**: Feature branches + PRs for all changes; conventional commits; never push to `main` directly; squash merge on integration
 
 ## Key Decisions
 

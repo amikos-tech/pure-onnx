@@ -680,3 +680,169 @@ func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
+
+func TestBootstrapOptionsRejectSurroundingWhitespace(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		wantErr string
+	}{
+		{name: "empty", value: "", wantErr: "cannot be empty"},
+		{name: "only whitespace", value: "   ", wantErr: "cannot be empty"},
+		{name: "leading space", value: " value", wantErr: "whitespace"},
+		{name: "trailing space", value: "value ", wantErr: "whitespace"},
+		{name: "trailing tab", value: "value\t", wantErr: "whitespace"},
+		{name: "leading newline", value: "\nvalue", wantErr: "whitespace"},
+	}
+
+	options := []struct {
+		name      string
+		fn        func(string) BootstrapOption
+		wantField string
+	}{
+		{name: "WithBootstrapCacheDir", fn: WithBootstrapCacheDir, wantField: "bootstrap cache directory"},
+		{name: "WithBootstrapRepoID", fn: WithBootstrapRepoID, wantField: "bootstrap repo ID"},
+		{name: "WithBootstrapRevision", fn: WithBootstrapRevision, wantField: "bootstrap revision"},
+	}
+
+	for _, opt := range options {
+		for _, tc := range cases {
+			t.Run(opt.name+"/"+tc.name, func(t *testing.T) {
+				var cfg bootstrapConfig
+				err := opt.fn(tc.value)(&cfg)
+				if err == nil {
+					t.Fatalf("expected rejection for %q", tc.value)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error containing %q, got: %v", tc.wantErr, err)
+				}
+				// Guards against a copy/paste mix-up of the field argument between constructors.
+				if !strings.Contains(err.Error(), opt.wantField) {
+					t.Fatalf("expected error to name field %q, got: %v", opt.wantField, err)
+				}
+			})
+		}
+	}
+}
+
+// WithBootstrapRepoID is stricter than the shared whitespace validator: unlike
+// revisions, Hugging Face repo IDs never legitimately contain interior spaces.
+func TestBootstrapOptionsRepoIDRejectsInteriorWhitespace(t *testing.T) {
+	var cfg bootstrapConfig
+	err := WithBootstrapRepoID("owner/repo name")(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "whitespace") {
+		t.Fatalf("expected interior whitespace in repo ID to be rejected, got: %v", err)
+	}
+}
+
+// WithBootstrapToken and WithBootstrapChecksum used to silently strings.TrimSpace
+// padded values; they now reject padding for the same reason the other bootstrap
+// options do, while still allowing an explicitly empty (unset) token.
+func TestBootstrapOptionsTokenAndChecksumRejectPadding(t *testing.T) {
+	t.Run("token accepts empty as unset", func(t *testing.T) {
+		var cfg bootstrapConfig
+		if err := WithBootstrapToken("")(&cfg); err != nil {
+			t.Fatalf("expected empty token to be accepted, got: %v", err)
+		}
+		if cfg.hfToken != "" {
+			t.Fatalf("expected empty token stored, got %q", cfg.hfToken)
+		}
+	})
+
+	t.Run("token rejects whitespace-only", func(t *testing.T) {
+		var cfg bootstrapConfig
+		err := WithBootstrapToken("   ")(&cfg)
+		if err == nil || !strings.Contains(err.Error(), "whitespace-only") {
+			t.Fatalf("expected whitespace-only rejection, got: %v", err)
+		}
+	})
+
+	// The rejection must not echo the token: errors routinely reach logs and
+	// error trackers, and a trailing newline on a real credential is common.
+	t.Run("token rejects padding without echoing the value", func(t *testing.T) {
+		const secret = "hf_SentinelTokenValue"
+		var cfg bootstrapConfig
+		err := WithBootstrapToken(" " + secret + "\n")(&cfg)
+		if err == nil || !strings.Contains(err.Error(), "whitespace") {
+			t.Fatalf("expected whitespace rejection, got: %v", err)
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("token value leaked into error: %q", err.Error())
+		}
+	})
+
+	t.Run("token stores verbatim", func(t *testing.T) {
+		var cfg bootstrapConfig
+		if err := WithBootstrapToken("hf_abc123")(&cfg); err != nil {
+			t.Fatalf("expected token to be accepted, got: %v", err)
+		}
+		if cfg.hfToken != "hf_abc123" {
+			t.Fatalf("expected token stored verbatim, got %q", cfg.hfToken)
+		}
+	})
+
+	validChecksum := sha256Hex([]byte("checksum-fixture"))
+
+	t.Run("checksum rejects padding", func(t *testing.T) {
+		cfg := bootstrapConfig{shaByFile: map[string]string{}}
+		err := WithBootstrapChecksum(textModelFileName, " "+validChecksum+" ")(&cfg)
+		if err == nil || !strings.Contains(err.Error(), "whitespace") {
+			t.Fatalf("expected whitespace rejection, got: %v", err)
+		}
+	})
+
+	// Callers pin several assets at once, so every rejection must say which one.
+	t.Run("checksum rejections name the file", func(t *testing.T) {
+		for _, tc := range []struct{ name, checksum string }{
+			{name: "empty", checksum: ""},
+			{name: "padded", checksum: " " + validChecksum + " "},
+			{name: "not hex", checksum: strings.Repeat("z", 64)},
+			{name: "wrong length", checksum: "abc123"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				cfg := bootstrapConfig{shaByFile: map[string]string{}}
+				err := WithBootstrapChecksum(textModelFileName, tc.checksum)(&cfg)
+				if err == nil || !strings.Contains(err.Error(), textModelFileName) {
+					t.Fatalf("expected error naming %s, got: %v", textModelFileName, err)
+				}
+			})
+		}
+	})
+
+	t.Run("checksum accepts and normalizes case", func(t *testing.T) {
+		cfg := bootstrapConfig{shaByFile: map[string]string{}}
+		if err := WithBootstrapChecksum(textModelFileName, strings.ToUpper(validChecksum))(&cfg); err != nil {
+			t.Fatalf("expected checksum to be accepted, got: %v", err)
+		}
+		if cfg.shaByFile[textModelFileName] != validChecksum {
+			t.Fatalf("expected checksum normalized to lowercase, got %q", cfg.shaByFile[textModelFileName])
+		}
+	})
+}
+
+// Values that pass validation must be stored verbatim, and interior whitespace
+// stays legal because Hugging Face branch names may contain spaces.
+func TestBootstrapOptionsStoreAcceptedValuesVerbatim(t *testing.T) {
+	var cfg bootstrapConfig
+
+	if err := WithBootstrapCacheDir("/tmp/openclip cache")(&cfg); err != nil {
+		t.Fatalf("expected interior space to be accepted, got: %v", err)
+	}
+	if cfg.cacheDir != "/tmp/openclip cache" {
+		t.Fatalf("expected cache dir stored verbatim, got %q", cfg.cacheDir)
+	}
+
+	if err := WithBootstrapRepoID("owner/repo")(&cfg); err != nil {
+		t.Fatalf("expected repo ID to be accepted, got: %v", err)
+	}
+	if cfg.repoID != "owner/repo" {
+		t.Fatalf("expected repo ID stored verbatim, got %q", cfg.repoID)
+	}
+
+	if err := WithBootstrapRevision("branch/with space")(&cfg); err != nil {
+		t.Fatalf("expected interior space in revision to be accepted, got: %v", err)
+	}
+	if cfg.revision != "branch/with space" {
+		t.Fatalf("expected revision stored verbatim, got %q", cfg.revision)
+	}
+}

@@ -58,7 +58,7 @@ jobs:
 
       - name: Run golangci-lint (PR new issues)
         if: github.event_name == 'pull_request'
-        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           # Pin v2 because .golangci.yml uses v2 formatters config.
           version: v2.8.0
@@ -71,7 +71,7 @@ jobs:
 
       - name: Run golangci-lint (push informational)
         if: github.event_name != 'pull_request'
-        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           # Pin v2 because .golangci.yml uses v2 formatters config.
           version: v2.8.0
@@ -144,12 +144,12 @@ jobs:
         # listed test being renamed or deleted, which would otherwise drop it
         # from this lane silently. Bump the count only when editing the selector.
         run: |
-          RACE_SELECTOR='^(TestStatusToError|TestORTError|TestErrorSentinel|TestDiagnostic|TestAdvancedSessionRunWithValues|TestAdvancedSessionErrorContracts|TestAdvancedSessionDiagnosticPolicy|TestAcquireValueLeasesDeduplicatesRepeatedLockableValue|TestAcquireValueLeasesReleasesPriorLeasesOnError|TestAcquireValueLeasesRejectsNonComparableLockable|TestAdvancedSessionRunConcurrent|TestAdvancedSessionRunConcurrentAcrossSessionsSharingTensor|TestAdvancedSessionRunAndDestroyConcurrent|TestDestroyEnvironmentWaitsForInFlightSessionRun|TestNewAdvancedSessionBorrowedOptionsBlocksConcurrentDestroy|TestAdvancedSessionDestroyConcurrentCallsReleaseOnce|TestAdvancedSessionDestroyDoesNotBlockUnrelatedRun|TestTensorDestroyWaitsForInFlightRun|TestTensorDestroyDoesNotBlockUnrelatedRun|TestTensorDestroyConcurrentCallsReleaseOnce|TestTensorStatusConversion|TestTensorDiagnosticPolicy|TestEnvironmentErrorChains|TestEnvironmentStatusConversion|TestConcurrentInitialization|TestConcurrentDestroy|TestDiagnosticRuntimeVersion|TestMemoryInfoStatusConversion|TestMemoryInfoIsValidConcurrentDestroy|TestCreateMemoryInfoBlocksEnvironmentTeardown|TestDiagnosticMemoryInfo|TestDiagnosticCallSites|TestReturnedErrorsDoNotEmit)$'
+          RACE_SELECTOR='^(TestStatusToError|TestORTError|TestErrorSentinel|TestDiagnostic|TestAdvancedSessionRunWithValues|TestAdvancedSessionErrorContracts|TestAdvancedSessionDiagnosticPolicy|TestAcquireValueLeasesDeduplicatesRepeatedLockableValue|TestAcquireValueLeasesReleasesPriorLeasesOnError|TestAcquireValueLeasesRejectsNonComparableLockable|TestAdvancedSessionRunConcurrent|TestAdvancedSessionRunConcurrentAcrossSessionsSharingTensor|TestAdvancedSessionRunAndDestroyConcurrent|TestDestroyEnvironmentWaitsForInFlightSessionRun|TestNewAdvancedSessionBorrowedOptionsBlocksConcurrentDestroy|TestAdvancedSessionDestroyConcurrentCallsReleaseOnce|TestAdvancedSessionDestroyDoesNotBlockUnrelatedRun|TestTensorDestroyWaitsForInFlightRun|TestTensorDestroyDoesNotBlockUnrelatedRun|TestTensorDestroyConcurrentCallsReleaseOnce|TestTensorStatusConversion|TestTensorDiagnosticPolicy|TestEnvironmentErrorChains|TestEnvironmentStatusConversion|TestConcurrentInitialization|TestConcurrentDestroy|TestDiagnosticRuntimeVersion|TestMemoryInfoStatusConversion|TestMemoryInfoIsValidConcurrentDestroy|TestCreateMemoryInfoBlocksEnvironmentTeardown|TestDiagnosticMemoryInfo|TestDiagnosticCallSites|TestReturnedErrorsDoNotEmit|TestBootstrapOptionsReusableConcurrently)$'
           RACE_TESTS="$(go test -list "$RACE_SELECTOR" ./ort | awk '/^Test/')"
           printf '%s\n' "$RACE_TESTS"
           RACE_COUNT="$(printf '%s\n' "$RACE_TESTS" | awk '/^Test/{count++} END {print count+0}')"
-          if [ "$RACE_COUNT" -ne 33 ]; then
-            echo "expected 33 ORT race tests, found $RACE_COUNT"
+          if [ "$RACE_COUNT" -ne 34 ]; then
+            echo "expected 34 ORT race tests, found $RACE_COUNT"
             exit 1
           fi
           go test -race ./ort -run "$RACE_SELECTOR"
@@ -354,7 +354,7 @@ jobs:
           cache: true
 
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@223e19b8856e00f02cc67804499a83f77e208f3c # v2.25.0
+        uses: securego/gosec@9e75c0576c9878035d4221392108d458abe10fc3 # v2.28.0
         with:
           args: '-fmt sarif -out results.sarif -exclude-dir=examples/experimental ./...'
 
