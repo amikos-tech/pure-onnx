@@ -1,0 +1,5 @@
+{
+  "Replace": {
+    "embeddings/embedder_spike.go": ".planning/spikes/003-generic-embedder-contract-proof/overlay/embeddings/embedder.go"
+  }
+}

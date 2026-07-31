@@ -1,0 +1,6 @@
+{
+  "Replace": {
+    "embeddings/embedder_spike.go": ".planning/spikes/003-generic-embedder-contract-proof/overlay/embeddings/embedder.go",
+    "embeddings/openclip/generalized_embedder_spike.go": ".planning/spikes/003-generic-embedder-contract-proof/overlay/embeddings/openclip/generalized_embedder.go"
+  }
+}
