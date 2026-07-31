@@ -2184,11 +2184,15 @@ func TestWithBootstrapLibraryPathAndCacheDirRejectEmpty(t *testing.T) {
 }
 
 func TestBootstrapOptionsTrimWhitespace(t *testing.T) {
+	wantChecksum := strings.Repeat("a", 64)
+
 	var cfg bootstrapConfig
 	for _, opt := range []BootstrapOption{
 		WithBootstrapLibraryPath("  /x  "),
 		WithBootstrapCacheDir("  /cache  "),
 		WithBootstrapVersion("  1.24.1  "),
+		WithBootstrapExpectedSHA256("  " + strings.ToUpper(wantChecksum) + "  "),
+		withBootstrapBaseURL("  https://example.com/onnxruntime  "),
 	} {
 		if err := opt(&cfg); err != nil {
 			t.Fatalf("unexpected bootstrap option error: %v", err)
@@ -2203,6 +2207,12 @@ func TestBootstrapOptionsTrimWhitespace(t *testing.T) {
 	}
 	if cfg.version != "1.24.1" {
 		t.Fatalf("unexpected version: got %q, want %q", cfg.version, "1.24.1")
+	}
+	if cfg.expectedSHA256 != wantChecksum {
+		t.Fatalf("unexpected checksum: got %q, want %q", cfg.expectedSHA256, wantChecksum)
+	}
+	if cfg.baseURL != "https://example.com/onnxruntime" {
+		t.Fatalf("unexpected base URL: got %q, want %q", cfg.baseURL, "https://example.com/onnxruntime")
 	}
 }
 
