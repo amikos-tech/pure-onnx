@@ -2183,6 +2183,39 @@ func TestWithBootstrapLibraryPathAndCacheDirRejectEmpty(t *testing.T) {
 	}
 }
 
+func TestBootstrapOptionsTrimWhitespace(t *testing.T) {
+	wantChecksum := strings.Repeat("a", 64)
+
+	var cfg bootstrapConfig
+	for _, opt := range []BootstrapOption{
+		WithBootstrapLibraryPath("  /x  "),
+		WithBootstrapCacheDir("  /cache  "),
+		WithBootstrapVersion("  1.24.1  "),
+		WithBootstrapExpectedSHA256("  " + strings.ToUpper(wantChecksum) + "  "),
+		withBootstrapBaseURL("  https://example.com/onnxruntime  "),
+	} {
+		if err := opt(&cfg); err != nil {
+			t.Fatalf("unexpected bootstrap option error: %v", err)
+		}
+	}
+
+	if cfg.libraryPath != "/x" {
+		t.Fatalf("unexpected library path: got %q, want %q", cfg.libraryPath, "/x")
+	}
+	if cfg.cacheDir != "/cache" {
+		t.Fatalf("unexpected cache directory: got %q, want %q", cfg.cacheDir, "/cache")
+	}
+	if cfg.version != "1.24.1" {
+		t.Fatalf("unexpected version: got %q, want %q", cfg.version, "1.24.1")
+	}
+	if cfg.expectedSHA256 != wantChecksum {
+		t.Fatalf("unexpected checksum: got %q, want %q", cfg.expectedSHA256, wantChecksum)
+	}
+	if cfg.baseURL != "https://example.com/onnxruntime" {
+		t.Fatalf("unexpected base URL: got %q, want %q", cfg.baseURL, "https://example.com/onnxruntime")
+	}
+}
+
 func TestWithBootstrapExpectedSHA256Validation(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -2253,6 +2286,60 @@ func TestWithBootstrapBaseURLValidation(t *testing.T) {
 				t.Fatalf("unexpected validation error for %q: %v", tc.baseURL, err)
 			}
 		})
+	}
+}
+
+// This regression requires -race because the captured normalization writes are idempotent.
+func TestBootstrapOptionsReusableConcurrently(t *testing.T) {
+	const (
+		workers             = 16
+		iterationsPerWorker = 64
+		libraryPath         = "/tmp/onnxruntime/libonnxruntime.so"
+		cacheDir            = "/tmp/onnxruntime-cache"
+		version             = "1.24.1"
+		baseURL             = "https://example.com/onnxruntime"
+	)
+	wantChecksum := strings.Repeat("a", 64)
+
+	opts := []BootstrapOption{
+		WithBootstrapLibraryPath("  " + libraryPath + "  "),
+		WithBootstrapCacheDir("  " + cacheDir + "  "),
+		WithBootstrapVersion("  " + version + "  "),
+		WithBootstrapExpectedSHA256(strings.ToUpper(wantChecksum)),
+		withBootstrapBaseURL("  " + baseURL + "  "),
+	}
+
+	start := make(chan struct{})
+	errCh := make(chan error, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			<-start
+
+			for range iterationsPerWorker {
+				var cfg bootstrapConfig
+				for _, opt := range opts {
+					if err := opt(&cfg); err != nil {
+						errCh <- fmt.Errorf("apply bootstrap option: %w", err)
+						return
+					}
+				}
+				if cfg.libraryPath != libraryPath || cfg.cacheDir != cacheDir || cfg.version != version || cfg.expectedSHA256 != wantChecksum || cfg.baseURL != baseURL {
+					errCh <- fmt.Errorf("normalized bootstrap config = %+v", cfg)
+					return
+				}
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Error(err)
 	}
 }
 

@@ -33,7 +33,7 @@ make precommit
 ```
 
 - Requires an ONNX Runtime shared library: set `ONNXRUNTIME_LIB_PATH`, or let bootstrap download/cache one (`ort/bootstrap.go`).
-- Always use feature branches and open PRs for all changes; conventional commits; never push to `main` directly.
+- Always use feature branches and open PRs for all changes; conventional commits; never push to `main` directly; integrate PRs with squash merge.
 
 <!-- GSD:project-start source:PROJECT.md -->
 ## Project
@@ -50,7 +50,7 @@ A pure-Go binding for Microsoft ONNX Runtime that loads and calls the ONNX Runti
 - **Interop**: All C pointers as `uintptr`; custom string conversion (`ort/cstring.go`), never `C.CString`/`C.GoString`
 - **Dependency**: `github.com/ebitengine/purego` is load-bearing for the entire binding strategy
 - **Compatibility**: Must keep working across Linux/macOS/Windows amd64+arm64 — the supported artifact matrix
-- **Workflow**: Feature branches + PRs for all changes; conventional commits; never push to `main` directly
+- **Workflow**: Feature branches + PRs for all changes; conventional commits; never push to `main` directly; squash merge on integration
 <!-- GSD:project-end -->
 
 <!-- GSD:stack-start source:codebase/STACK.md -->

@@ -97,8 +97,8 @@ Output: Three focused implementation slices with unit, race, cross-platform comp
 </objective>
 
 <execution_context>
-@/Users/tazarov/.codex/get-shit-done/workflows/execute-plan.md
-@/Users/tazarov/.codex/get-shit-done/templates/summary.md
+@~/.codex/get-shit-done/workflows/execute-plan.md
+@~/.codex/get-shit-done/templates/summary.md
 </execution_context>
 
 <context>
