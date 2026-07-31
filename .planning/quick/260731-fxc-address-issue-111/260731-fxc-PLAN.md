@@ -46,8 +46,8 @@ normalization in `ort/bootstrap.go`, and two atomic conventional commits.
 </objective>
 
 <execution_context>
-@/Users/tazarov/.codex/get-shit-done/workflows/execute-plan.md
-@/Users/tazarov/.codex/get-shit-done/templates/summary.md
+@~/.codex/get-shit-done/workflows/execute-plan.md
+@~/.codex/get-shit-done/templates/summary.md
 </execution_context>
 
 <context>
