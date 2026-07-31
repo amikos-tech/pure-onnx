@@ -27,7 +27,7 @@ requirements-completed: [ISSUE-111-REVIEW]
 
 # Quick Task 260731-j0t Summary
 
-**Reusable bootstrap options now have enforced race-detector coverage in CI, a documented concurrency contract, and lane-independent trimming assertions.**
+**Reusable bootstrap options now have enforced race-detector coverage in CI, a documented concurrency contract, and focused trimming assertions.**
 
 ## Implementation
 

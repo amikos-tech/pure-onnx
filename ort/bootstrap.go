@@ -196,8 +196,9 @@ func bootstrapRetryAttempts(attempts int) int {
 	return attempts
 }
 
-// BootstrapOption configures EnsureOnnxRuntimeSharedLibrary.
-// BootstrapOption values returned by this package may be reused concurrently by separate bootstrap calls.
+// BootstrapOption configures EnsureOnnxRuntimeSharedLibrary. Options returned by this
+// package hold no mutable state, so one option value may be shared across concurrent
+// bootstrap calls.
 type BootstrapOption func(*bootstrapConfig) error
 
 type bootstrapConfig struct {
