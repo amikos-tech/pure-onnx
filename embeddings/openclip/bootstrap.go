@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -135,11 +136,15 @@ func WithBootstrapCacheDir(path string) BootstrapOption {
 }
 
 // WithBootstrapRepoID sets the Hugging Face repo ID to fetch assets from.
-// The repo ID is rejected if it is empty or carries leading/trailing whitespace.
+// The repo ID is rejected if it is empty or contains any whitespace: unlike
+// revisions, Hugging Face repo IDs never legitimately contain spaces.
 func WithBootstrapRepoID(repoID string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
 		if err := validateBootstrapField(repoID, "bootstrap repo ID"); err != nil {
 			return err
+		}
+		if strings.IndexFunc(repoID, unicode.IsSpace) != -1 {
+			return fmt.Errorf("invalid bootstrap repo ID %q: whitespace is not allowed", repoID)
 		}
 		cfg.repoID = repoID
 		return nil
@@ -160,20 +165,29 @@ func WithBootstrapRevision(revision string) BootstrapOption {
 }
 
 // WithBootstrapToken sets an optional Hugging Face access token for downloads.
+// The token is rejected if it carries leading/trailing whitespace; an empty
+// token is valid and means "no token".
 func WithBootstrapToken(token string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
-		cfg.hfToken = strings.TrimSpace(token)
+		if err := validateOptionalBootstrapField(token, "bootstrap token"); err != nil {
+			return err
+		}
+		cfg.hfToken = token
 		return nil
 	}
 }
 
 // WithBootstrapChecksum pins a SHA256 checksum for a required artifact.
+// The checksum is rejected if it is empty or carries leading/trailing whitespace.
 func WithBootstrapChecksum(fileName string, checksum string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
 		if err := validateAssetFileName(fileName); err != nil {
 			return err
 		}
-		normalized := strings.ToLower(strings.TrimSpace(checksum))
+		if err := validateBootstrapField(checksum, "bootstrap checksum"); err != nil {
+			return err
+		}
+		normalized := strings.ToLower(checksum)
 		if err := validateSHA256(normalized); err != nil {
 			return fmt.Errorf("invalid checksum for %s: %w", fileName, err)
 		}
@@ -582,10 +596,27 @@ func validateBootstrapField(value string, field string) error {
 	return nil
 }
 
+// validateOptionalBootstrapField is validateBootstrapField for fields where an
+// empty value is meaningful ("unset") rather than an error. A whitespace-only
+// value is still rejected, since it is ambiguous rather than a deliberate unset.
+func validateOptionalBootstrapField(value string, field string) error {
+	if value == "" {
+		return nil
+	}
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fmt.Errorf("invalid %s: whitespace-only value is not allowed", field)
+	}
+	if trimmed != value {
+		return fmt.Errorf("invalid %s %q: leading or trailing whitespace is not allowed", field, value)
+	}
+	return nil
+}
+
 func sanitizeBootstrapPathComponent(value string, field string) (string, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return "", fmt.Errorf("%s cannot be empty", strings.ToLower(field))
+		return "", fmt.Errorf("%s cannot be empty", field)
 	}
 
 	for _, segment := range strings.FieldsFunc(trimmed, func(r rune) bool {

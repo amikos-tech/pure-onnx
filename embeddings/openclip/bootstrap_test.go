@@ -695,26 +695,105 @@ func TestBootstrapOptionsRejectSurroundingWhitespace(t *testing.T) {
 		{name: "leading newline", value: "\nvalue", wantErr: "whitespace"},
 	}
 
-	options := map[string]func(string) BootstrapOption{
-		"WithBootstrapCacheDir": WithBootstrapCacheDir,
-		"WithBootstrapRepoID":   WithBootstrapRepoID,
-		"WithBootstrapRevision": WithBootstrapRevision,
+	options := []struct {
+		name      string
+		fn        func(string) BootstrapOption
+		wantField string
+	}{
+		{name: "WithBootstrapCacheDir", fn: WithBootstrapCacheDir, wantField: "bootstrap cache directory"},
+		{name: "WithBootstrapRepoID", fn: WithBootstrapRepoID, wantField: "bootstrap repo ID"},
+		{name: "WithBootstrapRevision", fn: WithBootstrapRevision, wantField: "bootstrap revision"},
 	}
 
-	for optName, optFn := range options {
+	for _, opt := range options {
 		for _, tc := range cases {
-			t.Run(optName+"/"+tc.name, func(t *testing.T) {
+			t.Run(opt.name+"/"+tc.name, func(t *testing.T) {
 				var cfg bootstrapConfig
-				err := optFn(tc.value)(&cfg)
+				err := opt.fn(tc.value)(&cfg)
 				if err == nil {
 					t.Fatalf("expected rejection for %q", tc.value)
 				}
 				if !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("expected error containing %q, got: %v", tc.wantErr, err)
 				}
+				// Guards against a copy/paste mix-up of the field argument between constructors.
+				if !strings.Contains(err.Error(), opt.wantField) {
+					t.Fatalf("expected error to name field %q, got: %v", opt.wantField, err)
+				}
 			})
 		}
 	}
+}
+
+// WithBootstrapRepoID is stricter than the shared whitespace validator: unlike
+// revisions, Hugging Face repo IDs never legitimately contain interior spaces.
+func TestBootstrapOptionsRepoIDRejectsInteriorWhitespace(t *testing.T) {
+	var cfg bootstrapConfig
+	err := WithBootstrapRepoID("owner/repo name")(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "whitespace") {
+		t.Fatalf("expected interior whitespace in repo ID to be rejected, got: %v", err)
+	}
+}
+
+// WithBootstrapToken and WithBootstrapChecksum used to silently strings.TrimSpace
+// padded values; they now reject padding for the same reason the other bootstrap
+// options do, while still allowing an explicitly empty (unset) token.
+func TestBootstrapOptionsTokenAndChecksumRejectPadding(t *testing.T) {
+	t.Run("token accepts empty as unset", func(t *testing.T) {
+		var cfg bootstrapConfig
+		if err := WithBootstrapToken("")(&cfg); err != nil {
+			t.Fatalf("expected empty token to be accepted, got: %v", err)
+		}
+		if cfg.hfToken != "" {
+			t.Fatalf("expected empty token stored, got %q", cfg.hfToken)
+		}
+	})
+
+	t.Run("token rejects whitespace-only", func(t *testing.T) {
+		var cfg bootstrapConfig
+		err := WithBootstrapToken("   ")(&cfg)
+		if err == nil || !strings.Contains(err.Error(), "whitespace-only") {
+			t.Fatalf("expected whitespace-only rejection, got: %v", err)
+		}
+	})
+
+	t.Run("token rejects padding", func(t *testing.T) {
+		var cfg bootstrapConfig
+		err := WithBootstrapToken(" tok ")(&cfg)
+		if err == nil || !strings.Contains(err.Error(), "whitespace") {
+			t.Fatalf("expected whitespace rejection, got: %v", err)
+		}
+	})
+
+	t.Run("token stores verbatim", func(t *testing.T) {
+		var cfg bootstrapConfig
+		if err := WithBootstrapToken("hf_abc123")(&cfg); err != nil {
+			t.Fatalf("expected token to be accepted, got: %v", err)
+		}
+		if cfg.hfToken != "hf_abc123" {
+			t.Fatalf("expected token stored verbatim, got %q", cfg.hfToken)
+		}
+	})
+
+	validChecksum := sha256Hex([]byte("checksum-fixture"))
+
+	t.Run("checksum rejects padding", func(t *testing.T) {
+		cfg := bootstrapConfig{shaByFile: map[string]string{}}
+		err := WithBootstrapChecksum(textModelFileName, " "+validChecksum+" ")(&cfg)
+		if err == nil || !strings.Contains(err.Error(), "whitespace") {
+			t.Fatalf("expected whitespace rejection, got: %v", err)
+		}
+	})
+
+	t.Run("checksum accepts and normalizes case", func(t *testing.T) {
+		cfg := bootstrapConfig{shaByFile: map[string]string{}}
+		if err := WithBootstrapChecksum(textModelFileName, strings.ToUpper(validChecksum))(&cfg); err != nil {
+			t.Fatalf("expected checksum to be accepted, got: %v", err)
+		}
+		if cfg.shaByFile[textModelFileName] != validChecksum {
+			t.Fatalf("expected checksum normalized to lowercase, got %q", cfg.shaByFile[textModelFileName])
+		}
+	})
 }
 
 // Values that pass validation must be stored verbatim, and interior whitespace
