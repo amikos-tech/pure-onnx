@@ -58,7 +58,7 @@ jobs:
 
       - name: Run golangci-lint (PR new issues)
         if: github.event_name == 'pull_request'
-        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           # Pin v2 because .golangci.yml uses v2 formatters config.
           version: v2.8.0
@@ -71,7 +71,7 @@ jobs:
 
       - name: Run golangci-lint (push informational)
         if: github.event_name != 'pull_request'
-        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           # Pin v2 because .golangci.yml uses v2 formatters config.
           version: v2.8.0
