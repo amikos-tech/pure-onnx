@@ -2256,6 +2256,59 @@ func TestWithBootstrapBaseURLValidation(t *testing.T) {
 	}
 }
 
+func TestBootstrapOptionsReusableConcurrently(t *testing.T) {
+	const (
+		workers           = 16
+		iterationsPerWork = 64
+		libraryPath       = "/tmp/onnxruntime/libonnxruntime.so"
+		cacheDir          = "/tmp/onnxruntime-cache"
+		version           = "1.24.1"
+		baseURL           = "https://example.com/onnxruntime"
+	)
+	wantChecksum := strings.Repeat("a", 64)
+
+	opts := []BootstrapOption{
+		WithBootstrapLibraryPath("  " + libraryPath + "  "),
+		WithBootstrapCacheDir("  " + cacheDir + "  "),
+		WithBootstrapVersion("  " + version + "  "),
+		WithBootstrapExpectedSHA256(strings.ToUpper(wantChecksum)),
+		withBootstrapBaseURL("  " + baseURL + "  "),
+	}
+
+	start := make(chan struct{})
+	errCh := make(chan error, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			<-start
+
+			for i := 0; i < iterationsPerWork; i++ {
+				var cfg bootstrapConfig
+				for _, opt := range opts {
+					if err := opt(&cfg); err != nil {
+						errCh <- fmt.Errorf("apply bootstrap option: %w", err)
+						return
+					}
+				}
+				if cfg.libraryPath != libraryPath || cfg.cacheDir != cacheDir || cfg.version != version || cfg.expectedSHA256 != wantChecksum || cfg.baseURL != baseURL {
+					errCh <- fmt.Errorf("normalized bootstrap config = %+v", cfg)
+					return
+				}
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Error(err)
+	}
+}
+
 func TestResolveBootstrapConfigRespectsEnvOverrides(t *testing.T) {
 	clearBootstrapEnv(t)
 	t.Setenv("ONNXRUNTIME_LIB_PATH", " ./libonnxruntime.so ")
