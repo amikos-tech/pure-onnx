@@ -179,12 +179,13 @@ func WithBootstrapToken(token string) BootstrapOption {
 
 // WithBootstrapChecksum pins a SHA256 checksum for a required artifact.
 // The checksum is rejected if it is empty or carries leading/trailing whitespace.
+// All rejection messages name fileName, since callers typically pin several assets.
 func WithBootstrapChecksum(fileName string, checksum string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
 		if err := validateAssetFileName(fileName); err != nil {
 			return err
 		}
-		if err := validateBootstrapField(checksum, "bootstrap checksum"); err != nil {
+		if err := validateBootstrapField(checksum, fmt.Sprintf("checksum for %s", fileName)); err != nil {
 			return err
 		}
 		normalized := strings.ToLower(checksum)
@@ -265,12 +266,16 @@ func defaultBootstrapConfig() (bootstrapConfig, error) {
 		cacheDir = filepath.Join(userCacheDir, "onnx-purego", "openclip")
 	}
 
+	// Trimmed rather than rejected: env padding is outside the caller's control,
+	// unlike a value passed to WithBootstrapToken.
+	hfToken := strings.TrimSpace(os.Getenv("HF_TOKEN"))
+
 	return bootstrapConfig{
 		repoID:             DefaultBootstrapRepoID,
 		revision:           DefaultBootstrapRevision,
 		baseURL:            DefaultBootstrapBaseURL,
 		cacheDir:           cacheDir,
-		hfToken:            strings.TrimSpace(os.Getenv("HF_TOKEN")),
+		hfToken:            hfToken,
 		verifySHA:          true,
 		shaByFile:          map[string]string{},
 		expectedSizeByFile: map[string]int64{},
@@ -599,6 +604,8 @@ func validateBootstrapField(value string, field string) error {
 // validateOptionalBootstrapField is validateBootstrapField for fields where an
 // empty value is meaningful ("unset") rather than an error. A whitespace-only
 // value is still rejected, since it is ambiguous rather than a deliberate unset.
+// The rejected value is never echoed: this guards credentials, and errors reach
+// logs and error trackers.
 func validateOptionalBootstrapField(value string, field string) error {
 	if value == "" {
 		return nil
@@ -608,7 +615,7 @@ func validateOptionalBootstrapField(value string, field string) error {
 		return fmt.Errorf("invalid %s: whitespace-only value is not allowed", field)
 	}
 	if trimmed != value {
-		return fmt.Errorf("invalid %s %q: leading or trailing whitespace is not allowed", field, value)
+		return fmt.Errorf("invalid %s: leading or trailing whitespace is not allowed", field)
 	}
 	return nil
 }

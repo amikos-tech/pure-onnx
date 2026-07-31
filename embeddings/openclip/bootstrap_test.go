@@ -757,11 +757,17 @@ func TestBootstrapOptionsTokenAndChecksumRejectPadding(t *testing.T) {
 		}
 	})
 
-	t.Run("token rejects padding", func(t *testing.T) {
+	// The rejection must not echo the token: errors routinely reach logs and
+	// error trackers, and a trailing newline on a real credential is common.
+	t.Run("token rejects padding without echoing the value", func(t *testing.T) {
+		const secret = "hf_SentinelTokenValue"
 		var cfg bootstrapConfig
-		err := WithBootstrapToken(" tok ")(&cfg)
+		err := WithBootstrapToken(" " + secret + "\n")(&cfg)
 		if err == nil || !strings.Contains(err.Error(), "whitespace") {
 			t.Fatalf("expected whitespace rejection, got: %v", err)
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("token value leaked into error: %q", err.Error())
 		}
 	})
 
@@ -782,6 +788,24 @@ func TestBootstrapOptionsTokenAndChecksumRejectPadding(t *testing.T) {
 		err := WithBootstrapChecksum(textModelFileName, " "+validChecksum+" ")(&cfg)
 		if err == nil || !strings.Contains(err.Error(), "whitespace") {
 			t.Fatalf("expected whitespace rejection, got: %v", err)
+		}
+	})
+
+	// Callers pin several assets at once, so every rejection must say which one.
+	t.Run("checksum rejections name the file", func(t *testing.T) {
+		for _, tc := range []struct{ name, checksum string }{
+			{name: "empty", checksum: ""},
+			{name: "padded", checksum: " " + validChecksum + " "},
+			{name: "not hex", checksum: strings.Repeat("z", 64)},
+			{name: "wrong length", checksum: "abc123"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				cfg := bootstrapConfig{shaByFile: map[string]string{}}
+				err := WithBootstrapChecksum(textModelFileName, tc.checksum)(&cfg)
+				if err == nil || !strings.Contains(err.Error(), textModelFileName) {
+					t.Fatalf("expected error naming %s, got: %v", textModelFileName, err)
+				}
+			})
 		}
 	})
 
