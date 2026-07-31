@@ -10,7 +10,7 @@ PKG := github.com/amikos-tech/$(PROJECT_NAME)
 GO_VULNCHECK_TOOLCHAIN ?= go1.25.12+auto
 GOVULNCHECK := $(shell $(GO) env GOPATH)/bin/govulncheck
 GOLANGCI_LINT_VERSION ?= v2.8.0
-GOSEC_VERSION ?= v2.23.0
+GOSEC_VERSION ?= v2.25.0
 PRECOMMIT_BASE_REF ?= origin/main
 RELEASE_PLATFORMS ?= linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64
 RELEASE_VERSION ?= $(shell git describe --tags --always)
@@ -18,7 +18,7 @@ RELEASE_DIR := build/release
 RELEASE_BINARIES := basic inference
 
 # ONNX Runtime version (supports API v22)
-ORT_VERSION := 1.23.1
+ORT_VERSION := 1.24.1
 ORT_BASE_URL := https://github.com/microsoft/onnxruntime/releases/download
 
 # Platform detection for ONNX Runtime downloads
@@ -194,7 +194,7 @@ precommit-lint-new:
 gosec:
 	@echo "$(YELLOW)Running gosec...$(NC)"
 	@if command -v gosec &> /dev/null; then \
-		gosec -exclude-dir=examples/experimental ./...; \
+		gosec -exclude-dir=examples/experimental ./... || exit 1; \
 		echo "$(GREEN)✓ gosec complete$(NC)"; \
 	else \
 		echo "$(RED)✗ gosec not installed. Run 'make install-tools' first$(NC)"; \

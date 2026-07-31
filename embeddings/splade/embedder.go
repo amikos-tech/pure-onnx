@@ -347,13 +347,13 @@ func NewEmbedder(modelPath string, tokenizerPath string, opts ...Option) (*Embed
 	if !cfg.slidingWindowEnabled {
 		tokenizerOpts = append(tokenizerOpts,
 			tokenizers.WithTruncation(
-				uintptr(cfg.sequenceLength),
+				uintptr(cfg.sequenceLength), // #nosec G115 -- Default and WithSequenceLength guarantee a positive int, which uintptr can represent.
 				tokenizers.TruncationDirectionRight,
 				tokenizers.TruncationStrategyLongestFirst,
 			),
 			tokenizers.WithPadding(true, tokenizers.PaddingStrategy{
 				Tag:       tokenizers.PaddingStrategyFixed,
-				FixedSize: uintptr(cfg.sequenceLength),
+				FixedSize: uintptr(cfg.sequenceLength), // #nosec G115 -- Default and WithSequenceLength guarantee a positive int, which uintptr can represent.
 			}),
 		)
 	}

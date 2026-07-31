@@ -19,10 +19,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          # The PR-only lint check compares against the merge base.
+          fetch-depth: 0
 
       - name: Setup Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
         with:
           go-version: ${{ env.GO_VERSION_STABLE }}
           cache: true
@@ -45,19 +48,30 @@ jobs:
           go vet -unsafeptr=false ./examples/inference/...
           go vet ./embeddings/...
 
+      # Resolve the merge base under a fixed local ref so the lint args below stay
+      # free of workflow expressions.
+      - name: Fetch lint baseline
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git fetch --no-tags origin "+refs/heads/$BASE_REF:refs/remotes/origin/lint-base"
+
       - name: Run golangci-lint (PR new issues)
         if: github.event_name == 'pull_request'
-        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           # Pin v2 because .golangci.yml uses v2 formatters config.
           version: v2.8.0
-          args: --concurrency=8
-          only-new-issues: true
+          # only-new-issues alone did not filter pre-existing findings, so the
+          # baseline is passed explicitly: this lane must fail only on issues the
+          # PR itself introduces.
+          args: --concurrency=8 --new-from-merge-base=refs/remotes/origin/lint-base
+          only-new-issues: false
           verify: false
 
       - name: Run golangci-lint (push informational)
         if: github.event_name != 'pull_request'
-        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           # Pin v2 because .golangci.yml uses v2 formatters config.
           version: v2.8.0
@@ -75,10 +89,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Setup Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
@@ -113,10 +127,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Setup Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
         with:
           go-version: ${{ env.GO_VERSION_STABLE }}
           cache: true
@@ -125,8 +139,20 @@ jobs:
         run: go mod download
 
       - name: Run race detector on ORT concurrency tests
+        # RACE_SELECTOR is an explicit, fully anchored list, so adding a new test
+        # does NOT change the count. The exact-match guard exists to catch a
+        # listed test being renamed or deleted, which would otherwise drop it
+        # from this lane silently. Bump the count only when editing the selector.
         run: |
-          go test -race ./ort -run 'TestValuesToHandlesDeduplicatesRepeatedLockableValue|TestValuesToHandlesReleasesPriorLeasesOnError|TestAdvancedSessionRunConcurrent|TestAdvancedSessionRunConcurrentAcrossSessionsSharingTensor|TestAdvancedSessionRunAndDestroyConcurrent|TestAdvancedSessionDestroyDoesNotBlockUnrelatedRun|TestTensorDestroyWaitsForInFlightRun|TestTensorDestroyDoesNotBlockUnrelatedRun|TestTensorDestroyConcurrentCallsReleaseOnce'
+          RACE_SELECTOR='^(TestStatusToError|TestORTError|TestErrorSentinel|TestDiagnostic|TestAdvancedSessionRunWithValues|TestAdvancedSessionErrorContracts|TestAdvancedSessionDiagnosticPolicy|TestAcquireValueLeasesDeduplicatesRepeatedLockableValue|TestAcquireValueLeasesReleasesPriorLeasesOnError|TestAcquireValueLeasesRejectsNonComparableLockable|TestAdvancedSessionRunConcurrent|TestAdvancedSessionRunConcurrentAcrossSessionsSharingTensor|TestAdvancedSessionRunAndDestroyConcurrent|TestDestroyEnvironmentWaitsForInFlightSessionRun|TestNewAdvancedSessionBorrowedOptionsBlocksConcurrentDestroy|TestAdvancedSessionDestroyConcurrentCallsReleaseOnce|TestAdvancedSessionDestroyDoesNotBlockUnrelatedRun|TestTensorDestroyWaitsForInFlightRun|TestTensorDestroyDoesNotBlockUnrelatedRun|TestTensorDestroyConcurrentCallsReleaseOnce|TestTensorStatusConversion|TestTensorDiagnosticPolicy|TestEnvironmentErrorChains|TestEnvironmentStatusConversion|TestConcurrentInitialization|TestConcurrentDestroy|TestDiagnosticRuntimeVersion|TestMemoryInfoStatusConversion|TestMemoryInfoIsValidConcurrentDestroy|TestCreateMemoryInfoBlocksEnvironmentTeardown|TestDiagnosticMemoryInfo|TestDiagnosticCallSites|TestReturnedErrorsDoNotEmit|TestBootstrapOptionsReusableConcurrently)$'
+          RACE_TESTS="$(go test -list "$RACE_SELECTOR" ./ort | awk '/^Test/')"
+          printf '%s\n' "$RACE_TESTS"
+          RACE_COUNT="$(printf '%s\n' "$RACE_TESTS" | awk '/^Test/{count++} END {print count+0}')"
+          if [ "$RACE_COUNT" -ne 34 ]; then
+            echo "expected 34 ORT race tests, found $RACE_COUNT"
+            exit 1
+          fi
+          go test -race ./ort -run "$RACE_SELECTOR"
 
   test-race-ort-stress:
     name: Test Race (ORT init/destroy stress)
@@ -134,10 +160,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Setup Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
         with:
           go-version: ${{ env.GO_VERSION_STABLE }}
           cache: true
@@ -178,10 +204,10 @@ jobs:
       HF_DATASET_REPO: 'tazarov/pure-onnx'
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Setup Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
         with:
           go-version: ${{ env.GO_VERSION_STABLE }}
           cache: true
@@ -219,8 +245,19 @@ jobs:
           ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH: '8'
           ONNXRUNTIME_TEST_LEAK_ITERATIONS: '40'
           ONNXRUNTIME_TEST_LEAK_MAX_GROWTH_MB: '96'
+        # Same contract as RACE_SELECTOR above: the anchored list means new tests
+        # do not shift the count, and the exact-match guard catches a listed test
+        # silently leaving the native lane. Bump the count only with the selector.
         run: |
-          go test -v ./ort/... -run 'TestAdvancedSessionRunWithAllMiniLML6V2|TestAdvancedSessionRunWithAllMiniLML6V2MemoryStability'
+          NATIVE_SELECTOR='^(TestNativeORTStatusRoundTrip|TestTensorSupportedElementTypesWithORT|TestAdvancedSessionRunWithValuesRealModel|TestAdvancedSessionRunWithAllMiniLML6V2|TestAdvancedSessionRunWithAllMiniLML6V2MemoryStability)$'
+          NATIVE_TESTS="$(go test -list "$NATIVE_SELECTOR" ./ort | awk '/^Test/')"
+          printf '%s\n' "$NATIVE_TESTS"
+          NATIVE_COUNT="$(printf '%s\n' "$NATIVE_TESTS" | awk '/^Test/{count++} END {print count+0}')"
+          if [ "$NATIVE_COUNT" -ne 5 ]; then
+            echo "expected 5 ORT native integration tests, found $NATIVE_COUNT"
+            exit 1
+          fi
+          go test -v ./ort/... -run "$NATIVE_SELECTOR"
 
       - name: Run real init/destroy transition stress under race
         run: |
@@ -265,10 +302,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Setup Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
@@ -290,10 +327,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Setup Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
         with:
           go-version: ${{ env.GO_VERSION_STABLE }}
           cache: true
@@ -308,23 +345,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Setup Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
         with:
           go-version: ${{ env.GO_VERSION_STABLE }}
           cache: true
 
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@223e19b8856e00f02cc67804499a83f77e208f3c # v2.25.0
+        uses: securego/gosec@9e75c0576c9878035d4221392108d458abe10fc3 # v2.28.0
         with:
-          args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=examples/experimental ./...'
-        # Allow gosec to continue even if it finds issues. This project uses unsafe operations
-        # for purego FFI which gosec flags (G103). These are necessary and documented with
-        # #nosec comments. We continue-on-error to allow the SARIF results to be uploaded
-        # for review without blocking the build.
-        continue-on-error: true
+          args: '-fmt sarif -out results.sarif -exclude-dir=examples/experimental ./...'
 
       - name: Upload SARIF file
         uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
@@ -342,10 +374,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Setup Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
         with:
           go-version: ${{ env.GO_VERSION_VULNCHECK }}
           cache: true
@@ -358,19 +390,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Setup Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
         with:
           go-version: ${{ env.GO_VERSION_STABLE }}
           cache: true
 
       - name: Check ONNX Runtime versions
-        run: |
-          make list-ort-versions || echo "Make target not available"
+        run: make list-ort-versions
 
       - name: Verify constants match latest ONNX Runtime
         run: |
           echo "Checking ORT_API_VERSION constant..."
-          grep -n "ORT_API_VERSION" ort/constants.go || echo "Constants file structure may have changed"
+          grep -nE '^[[:space:]]*ORT_API_VERSION[[:space:]]*=' ort/constants.go
+
+      - name: Verify bootstrap and integration runtime versions match
+        run: |
+          BOOTSTRAP_VERSION="$(sed -nE 's/^[[:space:]]*DefaultOnnxRuntimeVersion[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' ort/bootstrap.go)"
+          INTEGRATION_VERSION="$(sed -nE "s/^[[:space:]]*ORT_VERSION:[[:space:]]*'([^']+)'.*/\1/p" .github/workflows/ci.yml)"
+          MAKE_VERSION="$(sed -nE 's/^ORT_VERSION[[:space:]]*:=[[:space:]]*([^[:space:]]+).*/\1/p' Makefile)"
+          test -n "$BOOTSTRAP_VERSION"
+          test "$BOOTSTRAP_VERSION" = "$INTEGRATION_VERSION"
+          test "$BOOTSTRAP_VERSION" = "$MAKE_VERSION"
