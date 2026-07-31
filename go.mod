@@ -2,12 +2,12 @@ module github.com/amikos-tech/pure-onnx
 
 go 1.25.0
 
-require github.com/ebitengine/purego v0.10.1
+require github.com/ebitengine/purego v0.10.2
 
 require (
 	github.com/amikos-tech/pure-tokenizers v0.1.5
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/sys v0.46.0
+	golang.org/x/sys v0.47.0
 )
 
 require (

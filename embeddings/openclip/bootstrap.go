@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -123,10 +124,11 @@ func (l *fileLock) Release() error {
 }
 
 // WithBootstrapCacheDir sets the local cache directory used for downloaded assets.
+// The path is rejected if it is empty or carries leading/trailing whitespace.
 func WithBootstrapCacheDir(path string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
-		if strings.TrimSpace(path) == "" {
-			return fmt.Errorf("bootstrap cache directory cannot be empty")
+		if err := validateBootstrapField(path, "bootstrap cache directory"); err != nil {
+			return err
 		}
 		cfg.cacheDir = path
 		return nil
@@ -134,10 +136,15 @@ func WithBootstrapCacheDir(path string) BootstrapOption {
 }
 
 // WithBootstrapRepoID sets the Hugging Face repo ID to fetch assets from.
+// The repo ID is rejected if it is empty or contains any whitespace: unlike
+// revisions, Hugging Face repo IDs never legitimately contain spaces.
 func WithBootstrapRepoID(repoID string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
-		if strings.TrimSpace(repoID) == "" {
-			return fmt.Errorf("bootstrap repo ID cannot be empty")
+		if err := validateBootstrapField(repoID, "bootstrap repo ID"); err != nil {
+			return err
+		}
+		if strings.IndexFunc(repoID, unicode.IsSpace) != -1 {
+			return fmt.Errorf("invalid bootstrap repo ID %q: whitespace is not allowed", repoID)
 		}
 		cfg.repoID = repoID
 		return nil
@@ -145,10 +152,12 @@ func WithBootstrapRepoID(repoID string) BootstrapOption {
 }
 
 // WithBootstrapRevision sets the Hugging Face revision to fetch assets from.
+// The revision is rejected if it is empty or carries leading/trailing whitespace.
+// Interior whitespace is permitted, since branch names may contain spaces.
 func WithBootstrapRevision(revision string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
-		if strings.TrimSpace(revision) == "" {
-			return fmt.Errorf("bootstrap revision cannot be empty")
+		if err := validateBootstrapField(revision, "bootstrap revision"); err != nil {
+			return err
 		}
 		cfg.revision = revision
 		return nil
@@ -156,20 +165,30 @@ func WithBootstrapRevision(revision string) BootstrapOption {
 }
 
 // WithBootstrapToken sets an optional Hugging Face access token for downloads.
+// The token is rejected if it carries leading/trailing whitespace; an empty
+// token is valid and means "no token".
 func WithBootstrapToken(token string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
-		cfg.hfToken = strings.TrimSpace(token)
+		if err := validateOptionalBootstrapField(token, "bootstrap token"); err != nil {
+			return err
+		}
+		cfg.hfToken = token
 		return nil
 	}
 }
 
 // WithBootstrapChecksum pins a SHA256 checksum for a required artifact.
+// The checksum is rejected if it is empty or carries leading/trailing whitespace.
+// All rejection messages name fileName, since callers typically pin several assets.
 func WithBootstrapChecksum(fileName string, checksum string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
 		if err := validateAssetFileName(fileName); err != nil {
 			return err
 		}
-		normalized := strings.ToLower(strings.TrimSpace(checksum))
+		if err := validateBootstrapField(checksum, fmt.Sprintf("checksum for %s", fileName)); err != nil {
+			return err
+		}
+		normalized := strings.ToLower(checksum)
 		if err := validateSHA256(normalized); err != nil {
 			return fmt.Errorf("invalid checksum for %s: %w", fileName, err)
 		}
@@ -247,12 +266,16 @@ func defaultBootstrapConfig() (bootstrapConfig, error) {
 		cacheDir = filepath.Join(userCacheDir, "onnx-purego", "openclip")
 	}
 
+	// Trimmed rather than rejected: env padding is outside the caller's control,
+	// unlike a value passed to WithBootstrapToken.
+	hfToken := strings.TrimSpace(os.Getenv("HF_TOKEN"))
+
 	return bootstrapConfig{
 		repoID:             DefaultBootstrapRepoID,
 		revision:           DefaultBootstrapRevision,
 		baseURL:            DefaultBootstrapBaseURL,
 		cacheDir:           cacheDir,
-		hfToken:            strings.TrimSpace(os.Getenv("HF_TOKEN")),
+		hfToken:            hfToken,
 		verifySHA:          true,
 		shaByFile:          map[string]string{},
 		expectedSizeByFile: map[string]int64{},
@@ -322,7 +345,7 @@ func ensureHTTPClientSecurity(cfg *bootstrapConfig) error {
 		return nil
 	}
 
-	requireHTTPS := strings.TrimSpace(cfg.hfToken) != ""
+	requireHTTPS := cfg.hfToken != ""
 	baseHost, err := parseBootstrapBaseHost(cfg.baseURL, requireHTTPS)
 	if err != nil {
 		return err
@@ -418,7 +441,7 @@ func ensureModelAssets(cfg bootstrapConfig) (ModelAssets, error) {
 	if cfg.maxDownloadBytes <= 0 {
 		return ModelAssets{}, fmt.Errorf("max download bytes must be > 0, got %d", cfg.maxDownloadBytes)
 	}
-	requireHTTPS := strings.TrimSpace(cfg.hfToken) != ""
+	requireHTTPS := cfg.hfToken != ""
 	baseHost, err := parseBootstrapBaseHost(cfg.baseURL, requireHTTPS)
 	if err != nil {
 		return ModelAssets{}, err
@@ -564,10 +587,43 @@ func escapeRepoIDForURL(repoID string) string {
 	return strings.Join(repoSegments, "/")
 }
 
+// validateBootstrapField rejects option values that are empty or that carry
+// leading/trailing whitespace, so a value that passes validation is stored verbatim.
+// Interior whitespace is allowed: revisions may legitimately contain spaces.
+func validateBootstrapField(value string, field string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fmt.Errorf("%s cannot be empty", field)
+	}
+	if trimmed != value {
+		return fmt.Errorf("invalid %s %q: leading or trailing whitespace is not allowed", field, value)
+	}
+	return nil
+}
+
+// validateOptionalBootstrapField is validateBootstrapField for fields where an
+// empty value is meaningful ("unset") rather than an error. A whitespace-only
+// value is still rejected, since it is ambiguous rather than a deliberate unset.
+// The rejected value is never echoed: this guards credentials, and errors reach
+// logs and error trackers.
+func validateOptionalBootstrapField(value string, field string) error {
+	if value == "" {
+		return nil
+	}
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fmt.Errorf("invalid %s: whitespace-only value is not allowed", field)
+	}
+	if trimmed != value {
+		return fmt.Errorf("invalid %s: leading or trailing whitespace is not allowed", field)
+	}
+	return nil
+}
+
 func sanitizeBootstrapPathComponent(value string, field string) (string, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return "", fmt.Errorf("%s cannot be empty", strings.ToLower(field))
+		return "", fmt.Errorf("%s cannot be empty", field)
 	}
 
 	for _, segment := range strings.FieldsFunc(trimmed, func(r rune) bool {
@@ -636,8 +692,10 @@ func downloadFileOnce(client *http.Client, assetURL string, destinationPath stri
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(hfToken) != "" {
-		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(hfToken))
+	// hfToken carries no surrounding whitespace by construction: WithBootstrapToken
+	// rejects padded values and the HF_TOKEN fallback is trimmed at config time.
+	if hfToken != "" {
+		req.Header.Set("Authorization", "Bearer "+hfToken)
 	}
 
 	resp, err := client.Do(req)
