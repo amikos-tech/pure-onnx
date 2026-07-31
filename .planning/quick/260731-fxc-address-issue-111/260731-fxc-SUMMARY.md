@@ -47,4 +47,4 @@ requirements-completed: [ISSUE-111]
 
 ## Deviations from Plan
 
-None - plan executed exactly as written.
+- `AGENTS.md` was added in a later branch commit even though the plan's source gate allowed only `ort/bootstrap.go` and `ort/bootstrap_test.go`. Quick task `260731-j0t` removes it from this PR and records the complete repository-guidance change as separate follow-up work.
