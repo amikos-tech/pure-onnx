@@ -345,7 +345,7 @@ func ensureHTTPClientSecurity(cfg *bootstrapConfig) error {
 		return nil
 	}
 
-	requireHTTPS := strings.TrimSpace(cfg.hfToken) != ""
+	requireHTTPS := cfg.hfToken != ""
 	baseHost, err := parseBootstrapBaseHost(cfg.baseURL, requireHTTPS)
 	if err != nil {
 		return err
@@ -441,7 +441,7 @@ func ensureModelAssets(cfg bootstrapConfig) (ModelAssets, error) {
 	if cfg.maxDownloadBytes <= 0 {
 		return ModelAssets{}, fmt.Errorf("max download bytes must be > 0, got %d", cfg.maxDownloadBytes)
 	}
-	requireHTTPS := strings.TrimSpace(cfg.hfToken) != ""
+	requireHTTPS := cfg.hfToken != ""
 	baseHost, err := parseBootstrapBaseHost(cfg.baseURL, requireHTTPS)
 	if err != nil {
 		return ModelAssets{}, err
@@ -692,8 +692,10 @@ func downloadFileOnce(client *http.Client, assetURL string, destinationPath stri
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(hfToken) != "" {
-		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(hfToken))
+	// hfToken carries no surrounding whitespace by construction: WithBootstrapToken
+	// rejects padded values and the HF_TOKEN fallback is trimmed at config time.
+	if hfToken != "" {
+		req.Header.Set("Authorization", "Bearer "+hfToken)
 	}
 
 	resp, err := client.Do(req)
