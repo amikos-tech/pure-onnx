@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-07-30)
 Phase: 3
 Plan: Not started
 Status: Phase 02 shipped — PR #105
-Last activity: 2026-07-30 - Completed quick task 260730-qjz: address PR 105 review feedback
+Last activity: 2026-07-31 - Completed quick task 260731-fxc: address issue #111
 
 Progress: [████████████████████] 11/11 plans (100%)
 
@@ -91,6 +91,7 @@ None yet.
 | 260730-gye | Address all five review findings | 2026-07-30 | 0618207 |  | [260730-gye-address-all-five-review-findings](./quick/260730-gye-address-all-five-review-findings/) |
 | 260730-ink | Address the supplied diagnostics, locking, bootstrap cache validation and trust, concurrency coverage, and documentation findings | 2026-07-30 | e92b8a7 | Needs Review | [260730-ink-address-the-supplied-diagnostics-locking](./quick/260730-ink-address-the-supplied-diagnostics-locking/) |
 | 260730-qjz | address PR 105 review feedback | 2026-07-30 | 80dd73f |  | [260730-qjz-address-pr-105-review-feedback](./quick/260730-qjz-address-pr-105-review-feedback/) |
+| 260731-fxc | address issue #111 | 2026-07-31 | 0c637a9 |  | [260731-fxc-address-issue-111](./quick/260731-fxc-address-issue-111/) |
 
 ## Deferred Items
 
