@@ -46,7 +46,7 @@ const (
 const (
 	textModelFileName    = "text_model.onnx"
 	visionModelFileName  = "vision_model.onnx"
-	tokenizerFileName    = "tokenizer.json"
+	tokenizerFileName    = "tokenizer.json" // #nosec G101 -- Public tokenizer asset filename, not credential material.
 	preprocessorFileName = "preprocessor_config.json"
 )
 

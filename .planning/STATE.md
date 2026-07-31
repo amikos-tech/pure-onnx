@@ -2,41 +2,41 @@
 gsd_state_version: 1.0
 milestone: v0.1.0
 milestone_name: "**Goal**: v0.1.0 is cut as a tagged, documented release with CI green across all supported platforms and every milestone issue closed."
-status: ready_to_plan
-stopped_at: Phase 01 complete (3/3) — ready to discuss Phase 2
-last_updated: 2026-07-22T07:55:25.530Z
-last_activity: 2026-07-22 -- Phase 01 execution started
+status: "Phase 02 shipped — PR #105"
+stopped_at: Phase 2 UAT complete, ready to discuss Phase 3
+last_updated: "2026-07-30T16:07:10.872Z"
+last_activity: 2026-07-30
 progress:
   total_phases: 6
-  completed_phases: 0
-  total_plans: 3
-  completed_plans: 3
-  percent: 0
+  completed_phases: 2
+  total_plans: 11
+  completed_plans: 11
+  percent: 33
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-21)
+See: .planning/PROJECT.md (updated 2026-07-30)
 
 **Core value:** Run ONNX Runtime inference from Go with zero CGO — if that stops working, nothing else matters.
-**Current focus:** Phase 2 — core api — errors & values
+**Current focus:** Phase 3 — Generalized Embedder API
 
 ## Current Position
 
-Phase: 2
+Phase: 3
 Plan: Not started
-Status: Ready to plan
-Last activity: 2026-07-22
+Status: Phase 02 shipped — PR #105
+Last activity: 2026-07-30 - Completed quick task 260730-qjz: address PR 105 review feedback
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [████████████████████] 11/11 plans (100%)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 3
+- Total plans completed: 11
 - Average duration: —
 - Total execution time: 0 hours
 
@@ -45,6 +45,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 3 | - | - |
+| 02 | 8 | - | - |
 
 **Recent Trend:**
 
@@ -52,6 +53,14 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: —
 
 *Updated after each plan completion*
+| Phase 02 P01 | 14 min | 2 tasks | 5 files |
+| Phase 02 P02 | 4min | 1 tasks | 4 files |
+| Phase 02 P03 | 4min | 1 tasks | 2 files |
+| Phase 02 P04 | 18min | 2 tasks | 2 files |
+| Phase 02 P05 | 12min | 1 tasks | 4 files |
+| Phase 02 P06 | 18min | 2 tasks | 4 files |
+| Phase 02 P07 | 23min | 3 tasks | 2 files |
+| Phase 02 P08 | 18min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -60,9 +69,11 @@ Progress: [░░░░░░░░░░] 0%
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- v0.1.0 = full hardening milestone (all 12 requirements), not a feature-tight subset
-- Definition of Done = tagged + documented release with full lint gate green and CI green on all platforms
-- DX-01 (#42) fix stays in the example, not `ort/` — issue is scoped example-UX only
+- v0.1.0 remains the full hardening milestone, with a tagged documented release and green CI as the definition of done.
+- [Phase 02] Keep local error categories separate from native `ORTError` detail so callers can use both `errors.Is` and `errors.As`.
+- [Phase 02] Seal `Value` and keep `AsTensor[T]` exact so only package-owned values enter native handle and lease protocols.
+- [Phase 02] Keep diagnostics opt-in and do not duplicate returned errors; only non-returnable notices and finalizer failures emit.
+- [Phase 02] Borrow per-call values through the existing session run core, preserving caller ownership and established locking/lifetime behavior.
 
 ### Pending Todos
 
@@ -71,7 +82,15 @@ None yet.
 ### Blockers/Concerns
 
 - CLN-01 (full lint gate, Phase 5) may surface latent issues in code changed by Phases 2-4; sequenced after code + docs so it audits the final tree.
-- API-01/02/03 (Phases 2-3) are the heaviest, code-changing work; watch fragile global lock ordering in `ort/environment.go`/`session.go`/`tensor.go`.
+- API-01 (Phase 3) builds on the settled `Value` and `RunWithValues` contracts; preserve their ownership, locking, and lifetime guarantees.
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Status | Directory |
+|---|-------------|------|--------|--------|-----------|
+| 260730-gye | Address all five review findings | 2026-07-30 | 0618207 |  | [260730-gye-address-all-five-review-findings](./quick/260730-gye-address-all-five-review-findings/) |
+| 260730-ink | Address the supplied diagnostics, locking, bootstrap cache validation and trust, concurrency coverage, and documentation findings | 2026-07-30 | e92b8a7 | Needs Review | [260730-ink-address-the-supplied-diagnostics-locking](./quick/260730-ink-address-the-supplied-diagnostics-locking/) |
+| 260730-qjz | address PR 105 review feedback | 2026-07-30 | 80dd73f |  | [260730-qjz-address-pr-105-review-feedback](./quick/260730-qjz-address-pr-105-review-feedback/) |
 
 ## Deferred Items
 
@@ -84,6 +103,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-21T08:15:23.309Z
-Stopped at: Phase 1 context gathered
-Resume file: .planning/phases/01-dx-test-hardening/01-CONTEXT.md
+Last session: 2026-07-30T08:49:07.079Z
+Stopped at: Phase 2 UAT complete, ready to discuss Phase 3
+Resume file: None

@@ -1,5 +1,7 @@
 package ort
 
+import "sync"
+
 // OrtApiBase represents the base API structure
 type OrtApiBase struct {
 	GetApi           uintptr
@@ -20,23 +22,39 @@ func (s *Status) IsOK() bool {
 }
 
 // GetErrorCode returns the error code from the status
-// TODO: This method is not fully implemented yet - currently returns ErrorCodeFail for any error
 func (s *Status) GetErrorCode() ErrorCode {
 	if s.IsOK() {
 		return ErrorCodeOK
 	}
-	// TODO: Implement actual error code retrieval using OrtApi.GetErrorCode
-	return ErrorCodeFail
+
+	ortCallMu.RLock()
+	defer ortCallMu.RUnlock()
+
+	mu.Lock()
+	getErrorCode := getErrorCodeFunc
+	mu.Unlock()
+	if getErrorCode == nil {
+		return ErrorCodeFail
+	}
+	return getErrorCode(s.handle)
 }
 
 // GetErrorMessage returns the error message from the status
-// TODO: This method is not fully implemented yet - currently returns generic message
 func (s *Status) GetErrorMessage() string {
 	if s.IsOK() {
 		return ""
 	}
-	// TODO: Implement actual error message retrieval using OrtApi.GetErrorMessage
-	return "Error occurred"
+
+	ortCallMu.RLock()
+	defer ortCallMu.RUnlock()
+
+	mu.Lock()
+	getErrorMessage := getErrorMessageFunc
+	mu.Unlock()
+	if getErrorMessage == nil {
+		return ""
+	}
+	return CstringToGo(getErrorMessage(s.handle))
 }
 
 // Environment represents an ONNX Runtime environment
@@ -57,13 +75,30 @@ type Session struct {
 	outputCount int
 }
 
-// Value represents an ONNX Runtime value (tensor, sequence, map, etc.).
-// Sessions currently only accept Value implementations created by this package.
+// Value represents an ONNX Runtime value created by this package.
+//
+// Value is intentionally sealed: external implementations are unsupported because
+// native handles and their run-lifetime protocol remain package-owned.
 type Value interface {
 	// Destroy releases the underlying resources
 	Destroy() error
 	// Type returns the type of the value
 	Type() ValueType
+	ortValue()
+}
+
+// IsTensor reports whether value has the ONNX tensor kind.
+func IsTensor(value Value) bool {
+	return value != nil && value.Type() == ValueTypeTensor
+}
+
+// AsTensor returns value as an exact, non-nil *Tensor[T].
+func AsTensor[T any](value Value) (*Tensor[T], bool) {
+	tensor, ok := value.(*Tensor[T])
+	if !ok || tensor == nil {
+		return nil, false
+	}
+	return tensor, true
 }
 
 // ValueType represents the type of an ONNX Runtime value
@@ -90,6 +125,8 @@ func NewShape(dims ...int64) Shape {
 // It is not safe to mutate a SessionOptions instance concurrently with session creation.
 type SessionOptions struct {
 	handle                 uintptr // Pointer to OrtSessionOptions
+	handleMu               sync.RWMutex
+	destroyed              bool
 	graphOptimizationLevel GraphOptimizationLevel
 	executionMode          ExecutionMode
 	interOpNumThreads      int
@@ -106,6 +143,7 @@ type SessionOptions struct {
 // MemoryInfo represents memory allocation information
 type MemoryInfo struct {
 	handle        uintptr // Pointer to OrtMemoryInfo
+	handleMu      sync.RWMutex
 	name          string
 	memType       MemType
 	allocatorType AllocatorType

@@ -1,6 +1,25 @@
 package ort
 
-import "unsafe"
+import (
+	"fmt"
+	"strings"
+	"unsafe"
+)
+
+func validateNativeString(value, field string) error {
+	if strings.IndexByte(value, 0) >= 0 {
+		return fmt.Errorf("%s contains an embedded NUL byte: %w", field, ErrInvalidArgument)
+	}
+	return nil
+}
+
+func goStringToCString(value, field string) ([]byte, uintptr, error) {
+	if err := validateNativeString(value, field); err != nil {
+		return nil, 0, err
+	}
+	bytes, pointer := GoToCstring(value)
+	return bytes, pointer, nil
+}
 
 // CstringToGo converts a C null-terminated string pointer to a Go string.
 // The pointer must point to a valid null-terminated string in memory.
