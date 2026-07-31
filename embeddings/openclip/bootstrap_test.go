@@ -680,3 +680,66 @@ func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
+
+func TestBootstrapOptionsRejectSurroundingWhitespace(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		wantErr string
+	}{
+		{name: "empty", value: "", wantErr: "cannot be empty"},
+		{name: "only whitespace", value: "   ", wantErr: "cannot be empty"},
+		{name: "leading space", value: " value", wantErr: "whitespace"},
+		{name: "trailing space", value: "value ", wantErr: "whitespace"},
+		{name: "trailing tab", value: "value\t", wantErr: "whitespace"},
+		{name: "leading newline", value: "\nvalue", wantErr: "whitespace"},
+	}
+
+	options := map[string]func(string) BootstrapOption{
+		"WithBootstrapCacheDir": WithBootstrapCacheDir,
+		"WithBootstrapRepoID":   WithBootstrapRepoID,
+		"WithBootstrapRevision": WithBootstrapRevision,
+	}
+
+	for optName, optFn := range options {
+		for _, tc := range cases {
+			t.Run(optName+"/"+tc.name, func(t *testing.T) {
+				var cfg bootstrapConfig
+				err := optFn(tc.value)(&cfg)
+				if err == nil {
+					t.Fatalf("expected rejection for %q", tc.value)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error containing %q, got: %v", tc.wantErr, err)
+				}
+			})
+		}
+	}
+}
+
+// Values that pass validation must be stored verbatim, and interior whitespace
+// stays legal because Hugging Face branch names may contain spaces.
+func TestBootstrapOptionsStoreAcceptedValuesVerbatim(t *testing.T) {
+	var cfg bootstrapConfig
+
+	if err := WithBootstrapCacheDir("/tmp/openclip cache")(&cfg); err != nil {
+		t.Fatalf("expected interior space to be accepted, got: %v", err)
+	}
+	if cfg.cacheDir != "/tmp/openclip cache" {
+		t.Fatalf("expected cache dir stored verbatim, got %q", cfg.cacheDir)
+	}
+
+	if err := WithBootstrapRepoID("owner/repo")(&cfg); err != nil {
+		t.Fatalf("expected repo ID to be accepted, got: %v", err)
+	}
+	if cfg.repoID != "owner/repo" {
+		t.Fatalf("expected repo ID stored verbatim, got %q", cfg.repoID)
+	}
+
+	if err := WithBootstrapRevision("branch/with space")(&cfg); err != nil {
+		t.Fatalf("expected interior space in revision to be accepted, got: %v", err)
+	}
+	if cfg.revision != "branch/with space" {
+		t.Fatalf("expected revision stored verbatim, got %q", cfg.revision)
+	}
+}

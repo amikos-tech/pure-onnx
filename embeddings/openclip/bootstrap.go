@@ -123,10 +123,11 @@ func (l *fileLock) Release() error {
 }
 
 // WithBootstrapCacheDir sets the local cache directory used for downloaded assets.
+// The path is rejected if it is empty or carries leading/trailing whitespace.
 func WithBootstrapCacheDir(path string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
-		if strings.TrimSpace(path) == "" {
-			return fmt.Errorf("bootstrap cache directory cannot be empty")
+		if err := validateBootstrapField(path, "bootstrap cache directory"); err != nil {
+			return err
 		}
 		cfg.cacheDir = path
 		return nil
@@ -134,10 +135,11 @@ func WithBootstrapCacheDir(path string) BootstrapOption {
 }
 
 // WithBootstrapRepoID sets the Hugging Face repo ID to fetch assets from.
+// The repo ID is rejected if it is empty or carries leading/trailing whitespace.
 func WithBootstrapRepoID(repoID string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
-		if strings.TrimSpace(repoID) == "" {
-			return fmt.Errorf("bootstrap repo ID cannot be empty")
+		if err := validateBootstrapField(repoID, "bootstrap repo ID"); err != nil {
+			return err
 		}
 		cfg.repoID = repoID
 		return nil
@@ -145,10 +147,12 @@ func WithBootstrapRepoID(repoID string) BootstrapOption {
 }
 
 // WithBootstrapRevision sets the Hugging Face revision to fetch assets from.
+// The revision is rejected if it is empty or carries leading/trailing whitespace.
+// Interior whitespace is permitted, since branch names may contain spaces.
 func WithBootstrapRevision(revision string) BootstrapOption {
 	return func(cfg *bootstrapConfig) error {
-		if strings.TrimSpace(revision) == "" {
-			return fmt.Errorf("bootstrap revision cannot be empty")
+		if err := validateBootstrapField(revision, "bootstrap revision"); err != nil {
+			return err
 		}
 		cfg.revision = revision
 		return nil
@@ -562,6 +566,20 @@ func escapeRepoIDForURL(repoID string) string {
 		repoSegments[i] = url.PathEscape(segment)
 	}
 	return strings.Join(repoSegments, "/")
+}
+
+// validateBootstrapField rejects option values that are empty or that carry
+// leading/trailing whitespace, so a value that passes validation is stored verbatim.
+// Interior whitespace is allowed: revisions may legitimately contain spaces.
+func validateBootstrapField(value string, field string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fmt.Errorf("%s cannot be empty", field)
+	}
+	if trimmed != value {
+		return fmt.Errorf("invalid %s %q: leading or trailing whitespace is not allowed", field, value)
+	}
+	return nil
 }
 
 func sanitizeBootstrapPathComponent(value string, field string) (string, error) {
