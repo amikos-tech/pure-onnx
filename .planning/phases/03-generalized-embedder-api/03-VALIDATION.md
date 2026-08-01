@@ -1,10 +1,11 @@
 ---
 phase: 3
 slug: generalized-embedder-api
-status: draft
-nyquist_compliant: false
+status: approved
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-08-01
+last_updated: 2026-08-01
 ---
 
 # Phase 3 — Validation Strategy
@@ -27,9 +28,9 @@ created: 2026-08-01
 
 ## Sampling Rate
 
-- **After every task commit:** Run `go test -count=1 ./embeddings` once the root package exists.
-- **After the plan wave:** Run `go test -count=1 -short ./embeddings/... && go vet ./embeddings/...`.
-- **Before `$gsd-verify-work`:** Prove the root package has zero production imports, run `go test -count=1 -short ./...`, then run every named native MiniLM, SPLADE, and OpenCLIP command below in the configured integration environment. Native evidence must show `PASS`, not `SKIP`.
+- **After each implementation task:** Run `go test -count=1 ./embeddings` once the root package exists; this is the under-30-second feedback sample.
+- **At Task 03-01-03:** Stop at the blocking configured-environment checkpoint because the current shell lacks the native runtime/model/golden assets recorded in `03-RESEARCH.md`.
+- **After the checkpoint / before `$gsd-verify-work`:** Run `go test -count=1 -short ./embeddings/...`, `go vet ./embeddings/...`, the complete short module suite, and every named native MiniLM, SPLADE, and OpenCLIP command below as the separate final phase gate. Native evidence must show `PASS`, not `SKIP`.
 - **Max feedback latency:** 30 seconds for task-level contract tests; comprehensive and native suites run at the phase gate.
 
 ---
@@ -54,19 +55,21 @@ No HIGH threat is accepted or unresolved.
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
 | 03-01-01 | 03-01 | 1 | API-01 | T-03-01 / T-03-02 / T-03-03 / T-03-04 | The zero-import `Embedder[T any]` contract exposes only `EmbedDocuments`, `EmbedQuery`, and `Close`; OpenCLIP forwards directly to its existing text methods | static/build | `test -z "$(go list -f '{{join .Imports " "}}' ./embeddings)" && go test -run '^$' ./embeddings/...` | ❌ W0 production files | ⬜ pending |
 | 03-01-02 | 03-01 | 1 | API-01 | T-03-01 / T-03-02 / T-03-03 / T-03-05 | All three concrete embedders satisfy the correct instantiated interface; existing public signatures stay exact; forwarding preserves direct validation | compile/unit | `go test -count=1 ./embeddings` | ❌ W0 `embeddings/embedder_test.go` | ⬜ pending |
-| 03-01-03 | 03-01 | 1 | API-01 | T-03-01 / T-03-05 | Dense, sparse, text, and image behavior remains unchanged; SPLADE parity runs rather than silently skipping | static/regression/native parity | `go vet ./embeddings/... && go test -count=1 -short ./...` plus the named native commands below | ✅ existing suites | ⬜ pending |
+| 03-01-03 | 03-01 | 1 | API-01 | T-03-01 / T-03-05 | A configured native target is made available after one fast root-contract sample; comprehensive regression/parity evidence runs only as the final phase gate | checkpoint + fast unit sample | `go test -count=1 ./embeddings -run '^(TestTypedInterfaceDispatchReachesExistingValidation\|TestOpenCLIPForwardersPreserveExistingValidation)$'`; blocking environment checkpoint follows | ✅ existing suites | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
 ### Native Acceptance Commands
 
-| Capability | Automated Command |
-|------------|-------------------|
-| MiniLM dense document/query behavior | `go test -count=1 -v ./embeddings/minilm -run '^TestEmbedDocumentsWithAllMiniLML6V2$'` |
-| SPLADE sparse regression and repeatability | `go test -count=1 -v ./embeddings/splade -run '^(TestEmbedDocumentsWithSPLADEModel|TestSPLADEGoldenRegressionTopK16WithLabels|TestSPLADERepeatabilityTopK16)$'` |
-| SPLADE hosted golden parity | `go test -count=1 -v ./embeddings/splade -run '^TestSPLADEGoldenDatasetParity$'` |
-| OpenCLIP text/image integration behavior | `go test -count=1 -v ./embeddings/openclip -run '^(TestEmbedTextsAndImagesWithOpenCLIPModel|TestOpenCLIPFailsWithWrongInputOutputNames|TestOpenCLIPFailsWithWrongEmbeddingDimension|TestOpenCLIPFailsWithImageSizeMismatch|TestOpenCLIPErrorsAfterClose|TestOpenCLIPCloseIsIdempotent)$'` |
-| OpenCLIP hosted golden parity | `go test -count=1 -v ./embeddings/openclip -run '^TestOpenCLIPGoldenDatasetParity$'` |
+Each command runs with `-json` in the separate final phase-verification gate after Task 03-01-03 resumes. The gate captures each stream and fails unless the listed top-level tests emit the exact PASS count and none emit `Action:"skip"`; package exit status alone is not evidence.
+
+| Capability | Automated Command | Required named PASS events | SKIP allowed |
+|------------|-------------------|----------------------------|--------------|
+| MiniLM dense document/query behavior | `go test -count=1 -json ./embeddings/minilm -run '^TestEmbedDocumentsWithAllMiniLML6V2$'` | 1 | no |
+| SPLADE sparse regression and repeatability | `go test -count=1 -json ./embeddings/splade -run '^(TestEmbedDocumentsWithSPLADEModel|TestSPLADEGoldenRegressionTopK16WithLabels|TestSPLADERepeatabilityTopK16)$'` | 3 | no |
+| SPLADE hosted golden parity | `go test -count=1 -json ./embeddings/splade -run '^TestSPLADEGoldenDatasetParity$'` | 1 | no |
+| OpenCLIP text/image integration behavior | `go test -count=1 -json ./embeddings/openclip -run '^(TestEmbedTextsAndImagesWithOpenCLIPModel|TestOpenCLIPFailsWithWrongInputOutputNames|TestOpenCLIPFailsWithWrongEmbeddingDimension|TestOpenCLIPFailsWithImageSizeMismatch|TestOpenCLIPErrorsAfterClose|TestOpenCLIPCloseIsIdempotent)$'` | 6 | no |
+| OpenCLIP hosted golden parity | `go test -count=1 -json ./embeddings/openclip -run '^TestOpenCLIPGoldenDatasetParity$'` | 1 | no |
 
 ---
 
@@ -81,18 +84,18 @@ No HIGH threat is accepted or unresolved.
 
 ## Manual-Only Verifications
 
-*None — all phase behaviors have automated commands. Native tests may skip in an unconfigured local shell, but the phase gate requires non-skipped output from the configured integration environment.*
+*None — Task 03-01-03 requires the user only to make an existing configured native target accessible; the executor runs every verification command. Native tests may skip in an unconfigured local shell, but the final phase gate requires non-skipped output from the configured environment.*
 
 ---
 
 ## Validation Sign-Off
 
-- [ ] All final PLAN.md tasks have automated verification or create their missing Wave 0 files.
+- [x] Every implementation task has under-30-second automated feedback; Task 03-01-03 has a fast sample plus an explicit blocking environment checkpoint before the comprehensive automated phase gate.
 - [x] Sampling continuity: no three consecutive tasks lack automated verification.
 - [x] Wave 0 identifies every currently missing production/test file.
 - [x] No watch-mode flags.
 - [x] Task-level feedback latency target is under 30 seconds.
-- [ ] Provisional task IDs reconciled with the final PLAN.md.
-- [ ] `nyquist_compliant: true` set in frontmatter after plan-checker approval.
+- [x] Provisional task IDs reconciled with `03-01-PLAN.md` tasks 03-01-01 through 03-01-03.
+- [x] `nyquist_compliant: true` set in frontmatter after plan-checker approval.
 
-**Approval:** pending
+**Approval:** approved 2026-08-01 (gsd-plan-checker verified Phase 3 plan structure, sampling, native checkpoint, and threat coverage)

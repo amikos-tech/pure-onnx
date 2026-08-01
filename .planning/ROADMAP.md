@@ -74,7 +74,10 @@ Plans:
   1. A common embedder interface produces both dense (minilm) and sparse (splade) embeddings through one consistent API shape.
   2. SPLADE sparse embeddings are produced and validated against the existing golden parity dataset.
   3. Existing `minilm` and `openclip` embedders conform to (or adapt cleanly to) the generalized API with no functional regression in their tests.
-**Plans**: TBD
+**Plans**: 1 plan
+
+Plans:
+- [ ] 03-01-PLAN.md — Promote the validated generic contract, OpenCLIP forwarders, compatibility proof, and non-skipped native parity gate
 
 ### Phase 4: Documentation
 **Goal**: Public packages are comprehensively documented, including per-function maturity, error-string lifetime semantics, and the known environment-leak limitation.
@@ -116,7 +119,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 |-------|----------------|--------|-----------|
 | 1. DX & Test Hardening | 3/3 | Complete   | 2026-07-22 |
 | 2. Core API — Errors & Values | 8/8 | Complete   | 2026-07-24 |
-| 3. Generalized Embedder API | 0/TBD | Not started | - |
+| 3. Generalized Embedder API | 0/1 | Not started | - |
 | 4. Documentation | 0/TBD | Not started | - |
 | 5. Full Lint Gate | 0/TBD | Not started | - |
 | 6. Release v0.1.0 | 0/TBD | Not started | - |
