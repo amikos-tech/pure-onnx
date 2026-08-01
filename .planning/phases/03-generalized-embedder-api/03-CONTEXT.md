@@ -1,6 +1,7 @@
 # Phase 3: Generalized Embedder API - Context
 
 **Gathered:** 2026-07-31
+**Spike validation folded:** 2026-08-01
 **Status:** Ready for planning
 
 <domain>
@@ -31,6 +32,12 @@ Add one small public contract that gives dense MiniLM and sparse SPLADE embedder
 - **D-11:** The change is additive: no existing exported constructor, method, parameter, return type, field, or behavior may be removed or changed.
 - **D-12:** Do not add generalized factories, adapters, runtime-tagged result unions, or extra public capability packages in this phase.
 
+### Spike-validated constraints
+- **D-13:** Spike 003 compiled the exact generic contract against the real model packages. `*minilm.Embedder` and `*openclip.Embedder` satisfy `embeddings.Embedder[[]float32]`; `*splade.Embedder` satisfies `embeddings.Embedder[splade.SparseVector]` without result conversion or copying.
+- **D-14:** The overlaid root `embeddings` package has zero imports. Preserve that dependency-free shape so the generalized contract cannot create an import cycle with its model subpackages.
+- **D-15:** The negative control proved that OpenCLIP's only conformance gaps are `EmbedDocuments` and `EmbedQuery`; adding the two direct forwarding methods makes it conform while preserving its existing text/image API and validation behavior.
+- **D-16:** Carry Spike 003's exact constructor/method signature assertions into Phase 3 verification. Planning must include compile-time conformance checks, `go vet`, the embedding regression suites, and the complete short module suite.
+
 ### the agent's Discretion
 - Exact interface and package documentation wording.
 - Placement and naming of compile-time interface assertions and conformance tests.
@@ -49,6 +56,13 @@ Add one small public contract that gives dense MiniLM and sparse SPLADE embedder
 - `.planning/ROADMAP.md` §Phase 3 — phase goal and literal success criteria.
 - `.planning/phases/02-core-api-errors-values/02-CONTEXT.md` — locked `Value`, ownership, `Run`, locking, and compatibility decisions that Phase 3 must preserve.
 - `https://github.com/amikos-tech/pure-onnx/issues/49` — original generalized embedder API scope and compatibility intent.
+
+### Validated Phase 3 spike — MUST read before planning
+- `.planning/spikes/003-generic-embedder-contract-proof/README.md` — VALIDATED verdict, commands, evidence, negative control, limits, and the explicit signal for Phase 3 planning.
+- `.planning/spikes/003-generic-embedder-contract-proof/overlay/embeddings/embedder.go` — proven minimal root generic contract; use as the production-shape blueprint.
+- `.planning/spikes/003-generic-embedder-contract-proof/overlay/embeddings/openclip/generalized_embedder.go` — proven two-method OpenCLIP forwarding shape.
+- `.planning/spikes/003-generic-embedder-contract-proof/contract_test.go` — exact existing-signature pins, compile-time conformance assertions, and typed interface-dispatch checks to carry into implementation tests.
+- `.planning/spikes/003-generic-embedder-contract-proof/overlay.json` — reproducible mapping used to compile the proposed files against the real package graph without editing production code.
 
 ### Existing embedder APIs
 - `embeddings/minilm/embedder.go` — dense `EmbedDocuments`, `EmbedQuery`, `Close`, concrete constructor, and cached-session behavior that already match the common contract.
@@ -78,6 +92,8 @@ Add one small public contract that gives dense MiniLM and sparse SPLADE embedder
 - `splade.Embedder`: its existing method set can satisfy `embeddings.Embedder[splade.SparseVector]` without result conversion or copying.
 - `openclip.Embedder.EmbedTexts` / `EmbedText`: direct delegation targets for the two additive compatibility methods.
 - SPLADE golden and regression tests: existing proof that generalized API work does not change sparse numerical output.
+- Spike 003 overlay sources: compile-validated production-shape prototypes for the root contract and OpenCLIP forwarders.
+- Spike 003 contract test: reusable exact-signature and conformance assertions that turn compatibility requirements into compile failures.
 
 ### Established Patterns
 - Model packages own their concrete embedder types, functional-option constructors, and model-specific result/configuration types.
@@ -90,6 +106,7 @@ Add one small public contract that gives dense MiniLM and sparse SPLADE embedder
 - `embeddings/openclip/embedder.go`: additive document/query forwarding methods.
 - Model package tests: compile-time conformance checks plus regression coverage for existing APIs.
 - SPLADE parity suite: acceptance gate for unchanged sparse output.
+- `.planning/spikes/003-generic-embedder-contract-proof/`: mandatory pre-planning evidence and implementation blueprint; do not re-research the contract's basic feasibility.
 
 </code_context>
 
@@ -99,6 +116,7 @@ Add one small public contract that gives dense MiniLM and sparse SPLADE embedder
 - Favor the smallest additive surface: one generic interface plus two OpenCLIP forwarding methods.
 - Existing caller code using concrete embedders must continue to compile unchanged.
 - Callers that need OpenCLIP image methods retain the concrete `*openclip.Embedder`; the common interface intentionally exposes only text embedding.
+- Spike 003 has already validated feasibility, dependency direction, exact method conformance, and the additive compatibility shape. Planning should convert that proof into production tasks rather than propose another API experiment.
 
 </specifics>
 
@@ -113,3 +131,4 @@ None — runtime-selected heterogeneous registries, root factories/facades, runt
 
 *Phase: 3-Generalized Embedder API*
 *Context gathered: 2026-07-31*
+*Spike 003 evidence folded: 2026-08-01*
