@@ -23,6 +23,7 @@ Run ONNX Runtime inference from Go with zero CGO — if that stops working, noth
 - ✓ Runnable examples (`basic`, `inference`, `openclip`) and ORT API generation tooling (`gen_ortapi.go`) — existing
 - ✓ Comprehensive, inspectable error handling across the public `ort` API — validated in Phase 2: Core API — Errors & Values
 - ✓ Sealed `Value` interface with polymorphic session tensor handling — validated in Phase 2: Core API — Errors & Values
+- ✓ Generalized embedder API spanning dense MiniLM/OpenCLIP and sparse SPLADE, with a zero-import typed contract and revision-bound native parity evidence — validated in Phase 3: Generalized Embedder API
 
 ### Active
 
@@ -42,9 +43,6 @@ Run ONNX Runtime inference from Go with zero CGO — if that stops working, noth
 **Quality gate**
 - [ ] Enable full linting — remove `continue-on-error` from golangci-lint (#23)
 
-**Features**
-- [ ] Generalize embedder API and add sparse embeddings / SPLADE (#49)
-
 ### Out of Scope
 
 - CGO / `import "C"` anywhere in `ort/` — defeats the project's entire premise (no C compiler, cross-compilation)
@@ -61,6 +59,7 @@ Run ONNX Runtime inference from Go with zero CGO — if that stops working, noth
 - ONNX Runtime C API version 22; default bootstrap runtime version tracks CI (currently `1.24.1`, asserted by the version-match step in `ci.yml`).
 - CI runs on Go 1.24.x across Linux/macOS/Windows (amd64+arm64); `govulncheck` uses a patched Go 1.25.x toolchain.
 - Phase 2 is complete: public `ort` failures are inspectable, polymorphic `Value` handling is available, and race/native CI lanes cover the new contracts.
+- Phase 3 is complete: `embeddings.Embedder[T]` unifies dense and sparse API conformance; native CI evidence records 12 named PASS events with zero skips for its final revision.
 
 ## Constraints
 
@@ -82,6 +81,7 @@ Run ONNX Runtime inference from Go with zero CGO — if that stops working, noth
 | Keep diagnostics opt-in and avoid logging returned errors | Silent defaults prevent surprise output; structured diagnostics are reserved for non-returnable notices and finalizer failures | ✓ Validated in Phase 2 |
 | Borrow per-call values through the existing session run core | `RunWithValues` preserves caller ownership and existing lock, lease, lifetime, and `Run` behavior | ✓ Validated in Phase 2 |
 | Keep race and native ABI verification in separate live-counted CI lanes | Exact selector counts prevent renamed tests from silently reducing coverage without disabling checkptr | ✓ Validated in Phase 2 |
+| Keep the generalized embedding API compile-time typed and its root contract import-free | Dense and sparse result types stay concrete without runtime tags, registries, wrappers, or copies | ✓ Validated in Phase 3 |
 
 ## Evolution
 
@@ -101,4 +101,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-30 after Phase 2 UAT completion*
+*Last updated: 2026-08-02 after Phase 3 completion*
