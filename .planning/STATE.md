@@ -4,7 +4,7 @@ milestone: v0.1.0
 milestone_name: "**Goal**: v0.1.0 is cut as a tagged, documented release with CI green across all supported platforms and every milestone issue closed."
 status: verifying
 stopped_at: Phase 3 context gathered
-last_updated: "2026-08-02T06:33:07.383Z"
+last_updated: "2026-08-02T06:33:43.721Z"
 last_activity: 2026-08-02
 progress:
   total_phases: 6
@@ -61,6 +61,7 @@ Progress: [██████████] 100%
 | Phase 02 P06 | 18min | 2 tasks | 4 files |
 | Phase 02 P07 | 23min | 3 tasks | 2 files |
 | Phase 02 P08 | 18min | 2 tasks | 7 files |
+| Phase 03 P01 | 1127 min | 3 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -74,6 +75,8 @@ Recent decisions affecting current work:
 - [Phase 02] Seal `Value` and keep `AsTensor[T]` exact so only package-owned values enter native handle and lease protocols.
 - [Phase 02] Keep diagnostics opt-in and do not duplicate returned errors; only non-returnable notices and finalizer failures emit.
 - [Phase 02] Borrow per-call values through the existing session run core, preserving caller ownership and established locking/lifetime behavior.
+- [Phase 03]: Keep the root embeddings package as a zero-import generic contract with no factory, registry, or model-specific behavior. — This preserves the one-way dependency boundary and avoids runtime abstraction machinery.
+- [Phase 03]: Treat revision-bound CI JSON streams as the native gate: 12 named PASS events and zero named SKIP events are required. — Environment-dependent real-model verification must be exact, durable, and non-skipped.
 
 ### Pending Todos
 
