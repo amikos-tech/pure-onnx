@@ -25,7 +25,7 @@ overrides_applied: 0
 | 4 | MiniLM and SPLADE retain their concrete constructors, package-owned result types, inference paths, and cleanup behavior while satisfying the shared interface. | ✓ VERIFIED | Exact constructor/method pins cover both packages; `git diff` from the Phase 3 source commits through the tested revision shows no changes to MiniLM or SPLADE implementation paths or module files. Both methods still execute their existing session/inference paths. |
 | 5 | OpenCLIP satisfies `embeddings.Embedder[[]float32]` through direct text forwarders while preserving its concrete text and image API. | ✓ VERIFIED | `EmbedDocuments` is exactly `return e.EmbedTexts(documents)` and `EmbedQuery` exactly `return e.EmbedText(query)`; exact function-type pins retain text, image, close, and new forwarder signatures. |
 | 6 | The production root `embeddings` package is a zero-import contract only, without a factory, adapter, registry, result union, model-specific capability, or inference code. | ✓ VERIFIED | The sole root production file is `embeddings/embedder.go`: a nine-line package declaration plus one generic interface. `go list -f '{{join .Imports " "}}' ./embeddings` returns empty. |
-| 7 | Compile-time compatibility and revision-bound real-model/golden behavior are proven with exact named PASS counts and no named SKIPs. | ✓ VERIFIED | All three conformance assertions and exact API signature pins compile. The manifest and five valid JSONL streams are bound to `7f7e475f218060438264d18b3844aa79a7b84810`, whose three Phase 3 source files are byte-identical to current `HEAD`; event counts are exactly 1 + 3 + 1 + 6 + 1 PASS and 0 named SKIP/FAIL. |
+| 7 | Compile-time compatibility and revision-bound real-model/golden behavior are proven with exact named PASS counts and no named SKIPs. | ✓ VERIFIED | All three conformance assertions and exact API signature pins compile. The manifest and five valid JSONL streams are bound to `7f7e475f218060438264d18b3844aa79a7b84810`; later changes only adjust documentation comments, leaving the tested declarations and method bodies unchanged. Event counts are exactly 1 + 3 + 1 + 6 + 1 PASS and 0 named SKIP/FAIL. |
 
 **Score:** 7/7 truths verified
 
@@ -58,7 +58,7 @@ overrides_applied: 0
 
 ### Revision-Bound Native Evidence
 
-The manifest records `GIT_REVISION=7f7e475f218060438264d18b3844aa79a7b84810`, Linux/amd64, Go 1.25.12, a present ONNX Runtime library, and a non-secret configured-target identifier. That revision is an ancestor of the current checkout, contains all three Phase 3 source files, and has no diff in those files relative to current `HEAD`.
+The manifest records `GIT_REVISION=7f7e475f218060438264d18b3844aa79a7b84810`, Linux/amd64, Go 1.25.12, a present ONNX Runtime library, and a non-secret configured-target identifier. That revision is an ancestor of the current checkout and contains all three Phase 3 source files. Later changes only adjust documentation comments, leaving the tested declarations and method bodies unchanged.
 
 | Selector evidence | Expected named PASS | Observed PASS | Named SKIP | Named FAIL | Status |
 | --- | ---: | ---: | ---: | ---: | --- |
