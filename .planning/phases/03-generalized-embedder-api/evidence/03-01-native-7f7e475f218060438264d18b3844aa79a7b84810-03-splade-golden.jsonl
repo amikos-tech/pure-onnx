@@ -1,0 +1,9 @@
+{"Time":"2026-08-02T06:22:35.338161204Z","Action":"start","Package":"github.com/amikos-tech/pure-onnx/embeddings/splade"}
+{"Time":"2026-08-02T06:22:35.341199194Z","Action":"run","Package":"github.com/amikos-tech/pure-onnx/embeddings/splade","Test":"TestSPLADEGoldenDatasetParity"}
+{"Time":"2026-08-02T06:22:35.341252925Z","Action":"output","Package":"github.com/amikos-tech/pure-onnx/embeddings/splade","Test":"TestSPLADEGoldenDatasetParity","Output":"=== RUN   TestSPLADEGoldenDatasetParity\n"}
+{"Time":"2026-08-02T06:22:35.479438074Z","Action":"output","Package":"github.com/amikos-tech/pure-onnx/embeddings/splade","Test":"TestSPLADEGoldenDatasetParity","Output":"\u001b[0;93m2026-08-02 06:22:35.479384454 [W:onnxruntime:onnx-purego, device_discovery.cc:131 GetPciBusId] Skipping pci_bus_id for PCI path at \"/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171\" because filename \"\"5620e0c7-8062-4dce-aeb7-520c7ef76171\"\" dit not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+\u001b[m\n"}
+{"Time":"2026-08-02T06:22:43.573328386Z","Action":"output","Package":"github.com/amikos-tech/pure-onnx/embeddings/splade","Test":"TestSPLADEGoldenDatasetParity","Output":"--- PASS: TestSPLADEGoldenDatasetParity (8.23s)\n"}
+{"Time":"2026-08-02T06:22:43.573359755Z","Action":"pass","Package":"github.com/amikos-tech/pure-onnx/embeddings/splade","Test":"TestSPLADEGoldenDatasetParity","Elapsed":8.23}
+{"Time":"2026-08-02T06:22:43.573367179Z","Action":"output","Package":"github.com/amikos-tech/pure-onnx/embeddings/splade","Output":"PASS\n"}
+{"Time":"2026-08-02T06:22:43.578555267Z","Action":"output","Package":"github.com/amikos-tech/pure-onnx/embeddings/splade","Output":"ok  \tgithub.com/amikos-tech/pure-onnx/embeddings/splade\t8.240s\n"}
+{"Time":"2026-08-02T06:22:43.578580595Z","Action":"pass","Package":"github.com/amikos-tech/pure-onnx/embeddings/splade","Elapsed":8.24}
