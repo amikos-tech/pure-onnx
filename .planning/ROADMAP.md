@@ -14,7 +14,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: DX & Test Hardening** - Fail-fast example UX plus deterministic, race-clean concurrency tests (completed 2026-07-22)
 - [x] **Phase 2: Core API — Errors & Values** - Wrapped errors across the surface and a polymorphic `Value` interface (completed 2026-07-24)
-- [ ] **Phase 3: Generalized Embedder API** - Unified dense/sparse embedder API including SPLADE
+- [x] **Phase 3: Generalized Embedder API** - Unified dense/sparse embedder API including SPLADE (completed 2026-08-02)
 - [ ] **Phase 4: Documentation** - GoDoc, maturity status, lifetime semantics, and known limitations
 - [ ] **Phase 5: Full Lint Gate** - Remove `continue-on-error` and pass the full golangci-lint gate
 - [ ] **Phase 6: Release v0.1.0** - Tag, release notes, green CI matrix, all issues closed
@@ -77,7 +77,7 @@ Plans:
 **Plans**: 1 plan
 
 Plans:
-- [ ] 03-01-PLAN.md — Promote the validated generic contract, OpenCLIP forwarders, compatibility proof, and non-skipped native parity gate
+- [x] 03-01-PLAN.md — Promote the validated generic contract, OpenCLIP forwarders, compatibility proof, and non-skipped native parity gate
 
 ### Phase 4: Documentation
 **Goal**: Public packages are comprehensively documented, including per-function maturity, error-string lifetime semantics, and the known environment-leak limitation.
@@ -119,7 +119,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 |-------|----------------|--------|-----------|
 | 1. DX & Test Hardening | 3/3 | Complete   | 2026-07-22 |
 | 2. Core API — Errors & Values | 8/8 | Complete   | 2026-07-24 |
-| 3. Generalized Embedder API | 0/1 | Not started | - |
+| 3. Generalized Embedder API | 1/1 | Complete   | 2026-08-02 |
 | 4. Documentation | 0/TBD | Not started | - |
 | 5. Full Lint Gate | 0/TBD | Not started | - |
 | 6. Release v0.1.0 | 0/TBD | Not started | - |
