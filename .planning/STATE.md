@@ -4,8 +4,8 @@ milestone: v0.1.0
 milestone_name: "**Goal**: v0.1.0 is cut as a tagged, documented release with CI green across all supported platforms and every milestone issue closed."
 status: executing
 stopped_at: Phase 3 context gathered
-last_updated: "2026-08-01T11:21:00.833Z"
-last_activity: 2026-08-01 -- Phase 03 planning complete
+last_updated: "2026-08-01T11:42:12.734Z"
+last_activity: 2026-08-01 -- Phase 03 execution started
 progress:
   total_phases: 6
   completed_phases: 2
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-30)
 
 **Core value:** Run ONNX Runtime inference from Go with zero CGO — if that stops working, nothing else matters.
-**Current focus:** Phase 3 — Generalized Embedder API
+**Current focus:** Phase 03 — generalized-embedder-api
 
 ## Current Position
 
-Phase: 3
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-08-01 -- Phase 03 planning complete
+Phase: 03 (generalized-embedder-api) — EXECUTING
+Plan: 1 of 1
+Status: Executing Phase 03
+Last activity: 2026-08-01 -- Phase 03 execution started
 
 Progress: [████████████████████] 11/11 plans (100%)
 
