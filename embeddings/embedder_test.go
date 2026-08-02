@@ -2,6 +2,7 @@ package embeddings_test
 
 import (
 	"image"
+	"reflect"
 	"testing"
 
 	"github.com/amikos-tech/pure-onnx/embeddings"
@@ -74,6 +75,49 @@ func TestTypedInterfaceDispatchReachesExistingValidation(t *testing.T) {
 			t.Fatal("nil OpenCLIP embedder unexpectedly succeeded")
 		}
 	})
+}
+
+// fakeEmbedder is a minimal Embedder[[]float32] with canned return values,
+// used to prove the generic dispatch path forwards real results rather than
+// only the nil-receiver error path exercised above.
+type fakeEmbedder struct {
+	queryVec []float32
+	docVecs  [][]float32
+}
+
+func (f *fakeEmbedder) EmbedDocuments(documents []string) ([][]float32, error) {
+	return f.docVecs, nil
+}
+
+func (f *fakeEmbedder) EmbedQuery(query string) ([]float32, error) {
+	return f.queryVec, nil
+}
+
+func (f *fakeEmbedder) Close() error { return nil }
+
+var _ embeddings.Embedder[[]float32] = (*fakeEmbedder)(nil)
+
+func TestGenericDispatchForwardsRealValues(t *testing.T) {
+	fake := &fakeEmbedder{
+		queryVec: []float32{1, 2, 3},
+		docVecs:  [][]float32{{4, 5, 6}, {7, 8, 9}},
+	}
+
+	gotQuery, err := queryThroughContract[[]float32](fake, "query")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(gotQuery, fake.queryVec) {
+		t.Fatalf("query mismatch: got %v want %v", gotQuery, fake.queryVec)
+	}
+
+	gotDocs, err := documentsThroughContract[[]float32](fake, []string{"a", "b"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(gotDocs, fake.docVecs) {
+		t.Fatalf("documents mismatch: got %v want %v", gotDocs, fake.docVecs)
+	}
 }
 
 func TestOpenCLIPForwardersPreserveExistingValidation(t *testing.T) {
