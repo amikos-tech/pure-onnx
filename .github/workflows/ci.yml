@@ -205,6 +205,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          # Native evidence must describe the submitted revision, not GitHub's
+          # synthetic pull-request merge commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
@@ -240,6 +244,23 @@ jobs:
           echo "ONNXRUNTIME_LIB_PATH=${RUNNER_TEMP}/onnxruntime/lib/libonnxruntime.so" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=${RUNNER_TEMP}/onnxruntime/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" >> "$GITHUB_ENV"
 
+      - name: Prepare Phase 3 native evidence
+        run: |
+          set -euo pipefail
+          PHASE03_EVIDENCE_DIR=".planning/phases/03-generalized-embedder-api/evidence"
+          PHASE03_EVIDENCE_REVISION="$(git rev-parse HEAD)"
+          mkdir -p "$PHASE03_EVIDENCE_DIR"
+          {
+            printf 'GIT_REVISION=%s\n' "$PHASE03_EVIDENCE_REVISION"
+            printf 'PHASE03_NATIVE_TARGET_ID=ci:integration-real-model:%s\n' "$GITHUB_RUN_ID"
+            printf 'GO_VERSION=%s\n' "$(go version)"
+            printf 'GOOS=%s\n' "$(go env GOOS)"
+            printf 'GOARCH=%s\n' "$(go env GOARCH)"
+            printf 'ONNXRUNTIME_LIB_PATH_PRESENT=%s\n' "$(test -n "${ONNXRUNTIME_LIB_PATH:-}" && printf true || printf false)"
+          } > "$PHASE03_EVIDENCE_DIR/03-01-native-${PHASE03_EVIDENCE_REVISION}-manifest.env"
+          echo "PHASE03_EVIDENCE_DIR=$PHASE03_EVIDENCE_DIR" >> "$GITHUB_ENV"
+          echo "PHASE03_EVIDENCE_REVISION=$PHASE03_EVIDENCE_REVISION" >> "$GITHUB_ENV"
+
       - name: Run ort real-model integration tests
         env:
           ONNXRUNTIME_TEST_ALL_MINILM_SEQUENCE_LENGTH: '8'
@@ -265,23 +286,37 @@ jobs:
 
       - name: Run embeddings real-model integration tests
         run: |
-          go test -v ./embeddings/minilm -run TestEmbedDocumentsWithAllMiniLML6V2
+          set -o pipefail
+          go test -count=1 -json ./embeddings/minilm -run '^TestEmbedDocumentsWithAllMiniLML6V2$' | tee "$PHASE03_EVIDENCE_DIR/03-01-native-${PHASE03_EVIDENCE_REVISION}-01-minilm.jsonl"
 
       - name: Run SPLADE real-model integration tests
         run: |
-          go test -v ./embeddings/splade -run 'TestEmbedDocumentsWithSPLADEModel|TestSPLADEGoldenRegressionTopK16WithLabels|TestSPLADERepeatabilityTopK16'
+          set -o pipefail
+          go test -count=1 -json ./embeddings/splade -run '^(TestEmbedDocumentsWithSPLADEModel|TestSPLADEGoldenRegressionTopK16WithLabels|TestSPLADERepeatabilityTopK16)$' | tee "$PHASE03_EVIDENCE_DIR/03-01-native-${PHASE03_EVIDENCE_REVISION}-02-splade-regression.jsonl"
 
       - name: Run SPLADE public golden parity test
         run: |
-          go test -v ./embeddings/splade -run TestSPLADEGoldenDatasetParity -count=1
+          set -o pipefail
+          go test -count=1 -json ./embeddings/splade -run '^TestSPLADEGoldenDatasetParity$' | tee "$PHASE03_EVIDENCE_DIR/03-01-native-${PHASE03_EVIDENCE_REVISION}-03-splade-golden.jsonl"
 
       - name: Run OpenCLIP real-model integration tests
         run: |
-          go test -v ./embeddings/openclip -run 'TestEmbedTextsAndImagesWithOpenCLIPModel|TestOpenCLIPFailsWithWrongInputOutputNames|TestOpenCLIPFailsWithWrongEmbeddingDimension|TestOpenCLIPFailsWithImageSizeMismatch|TestOpenCLIPErrorsAfterClose|TestOpenCLIPCloseIsIdempotent'
+          set -o pipefail
+          go test -count=1 -json ./embeddings/openclip -run '^(TestEmbedTextsAndImagesWithOpenCLIPModel|TestOpenCLIPFailsWithWrongInputOutputNames|TestOpenCLIPFailsWithWrongEmbeddingDimension|TestOpenCLIPFailsWithImageSizeMismatch|TestOpenCLIPErrorsAfterClose|TestOpenCLIPCloseIsIdempotent)$' | tee "$PHASE03_EVIDENCE_DIR/03-01-native-${PHASE03_EVIDENCE_REVISION}-04-openclip-integration.jsonl"
 
       - name: Run OpenCLIP public golden parity test
         run: |
-          go test -v ./embeddings/openclip -run TestOpenCLIPGoldenDatasetParity -count=1
+          set -o pipefail
+          go test -count=1 -json ./embeddings/openclip -run '^TestOpenCLIPGoldenDatasetParity$' | tee "$PHASE03_EVIDENCE_DIR/03-01-native-${PHASE03_EVIDENCE_REVISION}-05-openclip-golden.jsonl"
+
+      - name: Upload Phase 3 native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase-03-native-evidence-${{ github.run_id }}
+          path: .planning/phases/03-generalized-embedder-api/evidence/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Run real-model benchmarks
         env:
