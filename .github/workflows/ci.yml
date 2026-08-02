@@ -232,6 +232,34 @@ jobs:
           path: ${{ env.ONNXRUNTIME_TEST_MODEL_CACHE_DIR }}
           key: embedding-assets-v3-${{ runner.os }}-${{ env.EMBEDDING_ASSETS_CACHE_KEY }}
 
+      - name: Preload OpenCLIP model assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          OPENCLIP_CACHE_DIR="${ONNXRUNTIME_TEST_MODEL_CACHE_DIR}/openclip/${ONNXRUNTIME_TEST_OPENCLIP_REPO_ID//\//--}/${ONNXRUNTIME_TEST_OPENCLIP_REVISION}"
+          mkdir -p "$OPENCLIP_CACHE_DIR"
+
+          download_asset() {
+            local file_name=$1
+            local expected_sha256=$2
+            local destination="$OPENCLIP_CACHE_DIR/$file_name"
+
+            if [[ -f "$destination" ]] && printf '%s  %s\n' "$expected_sha256" "$destination" | sha256sum --check --status; then
+              return
+            fi
+
+            curl --fail --location --retry 3 --retry-all-errors --retry-delay 2 --max-time 600 \
+              --output "${destination}.tmp" \
+              "https://huggingface.co/${ONNXRUNTIME_TEST_OPENCLIP_REPO_ID}/resolve/${ONNXRUNTIME_TEST_OPENCLIP_REVISION}/${file_name}"
+            printf '%s  %s\n' "$expected_sha256" "${destination}.tmp" | sha256sum --check
+            mv -f "${destination}.tmp" "$destination"
+          }
+
+          download_asset text_model.onnx "$ONNXRUNTIME_TEST_OPENCLIP_TEXT_MODEL_SHA256"
+          download_asset vision_model.onnx "$ONNXRUNTIME_TEST_OPENCLIP_VISION_MODEL_SHA256"
+          download_asset tokenizer.json "$ONNXRUNTIME_TEST_OPENCLIP_TOKENIZER_SHA256"
+          download_asset preprocessor_config.json "$ONNXRUNTIME_TEST_OPENCLIP_PREPROCESSOR_SHA256"
+
       - name: Download ONNX Runtime shared library
         timeout-minutes: 10
         run: |
