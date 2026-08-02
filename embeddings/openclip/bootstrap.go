@@ -17,6 +17,9 @@ import (
 	"unicode"
 )
 
+// These pins are duplicated in .github/workflows/ci.yml (ONNXRUNTIME_TEST_OPENCLIP_*)
+// so CI can preload and checksum-verify assets before the Go bootstrapper runs.
+// Nothing enforces the two copies stay in sync — update both when bumping the revision.
 const (
 	// DefaultBootstrapRepoID is the default Hugging Face repository for OpenCLIP ONNX artifacts.
 	DefaultBootstrapRepoID = "amikos/openclip-vit-b-32-laion2b-s34b-b79k-onnx"
