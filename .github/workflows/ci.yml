@@ -192,16 +192,6 @@ jobs:
       ONNXRUNTIME_TEST_SPLADE_MODEL_SHA256: '0934583a27a031a66b2e847cbc260fbbef29689e969f500436460ef5146a43f2'
       ONNXRUNTIME_TEST_SPLADE_TOKENIZER_URL: 'https://huggingface.co/prithivida/Splade_PP_en_v1/resolve/762be6a7206e2f299182705972a65e5c46e62be2/tokenizer.json'
       ONNXRUNTIME_TEST_SPLADE_TOKENIZER_SHA256: '2fc687b11de0bc1b3d8348f92e3b49ef1089a621506c7661fbf3248fcd54947e'
-      # Drive the "Preload OpenCLIP model assets" step below (download URL + checksum
-      # verification) and the cache key. Must match the defaults in
-      # embeddings/openclip/bootstrap.go — nothing enforces that automatically, so
-      # update both when bumping the pinned OpenCLIP revision.
-      ONNXRUNTIME_TEST_OPENCLIP_REPO_ID: 'amikos/openclip-vit-b-32-laion2b-s34b-b79k-onnx'
-      ONNXRUNTIME_TEST_OPENCLIP_REVISION: '248a2ed76a7189fc080e654e36930171331ef085'
-      ONNXRUNTIME_TEST_OPENCLIP_TEXT_MODEL_SHA256: '252b86e0ef1fc95b22cfd52fbf647142727fdbecc152556ffe0fba0b10a80370'
-      ONNXRUNTIME_TEST_OPENCLIP_VISION_MODEL_SHA256: '7e14f76233d0c840c0621b1ef68f5877efe9357850782b1bbaf0c01693f73b43'
-      ONNXRUNTIME_TEST_OPENCLIP_TOKENIZER_SHA256: 'b556ac8c99757ffb677208af34bc8c6721572114111a6e0aaf5fa69ff0b8d842'
-      ONNXRUNTIME_TEST_OPENCLIP_PREPROCESSOR_SHA256: '910e70b3956ac9879ebc90b22fb3bc8a75b6a0677814500101a4c072bd7857bd'
       # Hosted OpenCLIP golden rows are Python-generated references; allow cross-framework drift.
       ONNXRUNTIME_TEST_OPENCLIP_GOLDEN_TOLERANCE: '2'
       HF_DATASET_REPO: 'tazarov/pure-onnx'
@@ -225,7 +215,10 @@ jobs:
       - name: Compute embedding cache key
         shell: bash
         run: |
-          KEY_INPUT="${ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256}|${ONNXRUNTIME_TEST_ALL_MINILM_TOKENIZER_SHA256}|${ONNXRUNTIME_TEST_SPLADE_MODEL_SHA256}|${ONNXRUNTIME_TEST_SPLADE_TOKENIZER_SHA256}|${ONNXRUNTIME_TEST_OPENCLIP_REPO_ID}|${ONNXRUNTIME_TEST_OPENCLIP_REVISION}|${ONNXRUNTIME_TEST_OPENCLIP_TEXT_MODEL_SHA256}|${ONNXRUNTIME_TEST_OPENCLIP_VISION_MODEL_SHA256}|${ONNXRUNTIME_TEST_OPENCLIP_TOKENIZER_SHA256}|${ONNXRUNTIME_TEST_OPENCLIP_PREPROCESSOR_SHA256}"
+          set -euo pipefail
+          # The OpenCLIP pins live only in bootstrap.go, so its digest stands in for them.
+          OPENCLIP_PINS_DIGEST="$(sha256sum embeddings/openclip/bootstrap.go | awk '{print $1}')"
+          KEY_INPUT="${ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256}|${ONNXRUNTIME_TEST_ALL_MINILM_TOKENIZER_SHA256}|${ONNXRUNTIME_TEST_SPLADE_MODEL_SHA256}|${ONNXRUNTIME_TEST_SPLADE_TOKENIZER_SHA256}|${OPENCLIP_PINS_DIGEST}"
           KEY_DIGEST="$(printf '%s' "${KEY_INPUT}" | sha256sum | awk '{print $1}')"
           echo "EMBEDDING_ASSETS_CACHE_KEY=${KEY_DIGEST}" >> "$GITHUB_ENV"
 
@@ -233,43 +226,7 @@ jobs:
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ${{ env.ONNXRUNTIME_TEST_MODEL_CACHE_DIR }}
-          key: embedding-assets-v3-${{ runner.os }}-${{ env.EMBEDDING_ASSETS_CACHE_KEY }}
-
-      - name: Preload OpenCLIP model assets
-        shell: bash
-        run: |
-          set -euo pipefail
-          OPENCLIP_CACHE_DIR="${ONNXRUNTIME_TEST_MODEL_CACHE_DIR}/openclip/${ONNXRUNTIME_TEST_OPENCLIP_REPO_ID//\//--}/${ONNXRUNTIME_TEST_OPENCLIP_REVISION}"
-          mkdir -p "$OPENCLIP_CACHE_DIR"
-
-          download_asset() {
-            local file_name=$1
-            local expected_sha256=$2
-            local destination="$OPENCLIP_CACHE_DIR/$file_name"
-            local temporary="${destination}.tmp"
-
-            if [[ -f "$destination" ]] && printf '%s  %s\n' "$expected_sha256" "$destination" | sha256sum --check --status; then
-              return
-            fi
-
-            rm -f "$temporary"
-            if ! curl --fail --location --retry 3 --retry-all-errors --retry-delay 2 --max-time 600 \
-              --output "$temporary" \
-              "https://huggingface.co/${ONNXRUNTIME_TEST_OPENCLIP_REPO_ID}/resolve/${ONNXRUNTIME_TEST_OPENCLIP_REVISION}/${file_name}"; then
-              rm -f "$temporary"
-              return 1
-            fi
-            if ! printf '%s  %s\n' "$expected_sha256" "$temporary" | sha256sum --check; then
-              rm -f "$temporary"
-              return 1
-            fi
-            mv -f "$temporary" "$destination"
-          }
-
-          download_asset text_model.onnx "$ONNXRUNTIME_TEST_OPENCLIP_TEXT_MODEL_SHA256"
-          download_asset vision_model.onnx "$ONNXRUNTIME_TEST_OPENCLIP_VISION_MODEL_SHA256"
-          download_asset tokenizer.json "$ONNXRUNTIME_TEST_OPENCLIP_TOKENIZER_SHA256"
-          download_asset preprocessor_config.json "$ONNXRUNTIME_TEST_OPENCLIP_PREPROCESSOR_SHA256"
+          key: embedding-assets-v4-${{ runner.os }}-${{ env.EMBEDDING_ASSETS_CACHE_KEY }}
 
       - name: Download ONNX Runtime shared library
         timeout-minutes: 10
