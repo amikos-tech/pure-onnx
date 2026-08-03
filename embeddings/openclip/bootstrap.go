@@ -17,6 +17,8 @@ import (
 	"unicode"
 )
 
+// This file is the single source of truth for the default OpenCLIP pins; CI keys
+// its asset cache on the file's digest, so bumping a pin here invalidates that cache.
 const (
 	// DefaultBootstrapRepoID is the default Hugging Face repository for OpenCLIP ONNX artifacts.
 	DefaultBootstrapRepoID = "amikos/openclip-vit-b-32-laion2b-s34b-b79k-onnx"
@@ -54,8 +56,13 @@ const (
 const (
 	defaultMaxDownloadBytes int64         = 1 << 30 // 1 GiB cap for each downloaded file.
 	defaultLockWaitTimeout  time.Duration = 30 * time.Second
-	defaultLockStaleAfter   time.Duration = 10 * time.Minute
-	defaultHTTPTimeout      time.Duration = 60 * time.Second
+	// A per-file lock is held for the whole download, so staleAfter must stay
+	// above defaultHTTPTimeout or a waiter can break the lock out from under a
+	// download that is merely slow.
+	defaultLockStaleAfter time.Duration = 20 * time.Minute
+	// http.Client.Timeout covers body transfer, and the default bundle is ~600 MB,
+	// so this bounds a whole asset download rather than a single round trip.
+	defaultHTTPTimeout time.Duration = 10 * time.Minute
 )
 
 var bootstrapAssetSpecs = []bootstrapAssetSpec{

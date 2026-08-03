@@ -194,7 +194,7 @@ precommit-lint-new:
 gosec:
 	@echo "$(YELLOW)Running gosec...$(NC)"
 	@if command -v gosec &> /dev/null; then \
-		gosec -exclude-dir=examples/experimental ./... || exit 1; \
+		gosec -exclude-dir=examples/experimental -exclude-dir=.planning ./... || exit 1; \
 		echo "$(GREEN)✓ gosec complete$(NC)"; \
 	else \
 		echo "$(RED)✗ gosec not installed. Run 'make install-tools' first$(NC)"; \

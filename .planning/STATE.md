@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v0.1.0
 milestone_name: "**Goal**: v0.1.0 is cut as a tagged, documented release with CI green across all supported platforms and every milestone issue closed."
-status: "Phase 02 shipped — PR #105"
-stopped_at: Phase 2 UAT complete, ready to discuss Phase 3
-last_updated: "2026-07-31T00:00:00.000Z"
-last_activity: 2026-07-31
+status: ready_to_plan
+stopped_at: Phase 03 complete (1/1) — ready to discuss Phase 4
+last_updated: 2026-08-02T06:43:46.888Z
+last_activity: 2026-08-02
 progress:
   total_phases: 6
-  completed_phases: 2
-  total_plans: 11
-  completed_plans: 11
-  percent: 33
+  completed_phases: 3
+  total_plans: 12
+  completed_plans: 12
+  percent: 50
 ---
 
 # Project State
@@ -21,22 +21,22 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-30)
 
 **Core value:** Run ONNX Runtime inference from Go with zero CGO — if that stops working, nothing else matters.
-**Current focus:** Phase 3 — Generalized Embedder API
+**Current focus:** Phase 4 — documentation
 
 ## Current Position
 
-Phase: 3
+Phase: 4
 Plan: Not started
-Status: Phase 02 shipped — PR #105
-Last activity: 2026-07-31 - Completed quick task 260731-j0t: address concurrency regression review findings
+Status: Ready to plan
+Last activity: 2026-08-02
 
-Progress: [████████████████████] 11/11 plans (100%)
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 11
+- Total plans completed: 12
 - Average duration: —
 - Total execution time: 0 hours
 
@@ -46,6 +46,7 @@ Progress: [████████████████████] 11/11 p
 |-------|-------|-------|----------|
 | 01 | 3 | - | - |
 | 02 | 8 | - | - |
+| 03 | 1 | - | - |
 
 **Recent Trend:**
 
@@ -61,6 +62,7 @@ Progress: [████████████████████] 11/11 p
 | Phase 02 P06 | 18min | 2 tasks | 4 files |
 | Phase 02 P07 | 23min | 3 tasks | 2 files |
 | Phase 02 P08 | 18min | 2 tasks | 7 files |
+| Phase 03 P01 | 1127 min | 3 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -74,6 +76,8 @@ Recent decisions affecting current work:
 - [Phase 02] Seal `Value` and keep `AsTensor[T]` exact so only package-owned values enter native handle and lease protocols.
 - [Phase 02] Keep diagnostics opt-in and do not duplicate returned errors; only non-returnable notices and finalizer failures emit.
 - [Phase 02] Borrow per-call values through the existing session run core, preserving caller ownership and established locking/lifetime behavior.
+- [Phase 03]: Keep the root embeddings package as a zero-import generic contract with no factory, registry, or model-specific behavior. — This preserves the one-way dependency boundary and avoids runtime abstraction machinery.
+- [Phase 03]: Treat revision-bound CI JSON streams as the native gate: 12 named PASS events and zero named SKIP events are required. — Environment-dependent real-model verification must be exact, durable, and non-skipped.
 
 ### Pending Todos
 
@@ -105,6 +109,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-30T08:49:07.079Z
-Stopped at: Phase 2 UAT complete, ready to discuss Phase 3
+Last session: 2026-08-02T06:34:18.209Z
+Stopped at: Completed 03-01-PLAN.md
 Resume file: None

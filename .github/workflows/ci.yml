@@ -192,19 +192,16 @@ jobs:
       ONNXRUNTIME_TEST_SPLADE_MODEL_SHA256: '0934583a27a031a66b2e847cbc260fbbef29689e969f500436460ef5146a43f2'
       ONNXRUNTIME_TEST_SPLADE_TOKENIZER_URL: 'https://huggingface.co/prithivida/Splade_PP_en_v1/resolve/762be6a7206e2f299182705972a65e5c46e62be2/tokenizer.json'
       ONNXRUNTIME_TEST_SPLADE_TOKENIZER_SHA256: '2fc687b11de0bc1b3d8348f92e3b49ef1089a621506c7661fbf3248fcd54947e'
-      # Documentation/cache-key marker only; runtime defaults are pinned in embeddings/openclip/bootstrap.go.
-      ONNXRUNTIME_TEST_OPENCLIP_REPO_ID: 'amikos/openclip-vit-b-32-laion2b-s34b-b79k-onnx'
-      ONNXRUNTIME_TEST_OPENCLIP_REVISION: '248a2ed76a7189fc080e654e36930171331ef085'
-      ONNXRUNTIME_TEST_OPENCLIP_TEXT_MODEL_SHA256: '252b86e0ef1fc95b22cfd52fbf647142727fdbecc152556ffe0fba0b10a80370'
-      ONNXRUNTIME_TEST_OPENCLIP_VISION_MODEL_SHA256: '7e14f76233d0c840c0621b1ef68f5877efe9357850782b1bbaf0c01693f73b43'
-      ONNXRUNTIME_TEST_OPENCLIP_TOKENIZER_SHA256: 'b556ac8c99757ffb677208af34bc8c6721572114111a6e0aaf5fa69ff0b8d842'
-      ONNXRUNTIME_TEST_OPENCLIP_PREPROCESSOR_SHA256: '910e70b3956ac9879ebc90b22fb3bc8a75b6a0677814500101a4c072bd7857bd'
       # Hosted OpenCLIP golden rows are Python-generated references; allow cross-framework drift.
       ONNXRUNTIME_TEST_OPENCLIP_GOLDEN_TOLERANCE: '2'
       HF_DATASET_REPO: 'tazarov/pure-onnx'
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          # Native evidence must describe the submitted revision, not GitHub's
+          # synthetic pull-request merge commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
@@ -218,7 +215,10 @@ jobs:
       - name: Compute embedding cache key
         shell: bash
         run: |
-          KEY_INPUT="${ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256}|${ONNXRUNTIME_TEST_ALL_MINILM_TOKENIZER_SHA256}|${ONNXRUNTIME_TEST_SPLADE_MODEL_SHA256}|${ONNXRUNTIME_TEST_SPLADE_TOKENIZER_SHA256}|${ONNXRUNTIME_TEST_OPENCLIP_REPO_ID}|${ONNXRUNTIME_TEST_OPENCLIP_REVISION}|${ONNXRUNTIME_TEST_OPENCLIP_TEXT_MODEL_SHA256}|${ONNXRUNTIME_TEST_OPENCLIP_VISION_MODEL_SHA256}|${ONNXRUNTIME_TEST_OPENCLIP_TOKENIZER_SHA256}|${ONNXRUNTIME_TEST_OPENCLIP_PREPROCESSOR_SHA256}"
+          set -euo pipefail
+          # The OpenCLIP pins live only in bootstrap.go, so its digest stands in for them.
+          OPENCLIP_PINS_DIGEST="$(sha256sum embeddings/openclip/bootstrap.go | awk '{print $1}')"
+          KEY_INPUT="${ONNXRUNTIME_TEST_ALL_MINILM_MODEL_SHA256}|${ONNXRUNTIME_TEST_ALL_MINILM_TOKENIZER_SHA256}|${ONNXRUNTIME_TEST_SPLADE_MODEL_SHA256}|${ONNXRUNTIME_TEST_SPLADE_TOKENIZER_SHA256}|${OPENCLIP_PINS_DIGEST}"
           KEY_DIGEST="$(printf '%s' "${KEY_INPUT}" | sha256sum | awk '{print $1}')"
           echo "EMBEDDING_ASSETS_CACHE_KEY=${KEY_DIGEST}" >> "$GITHUB_ENV"
 
@@ -226,7 +226,7 @@ jobs:
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ${{ env.ONNXRUNTIME_TEST_MODEL_CACHE_DIR }}
-          key: embedding-assets-v3-${{ runner.os }}-${{ env.EMBEDDING_ASSETS_CACHE_KEY }}
+          key: embedding-assets-v4-${{ runner.os }}-${{ env.EMBEDDING_ASSETS_CACHE_KEY }}
 
       - name: Download ONNX Runtime shared library
         timeout-minutes: 10
@@ -239,6 +239,25 @@ jobs:
           tar -xzf "${RUNNER_TEMP}/onnxruntime.tgz" -C "${RUNNER_TEMP}/onnxruntime" --strip-components=1
           echo "ONNXRUNTIME_LIB_PATH=${RUNNER_TEMP}/onnxruntime/lib/libonnxruntime.so" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=${RUNNER_TEMP}/onnxruntime/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" >> "$GITHUB_ENV"
+
+      # Evidence is written outside the worktree and named only by revision, so this
+      # job stays phase-agnostic; a phase commits these streams under its own prefix.
+      - name: Prepare native evidence
+        run: |
+          set -euo pipefail
+          EVIDENCE_DIR="${RUNNER_TEMP}/native-evidence"
+          EVIDENCE_REVISION="$(git rev-parse HEAD)"
+          mkdir -p "$EVIDENCE_DIR"
+          {
+            printf 'GIT_REVISION=%s\n' "$EVIDENCE_REVISION"
+            printf 'NATIVE_TARGET_ID=ci:integration-real-model:%s\n' "$GITHUB_RUN_ID"
+            printf 'GO_VERSION=%s\n' "$(go version)"
+            printf 'GOOS=%s\n' "$(go env GOOS)"
+            printf 'GOARCH=%s\n' "$(go env GOARCH)"
+            printf 'ONNXRUNTIME_LIB_PATH_PRESENT=%s\n' "$(test -n "${ONNXRUNTIME_LIB_PATH:-}" && printf true || printf false)"
+          } > "$EVIDENCE_DIR/native-${EVIDENCE_REVISION}-manifest.env"
+          echo "EVIDENCE_DIR=$EVIDENCE_DIR" >> "$GITHUB_ENV"
+          echo "EVIDENCE_REVISION=$EVIDENCE_REVISION" >> "$GITHUB_ENV"
 
       - name: Run ort real-model integration tests
         env:
@@ -265,23 +284,37 @@ jobs:
 
       - name: Run embeddings real-model integration tests
         run: |
-          go test -v ./embeddings/minilm -run TestEmbedDocumentsWithAllMiniLML6V2
+          set -o pipefail
+          go test -count=1 -json ./embeddings/minilm -run '^TestEmbedDocumentsWithAllMiniLML6V2$' | tee "$EVIDENCE_DIR/native-${EVIDENCE_REVISION}-01-minilm.jsonl"
 
       - name: Run SPLADE real-model integration tests
         run: |
-          go test -v ./embeddings/splade -run 'TestEmbedDocumentsWithSPLADEModel|TestSPLADEGoldenRegressionTopK16WithLabels|TestSPLADERepeatabilityTopK16'
+          set -o pipefail
+          go test -count=1 -json ./embeddings/splade -run '^(TestEmbedDocumentsWithSPLADEModel|TestSPLADEGoldenRegressionTopK16WithLabels|TestSPLADERepeatabilityTopK16)$' | tee "$EVIDENCE_DIR/native-${EVIDENCE_REVISION}-02-splade-regression.jsonl"
 
       - name: Run SPLADE public golden parity test
         run: |
-          go test -v ./embeddings/splade -run TestSPLADEGoldenDatasetParity -count=1
+          set -o pipefail
+          go test -count=1 -json ./embeddings/splade -run '^TestSPLADEGoldenDatasetParity$' | tee "$EVIDENCE_DIR/native-${EVIDENCE_REVISION}-03-splade-golden.jsonl"
 
       - name: Run OpenCLIP real-model integration tests
         run: |
-          go test -v ./embeddings/openclip -run 'TestEmbedTextsAndImagesWithOpenCLIPModel|TestOpenCLIPFailsWithWrongInputOutputNames|TestOpenCLIPFailsWithWrongEmbeddingDimension|TestOpenCLIPFailsWithImageSizeMismatch|TestOpenCLIPErrorsAfterClose|TestOpenCLIPCloseIsIdempotent'
+          set -o pipefail
+          go test -count=1 -json ./embeddings/openclip -run '^(TestEmbedTextsAndImagesWithOpenCLIPModel|TestOpenCLIPFailsWithWrongInputOutputNames|TestOpenCLIPFailsWithWrongEmbeddingDimension|TestOpenCLIPFailsWithImageSizeMismatch|TestOpenCLIPErrorsAfterClose|TestOpenCLIPCloseIsIdempotent)$' | tee "$EVIDENCE_DIR/native-${EVIDENCE_REVISION}-04-openclip-integration.jsonl"
 
       - name: Run OpenCLIP public golden parity test
         run: |
-          go test -v ./embeddings/openclip -run TestOpenCLIPGoldenDatasetParity -count=1
+          set -o pipefail
+          go test -count=1 -json ./embeddings/openclip -run '^TestOpenCLIPGoldenDatasetParity$' | tee "$EVIDENCE_DIR/native-${EVIDENCE_REVISION}-05-openclip-golden.jsonl"
+
+      - name: Upload native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/native-evidence/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Run real-model benchmarks
         env:
@@ -356,7 +389,8 @@ jobs:
       - name: Run Gosec Security Scanner
         uses: securego/gosec@9e75c0576c9878035d4221392108d458abe10fc3 # v2.28.0
         with:
-          args: '-fmt sarif -out results.sarif -exclude-dir=examples/experimental ./...'
+          # Planning spike overlays are intentionally incomplete outside their documented build context.
+          args: '-fmt sarif -out results.sarif -exclude-dir=examples/experimental -exclude-dir=.planning ./...'
 
       - name: Upload SARIF file
         uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
